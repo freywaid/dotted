@@ -1,0 +1,306 @@
+"""
+"""
+import collections.abc
+import copy
+import pyparsing as pp
+import re
+
+
+class Match:
+    def __init__(self, val):
+        self.val = val
+    def __bool__(self):
+        return True
+
+class Op:
+    def __init__(self, *args, **kwargs):
+        if len(args) == 3 and isinstance(args[2], pp.ParseResults):
+            self.args = tuple(args[2].asList())
+            self.parsed = args
+        else:
+            self.args = tuple(args)
+            self.parsed = kwargs.get('parsed', ())
+    def __repr__(self):
+        return f'{self.__class__.__name__}:{self.args}'
+    def __hash__(self):
+        return hash(self.args)
+    def __eq__(self, op):
+        return self.__class__ == op.__class__ and self.args == op.args
+
+
+class MetaNOP(type):
+    def __repr__(cls):
+        return ''
+
+class NOP(metaclass=MetaNOP):
+    @classmethod
+    def match(cls, val):
+        return None
+    @classmethod
+    def match_op(cls, op):
+        return None
+
+class Const(Op):
+    @property
+    def value(self):
+        return self.args[0]
+    def match(self, val):
+        return Match(val) if self.value == val else None
+    def match_op(self, op):
+        if not isinstance(op, Const):
+            return None
+        return self.match(op.value)
+
+class Integer(Const):
+    @property
+    def value(self):
+        return int(self.args[0])
+    def __repr__(self):
+        return f'{self.value}'
+
+class Word(Const):
+    def __repr__(self):
+        return f'{self.value}'
+
+class String(Const):
+    def __repr__(self):
+        return f'{repr(self.value)}'
+
+class Appender(Op):
+    @property
+    def value(self):
+        return '+'
+    def match(self, val):
+        return None
+    def match_op(self, op):
+        return None
+    def __repr__(self):
+        return '+'
+
+class Pattern(Op):
+    pass
+
+class Wildcard(Pattern):
+    def match(self, val):
+        return Match(val)
+    def match_op(self, op):
+        if not isinstance(op, Const):
+            return None
+        return self.match(op.value)
+    def __repr__(self):
+        return f'*'
+
+class Regex(Pattern):
+    @property
+    def pattern(self):
+        return re.compile(self.args[0])
+    def match(self, val):
+        m = self.pattern.fullmatch(val)
+        return Match(m[0]) if m else None
+    def match_op(self, op):
+        if not isinstance(op, Const):
+            return None
+        return self.match(op.value)
+    def __repr__(self):
+        return f'/{self.args[0]}/'
+
+#
+#
+#
+class Key(Op):
+    @property
+    def op(self):
+        return self.args[0]
+    def is_pattern(self):
+        return isinstance(self.op, Pattern)
+    def __repr__(self):
+        return f'{self.op}'
+    def operator(self, top=False):
+        return str(self) if top else '.' + str(self)
+    def keys(self, node):
+        matches = ( self.op.match(k) for k in node )
+        return ( m.val for m in matches if m )
+    def items(self, node):
+        for k in self.keys(node):
+            try:
+                yield k, node[k]
+            except TypeError:
+                pass
+    def values(self, node):
+        return ( v for _,v in self.items(node) )
+    def default_keys(self):
+        if self.is_pattern():
+            return {}
+        return (self.op.value,)
+    def default(self):
+        if self.is_pattern():
+            return {}
+        return {self.op.value: None}
+    def add(self, node, key, val):
+        node[key] = val
+        return node
+    def update(self, node, val):
+        keys = self.keys(node) if self.is_pattern() else self.default_keys()
+        for k in keys:
+            node[k] = val
+        return node
+    def remove(self, node):
+        for k in list(self.keys(node)):
+            del node[k]
+
+
+class Slot(Key):
+    def __repr__(self):
+        return f'[{self.op}]'
+    def operator(self, top=False):
+        return str(self)
+    def keys(self, node):
+        if isinstance(node, dict):
+            return super().keys(node)
+        matches = ( self.op.match(idx) for idx,_ in enumerate(node) )
+        return ( m.val for m in matches if m )
+    def default(self):
+        if isinstance(self.op, (Integer, Appender)):
+            return []
+        return super().default()
+    def add(self, node, key, val):
+        if isinstance(node, dict):
+            return super().add(node, key, val)
+        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        return node
+    def update(self, node, val):
+        if not isinstance(self.op, Appender):
+            return super().update(node, val)
+        return self.add(node, len(node), val)
+    def remove(self, node):
+        if isinstance(node, dict):
+            return super().delete(node)
+        popped = 0
+        for k in list(self.keys(node)):
+            node.pop(k - popped)
+            popped += 1
+
+class Slice(Op):
+    @classmethod
+    def munge(cls, toks):
+        out = []
+        while toks:
+            item, *toks = toks
+            if item == ':':
+                item = None
+            else:
+                toks = toks[1:]
+            out.append(item)
+        out += [None] * (3 - len(out))
+        return out[:3]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.args = self.munge(self.args)
+    def __repr__(self):
+        def s(a):
+            return str(a) if a is not None else ''
+        m = []
+        for i in range(3):
+            if not any(self.args[i:]):
+                break
+            m += [s(self.args[i])]
+        return '[' + ':'.join(m) + ']'
+    def is_pattern(self):
+        return True
+    def operator(self, top=False):
+        return str(self)
+    def slice(self, node):
+        args = ( len(node) if a == '+' else a for a in self.args )
+        return slice(*args)
+    def keys(self, node):
+        s = self.slice(node)
+        stop = len(node) if s.stop is None else s.stop
+        return range(s.start or 0, min(stop, len(node)), s.step or 1)
+    def items(self, node):
+        if not isinstance(node, collections.abc.Sequence):
+            return ()
+        return ( (k,node[k]) for k in self.keys(node) )
+    def values(self, node):
+        return ( v for _,v in self.items(node) )
+    def default_keys(self):
+        return (0,)
+    def default(self):
+        return []
+    def add(self, node, key, val):
+        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        return node
+    def update(self, node, val):
+        node[self.slice(node)] = val
+        return node
+    def remove(self, node):
+        del node[self.slice(node)]
+
+#
+#
+#
+class Dotted:
+    def __init__(self, ops):
+        self.ops = tuple(ops)
+    def assemble(self):
+        return ''.join(op.operator(idx==0) for idx,op in enumerate(self.ops))
+    def __repr__(self):
+        return f'{self.__class__.__name__}({list(self.ops)})'
+    def __hash__(self):
+        return hash(self.ops)
+    def __iter__(self):
+        return iter(self.ops)
+    def __eq__(self, ops):
+        return self.ops == tuple(ops)
+    def __getitem__(self, key):
+        return self.ops[key]
+
+
+def build_default(ops):
+    cur, *ops = ops
+    built = cur.default()
+    if not ops:
+        return built
+    for k in cur.default_keys():
+        built = cur.add(built, k, build_default(ops))
+    return built
+
+def build(ops, node, deepcopy=True):
+    cur, *ops = ops
+    built = node.__class__()
+    for k,v in cur.items(node):
+        if not ops:
+            built = cur.add(built, k, copy.deepcopy(v) if deepcopy else v)
+        else:
+            built = cur.add(built, k, build(ops, v, deepcopy=deepcopy))
+    if not built:
+        built = build_default([cur]+ops)
+    return built
+
+def gets(ops, node):
+    cur, *ops = ops
+    values = cur.values(node)
+    if not ops:
+        yield from values
+        return
+    for v in values:
+        yield from gets(ops, v)
+
+def updates(ops, node, val):
+    cur, *ops = ops
+    if not ops:
+        return cur.update(node, val)
+    values = tuple(cur.values(node))
+    if not values:
+        node = cur.update(node, build_default(ops))
+    for v in cur.values(node):
+        updates(ops, v, val)
+    return node
+
+def removes(ops, node):
+    cur, *ops = ops
+    if not ops:
+        cur.remove(node)
+        return node
+    for v in cur.values(node):
+        removes(ops, v)
+    return node
