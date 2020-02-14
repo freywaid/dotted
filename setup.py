@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="dotted-freywaid", # Replace with your own username
-    version="0.0.1",
+    version="0.0.2",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",
