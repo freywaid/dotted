@@ -2,7 +2,7 @@
 """
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
-import elements as el
+from . import elements as el
 
 dot = pp.Suppress('.')
 lb = pp.Suppress('[')

@@ -1,8 +1,8 @@
 """
 """
 import functools
-import grammar
-import elements as el
+from . import grammar
+from . import elements as el
 
 @functools.lru_cache()
 def _parse(dotted):
