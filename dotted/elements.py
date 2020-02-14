@@ -157,8 +157,14 @@ class Slot(Key):
     def keys(self, node):
         if isinstance(node, dict):
             return super().keys(node)
-        matches = ( self.op.match(idx) for idx,_ in enumerate(node) )
-        return ( m.val for m in matches if m )
+        if self.is_pattern():
+            matches = ( self.op.match(idx) for idx,_ in enumerate(node) )
+            return ( m.val for m in matches if m )
+        try:
+            _ = node[self.op.value]
+            return (self.op.value,)
+        except (KeyError, IndexError):
+            return ()
     def default(self):
         if isinstance(self.op, (Integer, Appender)):
             return []

@@ -4,8 +4,8 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="dotted-freywaid", # Replace with your own username
-    version="0.0.3",
+    name="dotted-freywaid",
+    version="0.0.4",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",
