@@ -43,6 +43,7 @@ def build(obj, key):
     Build a subset/default obj based on dotted
     >>> build({}, 'hello.there')
     {'hello': {'there': None}}
+    >>> # build({}, 'a.b.c[:2].d')
     """
     return el.build(parse(key), obj)
 
@@ -53,6 +54,10 @@ def get(obj, key, default=None, pattern_default=()):
     >>> d = {'hello': {'there': [1, 2, 3]}}
     >>> get(d, 'hello.there[1]')
     2
+    >>> get(d, 'hello.there[1:]')
+    [2, 3]
+    >>> get([{'a': 1}, {'a':2}], '[*].a')
+    (1, 2)
     """
     ops = parse(key)
     found = tuple(el.gets(ops, obj))
@@ -66,6 +71,8 @@ def update(obj, key, val):
     >>> d = {'hello': {'there': {'stuff': 1}}}
     >>> update(d, 'hello.there.stuff', 2)
     {'hello': {'there': {'stuff': 2}}}
+    >>> update({}, 'a.b.c[]', [2, 3])
+    {'a': {'b': {'c': [2, 3]}}}
     """
     el.updates(parse(key), obj, val)
     return obj

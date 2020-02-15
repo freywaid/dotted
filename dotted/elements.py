@@ -201,7 +201,7 @@ class Slice(Op):
         return out[:3]
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.args = self.munge(self.args)
+        self.args = tuple(self.munge(self.args))
     def __repr__(self):
         def s(a):
             return str(a) if a is not None else ''
@@ -212,24 +212,20 @@ class Slice(Op):
             m += [s(self.args[i])]
         return '[' + ':'.join(m) + ']'
     def is_pattern(self):
-        return True
+        return False
     def operator(self, top=False):
         return str(self)
     def slice(self, node):
         args = ( len(node) if a == '+' else a for a in self.args )
         return slice(*args)
     def keys(self, node):
-        s = self.slice(node)
-        stop = len(node) if s.stop is None else s.stop
-        return range(s.start or 0, min(stop, len(node)), s.step or 1)
+        return (self.slice(node),)
     def items(self, node):
-        if not isinstance(node, collections.abc.Sequence):
-            return ()
         return ( (k,node[k]) for k in self.keys(node) )
     def values(self, node):
         return ( v for _,v in self.items(node) )
     def default_keys(self):
-        return (0,)
+        return (slice(0,1),)
     def default(self):
         return []
     def add(self, node, key, val):

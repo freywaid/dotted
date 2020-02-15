@@ -16,7 +16,7 @@ word = pp.Word(pp.alphas + '_', pp.alphanums + '_').setParseAction(el.Word)
 string = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\').setParseAction(el.String)
 appender = pp.Word('+').setParseAction(el.Appender)
 wildcard = pp.Word('*').setParseAction(el.Wildcard)
-regex = (pp.Suppress('/') + pp.Regex('[^/]+') + pp.Suppress('/')).setParseAction(el.Regex)
+regex = (pp.Suppress('/') + pp.Regex(r'(\\/|[^/])+') + pp.Suppress('/')).setParseAction(el.Regex)
 slice = pp.Optional(num | nlen) + ':' + pp.Optional(num | nlen) \
          + pp.Optional(':') + pp.Optional(num | nlen)
 
