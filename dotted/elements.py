@@ -2,6 +2,7 @@
 """
 import collections.abc
 import copy
+import functools
 import pyparsing as pp
 import re
 
@@ -241,21 +242,37 @@ class Slice(Op):
 #
 #
 class Dotted:
-    def __init__(self, ops):
-        self.ops = tuple(ops)
+    registry = {}
+    def __init__(self, results):
+        self.ops = tuple(results['ops'])
+        self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
     def assemble(self):
         return ''.join(op.operator(idx==0) for idx,op in enumerate(self.ops))
     def __repr__(self):
-        return f'{self.__class__.__name__}({list(self.ops)})'
+        return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     def __hash__(self):
-        return hash(self.ops)
+        return hash((self.ops, self.transforms))
     def __iter__(self):
         return iter(self.ops)
     def __eq__(self, ops):
-        return self.ops == tuple(ops)
+        return self.ops == ops.ops and self.transforms == ops.transforms
     def __getitem__(self, key):
         return self.ops[key]
+    def apply(self, val):
+        for name,*args in self.transforms:
+            fn = self.registry[name]
+            val = fn(val, *args)
+        return val
 
+
+def transform(name):
+    """
+    Transform decorator
+    """
+    def _fn(fn):
+        Dotted.registry[name] = fn
+        return fn
+    return _fn
 
 def build_default(ops):
     cur, *ops = ops
@@ -306,3 +323,6 @@ def removes(ops, node):
     for v in cur.values(node):
         removes(ops, v)
     return node
+
+# default transforms
+from . import transforms

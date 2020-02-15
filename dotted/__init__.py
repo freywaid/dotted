@@ -6,13 +6,14 @@ from . import elements as el
 
 @functools.lru_cache()
 def _parse(ops):
-    return el.Dotted(grammar.template.parseString(ops, parseAll=True).asList())
+    results = grammar.template.parseString(ops, parseAll=True)
+    return el.Dotted(results)
 
 def parse(key):
     """
     Parse dotted notation
-    >>> parse('hello.there')
-    Dotted([hello, there])
+    >>> parse('hello.there|str:"=%s"')
+    Dotted([hello, there], [('str', '=%s')])
     """
     if isinstance(key, el.Dotted):
         return key
@@ -47,25 +48,28 @@ def build(obj, key):
     """
     return el.build(parse(key), obj)
 
-def get(obj, key, default=None, pattern_default=()):
+def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     """
     Get a value specified by the dotted key. If dotted is a pattern,
     return a tuple of all matches
-    >>> d = {'hello': {'there': [1, 2, 3]}}
-    >>> get(d, 'hello.there[1]')
+    >>> d = {'hello': {'there': [1, '2', 3]}}
+    >>> get(d, 'hello.there[1]|int')
     2
     >>> get(d, 'hello.there[1:]')
-    [2, 3]
+    ['2', 3]
     >>> get([{'a': 1}, {'a':2}], '[*].a')
     (1, 2)
     """
     ops = parse(key)
-    found = tuple(el.gets(ops, obj))
+    vals = el.gets(ops, obj)
+    if apply_transforms:
+        vals = ( ops.apply(v) for v in vals )
+    found = tuple(vals)
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
 
-def update(obj, key, val):
+def update(obj, key, val, apply_transforms=True):
     """
     Update obj with all matches to dotted key with val
     >>> d = {'hello': {'there': {'stuff': 1}}}
@@ -74,7 +78,8 @@ def update(obj, key, val):
     >>> update({}, 'a.b.c[]', [2, 3])
     {'a': {'b': {'c': [2, 3]}}}
     """
-    el.updates(parse(key), obj, val)
+    ops = parse(key)
+    el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
     return obj
 
 def remove(obj, key):
@@ -86,6 +91,21 @@ def remove(obj, key):
     """
     el.removes(parse(key), obj)
     return obj
+
+def register(name, fn):
+    """
+    Register transform `name` to call `fn`
+    """
+    el.Dotted.registry[name] = fn
+
+def transform(name):
+    """
+    Transform registry decorator
+    >>> @transform('hello')
+    ... def hello():
+    ...     return 'hello'
+    """
+    return el.transform(name)
 
 if __name__ == '__main__':
     import doctest
