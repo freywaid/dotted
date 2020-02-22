@@ -13,7 +13,7 @@ def transform_str(val, fmt=None, mode=None):
       <dotted>|str:<fmt>:force      <fmt> % val or raises
     """
     try:
-        if not format:
+        if not fmt:
             return str(val)
         return fmt % val
     except TypeError:

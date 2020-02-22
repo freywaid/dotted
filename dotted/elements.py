@@ -109,6 +109,9 @@ class Regex(Pattern):
 #
 #
 class Key(Op):
+    @classmethod
+    def concrete(cls, val):
+        return cls(Word(val))
     @property
     def op(self):
         return self.args[0]
@@ -119,6 +122,8 @@ class Key(Op):
     def operator(self, top=False):
         return str(self) if top else '.' + str(self)
     def keys(self, node):
+        if not isinstance(node, dict):
+            return ()
         matches = ( self.op.match(k) for k in node )
         return ( m.val for m in matches if m )
     def items(self, node):
@@ -137,6 +142,9 @@ class Key(Op):
         if self.is_pattern():
             return {}
         return {self.op.value: None}
+    def match(self, op):
+        m = self.op.match_op(op.op)
+        return op if m else None
     def add(self, node, key, val):
         node[key] = val
         return node
@@ -151,6 +159,9 @@ class Key(Op):
 
 
 class Slot(Key):
+    @classmethod
+    def concrete(cls, val):
+        return cls(Integer(val) if isinstance(val, int) else String(val))
     def __repr__(self):
         return f'[{self.op}]'
     def operator(self, top=False):
@@ -189,6 +200,11 @@ class Slot(Key):
 
 class Slice(Op):
     @classmethod
+    def concrete(cls, val):
+        o = cls()
+        o.args = (val.start, val.stop, val.step)
+        return o
+    @classmethod
     def munge(cls, toks):
         out = []
         while toks:
@@ -206,11 +222,12 @@ class Slice(Op):
     def __repr__(self):
         def s(a):
             return str(a) if a is not None else ''
-        m = []
-        for i in range(3):
-            if not any(self.args[i:]):
-                break
-            m += [s(self.args[i])]
+        if not self.args:
+            return '[]'
+        start, stop, step = self.args
+        m = [s(start), s(stop)]
+        if step is not None:
+            m += [s(stop)]
         return '[' + ':'.join(m) + ']'
     def is_pattern(self):
         return False
@@ -229,6 +246,10 @@ class Slice(Op):
         return (slice(0,1),)
     def default(self):
         return []
+    def match(self, op):
+        if not isinstance(op, Slice):
+            return None
+        return op if self.slice == op.slice else None
     def add(self, node, key, val):
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
@@ -323,6 +344,18 @@ def removes(ops, node):
     for v in cur.values(node):
         removes(ops, v)
     return node
+
+def expands(ops, node):
+    def _expands(ops, node):
+        cur, *ops = ops
+        if not ops:
+            yield from ( (cur.concrete(k),) for k in cur.keys(node) )
+            return
+        for k,v in cur.items(node):
+            for m in _expands(ops, v):
+                yield (cur.concrete(k),) + m
+    return ( Dotted({'ops': r, 'transforms': ops.transforms}) for r \
+            in _expands(ops, node) )
 
 # default transforms
 from . import transforms

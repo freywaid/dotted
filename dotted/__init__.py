@@ -1,6 +1,7 @@
 """
 """
 import functools
+import itertools
 from . import grammar
 from . import elements as el
 
@@ -90,6 +91,55 @@ def remove(obj, key):
     {'hello': {'there': [1, 2]}}
     """
     el.removes(parse(key), obj)
+    return obj
+
+def match(pattern, key, partial=True):
+    """
+    Returns `key` if `pattern` matches; otherwise `None`
+    >>> match('*.there', 'hello.there')
+    'hello.there'
+    >>> match('*', 'hello.there')
+    'hello.there'
+    >>> match('*', 'hello.there', False)
+    """
+    for pop,kop in itertools.zip_longest(parse(pattern), parse(key)):
+        if pop is None:
+            return key if partial else None
+        if kop is None:
+            return None
+        if not pop.match(kop):
+            return None
+    return key
+
+def expand(obj, pattern):
+    """
+    Return all keys that match `pattern` in `obj`
+    >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7}
+    >>> expand(d, '*')
+    ('hello', 'bye')
+    >>> expand(d, '*.*')
+    ('hello.there',)
+    >>> expand(d, '*.*[*]')
+    ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
+    >>> expand(d, '*.*[1:]')
+    ('hello.there[1:]',)
+    """
+    ops = parse(pattern)
+    return tuple(o.assemble() for o in el.expands(ops, obj))
+
+def apply(obj, key):
+    """
+    Update `obj` with transforms at `key`
+    >>> d = {'hello': 7}
+    >>> apply(d, 'hello|str')
+    {'hello': '7'}
+    """
+    for ops in el.expands(parse(key), obj):
+        vals = tuple(el.gets(ops, obj))
+        if not vals:
+            continue
+        val = ops.apply(vals[0])
+        el.updates(ops, obj, val)
     return obj
 
 def register(name, fn):
