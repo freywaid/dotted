@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="dotted-freywaid",
+    name="dotted-notation",
     version="0.0.7",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
