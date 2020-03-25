@@ -67,17 +67,6 @@ class String(Const):
     def __repr__(self):
         return f'{repr(self.value)}'
 
-class Appender(Op):
-    @property
-    def value(self):
-        return '+'
-    def match(self, val):
-        return None
-    def match_op(self, op):
-        return None
-    def __repr__(self):
-        return '+'
-
 class Pattern(Op):
     pass
 
@@ -134,9 +123,11 @@ class Key(Op):
                 pass
     def values(self, node):
         return ( v for _,v in self.items(node) )
+    def is_empty(self, node):
+        return not node
     def default_keys(self):
         if self.is_pattern():
-            return {}
+            return ()
         return (self.op.value,)
     def default(self):
         if self.is_pattern():
@@ -177,8 +168,12 @@ class Slot(Key):
             return (self.op.value,)
         except (KeyError, IndexError):
             return ()
+    def default_keys(self):
+        if self.is_pattern():
+            return ()
+        return (self.op.value,)
     def default(self):
-        if isinstance(self.op, (Integer, Appender)):
+        if isinstance(self.op, Integer):
             return []
         return super().default()
     def add(self, node, key, val):
@@ -186,17 +181,55 @@ class Slot(Key):
             return super().add(node, key, val)
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
-    def update(self, node, val):
-        if not isinstance(self.op, Appender):
-            return super().update(node, val)
-        return self.add(node, len(node), val)
     def remove(self, node):
         if isinstance(node, dict):
-            return super().delete(node)
+            return super().remove(node)
         popped = 0
         for k in list(self.keys(node)):
             node.pop(k - popped)
             popped += 1
+
+
+class SlotAppend(Op):
+    @classmethod
+    def concrete(cls, val):
+        return cls(val)
+    def is_pattern(self):
+        return False
+    def __repr__(self):
+        return '[+]'
+    def operator(self, top=False):
+        return str(self)
+    def default(self):
+        return []
+    def default_keys(self):
+        return ('+',)
+    def keys(self, node):
+        return (-1,)
+    def items(self, node):
+        for k in self.keys(node):
+            try:
+                yield k, node[k]
+            except TypeError:
+                pass
+    def values(self, node):
+        return ( v for _,v in self.items(node) )
+    def is_empty(self, node):
+        return True
+    def match(self, op):
+        return None
+    def remove(self, node):
+        pass
+    def add(self, node, key, val):
+        if key != '+':
+            node[key] = val
+        else:
+            node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        return node
+    def update(self, node, val):
+        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        return node
+
 
 class Slice(Op):
     @classmethod
@@ -242,6 +275,8 @@ class Slice(Op):
         return ( (k,node[k]) for k in self.keys(node) )
     def values(self, node):
         return ( v for _,v in self.items(node) )
+    def is_empty(self, node):
+        return not node[self.slice(node)]
     def default_keys(self):
         return (slice(0,1),)
     def default(self):
@@ -326,15 +361,17 @@ def gets(ops, node):
         yield from gets(ops, v)
 
 def updates(ops, node, val):
-    cur, *ops = ops
-    if not ops:
-        return cur.update(node, val)
-    values = tuple(cur.values(node))
-    if not values:
-        node = cur.update(node, build_default(ops))
-    for v in cur.values(node):
-        updates(ops, v, val)
-    return node
+    def _updates(ops, node, val, has_defaults=False):
+        cur, *ops = ops
+        if not ops:
+            return cur.update(node, val)
+        if cur.is_empty(node) and not has_defaults:
+            node = cur.update(node, build_default(ops))
+            has_defaults = True
+        for v in cur.values(node):
+            _updates(ops, v, val, has_defaults)
+        return node
+    return _updates(ops, node, val)
 
 def removes(ops, node):
     cur, *ops = ops

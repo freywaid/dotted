@@ -18,20 +18,20 @@ quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 
 # atomic ops
 integer = num.copy().setParseAction(el.Integer)
-word = name.copy().setParseAction(el.Word)
+word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)
-appender = endof.copy().setParseAction(el.Appender)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)
 regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).setParseAction(el.Regex)
 slice = pp.Optional(num | endof) + ':' + pp.Optional(num | endof) \
          + pp.Optional(':') + pp.Optional(num | endof)
 
-key = (word | wildcard | regex).setParseAction(el.Key)
-slot = (lb + (integer | string | wildcard | appender | regex) + rb).setParseAction(el.Slot)
+key = (word | string | wildcard | regex).setParseAction(el.Key)
+slot = (lb + (integer | string | wildcard | regex) + rb).setParseAction(el.Slot)
+slotappend = (lb + endof + rb).setParseAction(el.SlotAppend)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
-multi = pp.OneOrMore((dot + key) | slot | slotslice)
-dotted = (key | slot | slotslice) + pp.ZeroOrMore(multi)
+multi = pp.OneOrMore((dot + key) | slot | slotappend | slotslice)
+dotted = (key | slot | slotappend | slotslice) + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.Regex(r'[^|:]*')
 transform = pp.Group(name.copy() + pp.ZeroOrMore(colon + targ))
