@@ -124,7 +124,7 @@ class Key(Op):
     def values(self, node):
         return ( v for _,v in self.items(node) )
     def is_empty(self, node):
-        return not node
+        return not tuple(self.keys(node))
     def default_keys(self):
         if self.is_pattern():
             return ()
