@@ -40,8 +40,8 @@ def transform_int(val, base=None, mode=None):
 def transform_float(val, mode=None):
     """
     Transform to a float
-        <dotted>|float          float(val)
-        <dotted>|float:force    float(val) or raises
+        <dotted>|float              float(val)
+        <dotted>|float:force        float(val) or raises
     """
     try:
         return float(val)
@@ -54,6 +54,8 @@ def transform_float(val, mode=None):
 def transform_decimal(val, mode=None):
     """
     Transform to a decimal
+        <dotted>|decimal            Decimal(val)
+        <dotted>|decimal:force      Decimal(val) or raises
     """
     try:
         return decimal.Decimal(val)
@@ -66,8 +68,8 @@ def transform_decimal(val, mode=None):
 def transform_none(val, *none_vals):
     """
     Transform to None
-       <dotted>|none            None if not val else val
-       <dotted>|none::hello     None if val in ('', 'hello') else val
+       <dotted>|none                None if not val else val
+       <dotted>|none::hello         None if val in ('', 'hello') else val
     """
     if not none_vals:
         return None if not val else val
@@ -77,9 +79,9 @@ def transform_none(val, *none_vals):
 def transform_strip(val, chars=None, mode=None):
     """
     Strip val of chars
-        <dotted>|strip          val.strip()
-        <dotted>|strip:abc      val.strip('abc')
-        <dotted>|strip::force   val.strip() or raises
+        <dotted>|strip              val.strip()
+        <dotted>|strip:abc          val.strip('abc')
+        <dotted>|strip::force       val.strip() or raises
     """
     try:
         return val.strip(chars or None)
@@ -92,8 +94,8 @@ def transform_strip(val, chars=None, mode=None):
 def transform_len(val, default=None):
     """
     Calculate length
-        <dotted>|len            len(val) or raises
-        <dotted>|len:<default>  len(val) or <default>
+        <dotted>|len                len(val) or raises
+        <dotted>|len:<default>      len(val) or <default>
     """
     try:
         return len(val)
@@ -107,6 +109,8 @@ def transform_len(val, default=None):
 def transform_lowercase(val, mode=None):
     """
     Convert to lowercase
+        <dotted>|lowercase          string to lowercase
+        <dotted>|lowercase:force    string to lowercase or raises
     """
     try:
         return val.lower()
@@ -119,6 +123,8 @@ def transform_lowercase(val, mode=None):
 def transform_uppercase(val, mode=None):
     """
     Convert to uppercase
+        <dotted>|uppercase          string to uppercase
+        <dotted>|uppercase:force    string to uppercase or raises
     """
     try:
         return val.upper()
@@ -131,5 +137,6 @@ def transform_uppercase(val, mode=None):
 def transform_add(val, rhs):
     """
     Add rhs to val
+        <dotted>|add:<rhs>          add <rhs> to value
     """
     return val + rhs

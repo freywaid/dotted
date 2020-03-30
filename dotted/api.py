@@ -150,15 +150,22 @@ def apply(obj, key):
 
 def register(name, fn):
     """
-    Register transform `name` to call `fn`
+    Register a transform at `name` to call `fn`
     """
-    el.Dotted.registry[name] = fn
+    return el.Dotted.register(name, fn)
+
 
 def transform(name):
     """
-    Transform registry decorator
+    Decorator form of `register`
+
     >>> @transform('hello')
     ... def hello():
     ...     return 'hello'
     """
     return el.transform(name)
+
+def registry():
+    return el.Dotted._registry
+
+registry.__doc__ = el.Dotted.registry.__doc__

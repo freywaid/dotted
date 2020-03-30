@@ -298,7 +298,18 @@ class Slice(Op):
 #
 #
 class Dotted:
-    registry = {}
+    _registry = {}
+
+    # this is a placeholder for dynamic docstring only only
+    @property
+    def registry(cls):
+        pass
+
+    @classmethod
+    def register(cls, name, fn):
+        cls._registry[name] = fn
+        cls.registry.__doc__ = (cls.registry.__doc__ or '') + f'\n{name}\t{fn.__doc__}'
+
     def __init__(self, results):
         self.ops = tuple(results['ops'])
         self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
@@ -316,7 +327,7 @@ class Dotted:
         return self.ops[key]
     def apply(self, val):
         for name,*args in self.transforms:
-            fn = self.registry[name]
+            fn = self._registry[name]
             val = fn(val, *args)
         return val
 
@@ -326,7 +337,7 @@ def transform(name):
     Transform decorator
     """
     def _fn(fn):
-        Dotted.registry[name] = fn
+        Dotted.register(name, fn)
         return fn
     return _fn
 
