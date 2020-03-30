@@ -300,7 +300,7 @@ class Slice(Op):
 class Dotted:
     _registry = {}
 
-    # this is a placeholder for dynamic docstring only only
+    # this is a placeholder for dynamic docstring generation only
     @property
     def registry(cls):
         pass
