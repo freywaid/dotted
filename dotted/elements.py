@@ -135,7 +135,7 @@ class Key(Op):
         return {self.op.value: None}
     def match(self, op):
         m = self.op.match_op(op.op)
-        return op if m else None
+        return m
     def add(self, node, key, val):
         node[key] = val
         return node
@@ -284,7 +284,7 @@ class Slice(Op):
     def match(self, op):
         if not isinstance(op, Slice):
             return None
-        return op if self.slice == op.slice else None
+        return Match(op.slice) if self.slice == op.slice else None
     def add(self, node, key, val):
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
@@ -341,6 +341,7 @@ def transform(name):
         return fn
     return _fn
 
+
 def build_default(ops):
     cur, *ops = ops
     built = cur.default()
@@ -349,6 +350,7 @@ def build_default(ops):
     for k in cur.default_keys():
         built = cur.add(built, k, build_default(ops))
     return built
+
 
 def build(ops, node, deepcopy=True):
     cur, *ops = ops
@@ -362,6 +364,7 @@ def build(ops, node, deepcopy=True):
         built = build_default([cur]+ops)
     return built
 
+
 def gets(ops, node):
     cur, *ops = ops
     values = cur.values(node)
@@ -370,6 +373,7 @@ def gets(ops, node):
         return
     for v in values:
         yield from gets(ops, v)
+
 
 def updates(ops, node, val):
     def _updates(ops, node, val, has_defaults=False):
@@ -384,6 +388,7 @@ def updates(ops, node, val):
         return node
     return _updates(ops, node, val)
 
+
 def removes(ops, node):
     cur, *ops = ops
     if not ops:
@@ -392,6 +397,7 @@ def removes(ops, node):
     for v in cur.values(node):
         removes(ops, v)
     return node
+
 
 def expands(ops, node):
     def _expands(ops, node):

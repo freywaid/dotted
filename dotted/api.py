@@ -6,10 +6,12 @@ import itertools
 from . import grammar
 from . import elements as el
 
+
 @functools.lru_cache()
 def _parse(ops):
     results = grammar.template.parseString(ops, parseAll=True)
     return el.Dotted(results)
+
 
 def parse(key):
     """
@@ -21,6 +23,7 @@ def parse(key):
         return key
     return _parse(key)
 
+
 @functools.lru_cache()
 def _is_pattern(ops):
     if not ops:
@@ -28,6 +31,7 @@ def _is_pattern(ops):
     if ops[0].is_pattern():
         return True
     return _is_pattern(ops[1:])
+
 
 def is_pattern(key):
     """
@@ -41,6 +45,7 @@ def is_pattern(key):
         return _is_pattern(key)
     return _is_pattern(parse(key))
 
+
 def build(obj, key):
     """
     Build a subset/default obj based on dotted
@@ -49,6 +54,7 @@ def build(obj, key):
     >>> # build({}, 'a.b.c[:2].d')
     """
     return el.build(parse(key), obj)
+
 
 def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     """
@@ -71,6 +77,7 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
         return found[0] if found else default
     return found if found else pattern_default
 
+
 def update(obj, key, val, apply_transforms=True):
     """
     Update obj with all matches to dotted key with val
@@ -89,6 +96,7 @@ def update(obj, key, val, apply_transforms=True):
     el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
     return obj
 
+
 def remove(obj, key):
     """
     Remove all matches to dotted key from obj
@@ -99,23 +107,34 @@ def remove(obj, key):
     el.removes(parse(key), obj)
     return obj
 
-def match(pattern, key, partial=True):
+
+def match(pattern, key, groups=False, partial=True):
     """
     Returns `key` if `pattern` matches; otherwise `None`
     >>> match('*.there', 'hello.there')
     'hello.there'
     >>> match('*', 'hello.there')
     'hello.there'
-    >>> match('*', 'hello.there', False)
+    >>> match('*', 'hello.there', partial=False)
+    >>> match('*', 'hello.there', groups=True)
+    ('hello.there', ('hello',))
     """
+    _matches = []
     for pop,kop in itertools.zip_longest(parse(pattern), parse(key)):
         if pop is None:
-            return key if partial else None
+            break
         if kop is None:
             return None
-        if not pop.match(kop):
+        m = pop.match(kop)
+        if not m:
             return None
-    return key
+        _matches.append(m.val)
+    if pop is None and not partial:
+        return None
+    if not groups:
+        return key
+    return key, tuple(_matches)
+
 
 def expand(obj, pattern):
     """
@@ -133,6 +152,7 @@ def expand(obj, pattern):
     ops = parse(pattern)
     return tuple(o.assemble() for o in el.expands(ops, obj))
 
+
 def apply(obj, key):
     """
     Update `obj` with transforms at `key`
@@ -148,11 +168,13 @@ def apply(obj, key):
         el.updates(ops, obj, val)
     return obj
 
+
 def register(name, fn):
     """
     Register a transform at `name` to call `fn`
     """
     return el.Dotted.register(name, fn)
+
 
 
 def transform(name):
@@ -164,6 +186,7 @@ def transform(name):
     ...     return 'hello'
     """
     return el.transform(name)
+
 
 def registry():
     return el.Dotted._registry
