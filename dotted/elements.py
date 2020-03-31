@@ -297,18 +297,19 @@ class Slice(Op):
 #
 #
 #
+class rdoc(str):
+    def expandtabs(*args, **kwargs):
+        return '\n'.join(f'{name}\t{fn.__doc__}' for name,fn in Dotted._registry.items())
+
 class Dotted:
     _registry = {}
 
-    # this is a placeholder for dynamic docstring generation only
-    @property
-    def registry(cls):
+    def registry(self):
         pass
 
     @classmethod
     def register(cls, name, fn):
         cls._registry[name] = fn
-        cls.registry.__doc__ = (cls.registry.__doc__ or '') + f'\n{name}\t{fn.__doc__}'
 
     def __init__(self, results):
         self.ops = tuple(results['ops'])
@@ -330,6 +331,8 @@ class Dotted:
             fn = self._registry[name]
             val = fn(val, *args)
         return val
+
+Dotted.registry.__doc__ = rdoc()
 
 
 def transform(name):
