@@ -299,13 +299,14 @@ class Slice(Op):
 #
 class rdoc(str):
     def expandtabs(*args, **kwargs):
-        return '\n'.join(f'{name}\t{fn.__doc__}' for name,fn in Dotted._registry.items())
+        title = 'Supported transforms\n\n'
+        return title + '\n'.join(f'{name}\t{fn.__doc__ or ""}' for name,fn in Dotted._registry.items())
 
 class Dotted:
     _registry = {}
 
     def registry(self):
-        pass
+        return self._registry
 
     @classmethod
     def register(cls, name, fn):
