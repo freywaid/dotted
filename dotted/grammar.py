@@ -12,11 +12,12 @@ colon = pp.Suppress(':')
 pipe = pp.Suppress('|')
 slash = pp.Suppress('/')
 num = ppc.signed_integer
-endof = pp.Literal('+')
 name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 
 # atomic ops
+endof = pp.Literal('+').setParseAction(el.Appender)
+endof_if = pp.Literal('+?').setParseAction(el.AppenderIf)
 integer = num.copy().setParseAction(el.Integer)
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)
@@ -27,7 +28,7 @@ slice = pp.Optional(num | endof) + ':' + pp.Optional(num | endof) \
 
 key = (word | string | wildcard | regex).setParseAction(el.Key)
 slot = (lb + (integer | string | wildcard | regex) + rb).setParseAction(el.Slot)
-slotappend = (lb + endof + rb).setParseAction(el.SlotAppend)
+slotappend = (lb + (endof_if | endof) + rb).setParseAction(el.SlotAppend)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
 multi = pp.OneOrMore((dot + key) | slot | slotappend | slotslice)

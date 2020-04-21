@@ -67,6 +67,14 @@ class String(Const):
     def __repr__(self):
         return f'{repr(self.value)}'
 
+class Appender(Const):
+    def __repr__(self):
+        return '+'
+
+class AppenderIf(Const):
+    def __repr__(self):
+        return '+?'
+
 class Pattern(Op):
     pass
 
@@ -93,6 +101,7 @@ class Regex(Pattern):
         return self.match(op.value)
     def __repr__(self):
         return f'/{self.args[0]}/'
+
 
 #
 #
@@ -190,20 +199,14 @@ class Slot(Key):
             popped += 1
 
 
-class SlotAppend(Op):
+class SlotAppend(Slot):
     @classmethod
     def concrete(cls, val):
         return cls(val)
     def is_pattern(self):
         return False
-    def __repr__(self):
-        return '[+]'
-    def operator(self, top=False):
-        return str(self)
     def default(self):
         return []
-    def default_keys(self):
-        return ('+',)
     def keys(self, node):
         return (-1,)
     def items(self, node):
@@ -221,12 +224,17 @@ class SlotAppend(Op):
     def remove(self, node):
         pass
     def add(self, node, key, val):
-        if key != '+':
-            node[key] = val
-        else:
+        if key == '+':
             node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        elif key == '+?':
+            if val not in node:
+                node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+        else:
+            node[key] = val
         return node
     def update(self, node, val):
+        if isinstance(self.op, AppenderIf) and val in node:
+            return node
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
 

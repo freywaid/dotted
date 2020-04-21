@@ -22,3 +22,26 @@ def test_appender_nested():
 def test_appender_embedded():
     m = dotted.update({'hello': {'there': 7}}, 'hello.list[+]', 9)
     assert m == {'hello': {'there': 7, 'list': [9]}}
+
+
+def test_appender_match():
+    m = dotted.match('hello.there[*]', 'hello.there[+]')
+    assert m == 'hello.there[+]'
+
+
+def test_appender_if_flat():
+    d = {}
+    m = dotted.update(d, 'hello.there[+?]', 9)
+    assert m == {'hello': {'there': [9]}}
+
+    m = dotted.update(d, 'hello.there[+?]', 9)
+    assert m == {'hello': {'there': [9]}}
+
+
+def test_appender_if_nested():
+    d = {}
+    m = dotted.update(d, 'hello[+?].name', 'Hello')
+    assert m == {'hello': [{'name': 'Hello'}]}
+
+    m = dotted.update(d, 'hello[+?].name', 'Hello')
+    assert m == {'hello': [{'name': 'Hello'}]}
