@@ -40,8 +40,9 @@ class NOP(metaclass=MetaNOP):
     def match(cls, val):
         return None
     @classmethod
-    def match_op(cls, op):
+    def match_op(cls, op, specials=False):
         return None
+
 
 class Const(Op):
     @property
@@ -49,7 +50,7 @@ class Const(Op):
         return self.args[0]
     def match(self, val):
         return Match(val) if self.value == val else None
-    def match_op(self, op):
+    def match_op(self, op, specials=False):
         if not isinstance(op, Const):
             return None
         return self.match(op.value)
@@ -69,13 +70,6 @@ class String(Const):
     def __repr__(self):
         return f'{repr(self.value)}'
 
-class Appender(Const):
-    def __repr__(self):
-        return '+'
-
-class AppenderIf(Const):
-    def __repr__(self):
-        return '+?'
 
 class Pattern(Op):
     pass
@@ -83,10 +77,10 @@ class Pattern(Op):
 class Wildcard(Pattern):
     def match(self, val):
         return Match(val)
-    def match_op(self, op):
-        if not isinstance(op, Const):
-            return None
-        return self.match(op.value)
+    def match_op(self, op, specials=False):
+        if isinstance(op, (Const, Special) if specials else Const):
+            return self.match(op.value)
+        return None
     def __repr__(self):
         return f'*'
 
@@ -97,12 +91,32 @@ class Regex(Pattern):
     def match(self, val):
         m = self.pattern.fullmatch(val)
         return Match(m[0]) if m else None
-    def match_op(self, op):
-        if not isinstance(op, Const):
-            return None
-        return self.match(op.value)
+    def match_op(self, op, specials=False):
+        if isinstance(op, (Const, Special) if specials else Const):
+            return self.match(op.value)
+        return None
     def __repr__(self):
         return f'/{self.args[0]}/'
+
+
+class Special(Op):
+    @property
+    def value(self):
+        return self.args[0]
+    def match(self, val):
+        return Match(val) if self.value == val else None
+    def match_op(self, op, specials=False):
+        if isinstance(op, Special):
+            return self.match(op.value)
+        return None
+
+class Appender(Special):
+    def __repr__(self):
+        return '+'
+
+class AppenderIf(Special):
+    def __repr__(self):
+        return '+?'
 
 
 #
@@ -144,8 +158,8 @@ class Key(Op):
         if self.is_pattern():
             return {}
         return {self.op.value: None}
-    def match(self, op):
-        m = self.op.match_op(op.op)
+    def match(self, op, specials=False):
+        m = self.op.match_op(op.op, specials)
         return m
     def add(self, node, key, val):
         node[key] = val
@@ -201,23 +215,12 @@ class Slot(Key):
             popped += 1
 
 
-class SlotAppend(Op):
+class SlotAppend(Slot):
     @classmethod
     def concrete(cls, val):
         return cls(val)
-    def is_pattern(self):
-        return False
-    @property
-    def op(self):
-        return None
-    def __repr__(self):
-        return self.args[0]
-    def operator(self, top=False):
-        return str(self)
     def default(self):
-         return []
-    def default_keys(self):
-        return ('+',)
+        return []
     def keys(self, node):
         return (-1,)
     def items(self, node):
@@ -230,8 +233,6 @@ class SlotAppend(Op):
         return ( v for _,v in self.items(node) )
     def is_empty(self, node):
         return True
-    def match(self, op):
-        return None
     def remove(self, node):
         pass
     def add(self, node, key, val):
@@ -241,7 +242,7 @@ class SlotAppend(Op):
             node[key] = val
         return node
     def update(self, node, val):
-        if self.args[0] == '+?' and val in node:
+        if isinstance(self.op, AppenderIf) and val in node:
             return node
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
@@ -297,7 +298,7 @@ class Slice(Op):
         return (slice(0,1),)
     def default(self):
         return []
-    def match(self, op):
+    def match(self, op, specials=False):
         if not isinstance(op, Slice):
             return None
         return Match(op.slice) if self.slice == op.slice else None

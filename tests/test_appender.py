@@ -29,11 +29,6 @@ def test_appender_embedded():
     assert m == {'hello': {'there': 7, 'list': [9]}}
 
 
-def test_appender_no_match():
-    m = dotted.match('hello.there[*]', 'hello.there[+]')
-    assert m == None
-
-
 def test_appender_flat_if():
     m = dotted.update({}, 'hello.there[+?]', 9)
     assert m == {'hello': {'there': [9]}}
@@ -52,4 +47,4 @@ def test_appender_nested_if():
 
 def test_appender_match():
     r = dotted.match('[*]', '[+]')
-    assert r is None
+    assert r == '[+]'

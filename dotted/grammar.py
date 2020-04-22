@@ -14,10 +14,10 @@ slash = pp.Suppress('/')
 num = ppc.signed_integer
 name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
-endof = pp.Literal('+')
-endof_if = pp.Literal('+?')
 
 # atomic ops
+endof = pp.Literal('+').setParseAction(el.Appender)
+endof_if = pp.Literal('+?').setParseAction(el.AppenderIf)
 integer = num.copy().setParseAction(el.Integer)
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)

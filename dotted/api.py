@@ -124,7 +124,7 @@ def match(pattern, key, groups=False, partial=True):
             break
         if kop is None:
             return None
-        m = pop.match(kop)
+        m = pop.match(kop, specials=True)
         if not m:
             return None
         _matches.append(m.val)
