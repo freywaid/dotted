@@ -93,8 +93,7 @@ def update(obj, key, val, apply_transforms=True):
     {'queries': [{'name': 'hello'}, 'bye']}
     """
     ops = parse(key)
-    el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
-    return obj
+    return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
 def remove(obj, key):
@@ -165,7 +164,7 @@ def apply(obj, key):
         if not vals:
             continue
         val = ops.apply(vals[0])
-        el.updates(ops, obj, val)
+        obj = el.updates(ops, obj, val)
     return obj
 
 

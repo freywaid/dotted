@@ -2,20 +2,25 @@ import dotted
 
 
 def test_appender_flat():
-    d = {}
-    m = dotted.update(d, 'hello.there[+]', 9)
+    m = dotted.update({}, 'hello.there[+]', 9)
     assert m == {'hello': {'there': [9]}}
 
-    m = dotted.update(d, 'hello.there[+]', 10)
+    m = dotted.update(m, 'hello.there[+]', 10)
     assert m == {'hello': {'there': [9, 10]}}
 
 
-def test_appender_nested():
-    d = {}
-    m = dotted.update(d, 'hello[+].name', 'Hello')
+def test_appender_flat_str():
+    m = dotted.update('', '[+]', '1')
+    assert m == '1'
+
+
+def test_appender_nested_from_empty():
+    m = dotted.update({}, 'hello[+].name', 'Hello')
     assert m == {'hello': [{'name': 'Hello'}]}
 
-    m = dotted.update(d, 'hello[+].name', 'Bye')
+
+def test_appender_nested_from_non_empty():
+    m = dotted.update({'hello': [{'name': 'Hello'}]}, 'hello[+].name', 'Bye')
     assert m == {'hello': [{'name': 'Hello'}, {'name': 'Bye'}]}
 
 
@@ -24,24 +29,27 @@ def test_appender_embedded():
     assert m == {'hello': {'there': 7, 'list': [9]}}
 
 
-def test_appender_match():
+def test_appender_no_match():
     m = dotted.match('hello.there[*]', 'hello.there[+]')
-    assert m == 'hello.there[+]'
+    assert m == None
 
 
-def test_appender_if_flat():
-    d = {}
-    m = dotted.update(d, 'hello.there[+?]', 9)
+def test_appender_flat_if():
+    m = dotted.update({}, 'hello.there[+?]', 9)
     assert m == {'hello': {'there': [9]}}
 
-    m = dotted.update(d, 'hello.there[+?]', 9)
+    m = dotted.update(m, 'hello.there[+?]', 9)
     assert m == {'hello': {'there': [9]}}
 
 
-def test_appender_if_nested():
-    d = {}
-    m = dotted.update(d, 'hello[+?].name', 'Hello')
+def test_appender_nested_if():
+    m = dotted.update({}, 'hello[+?].name', 'Hello')
     assert m == {'hello': [{'name': 'Hello'}]}
 
-    m = dotted.update(d, 'hello[+?].name', 'Hello')
+    m = dotted.update(m, 'hello[+?].name', 'Hello')
     assert m == {'hello': [{'name': 'Hello'}]}
+
+
+def test_appender_match():
+    r = dotted.match('[*]', '[+]')
+    assert r is None

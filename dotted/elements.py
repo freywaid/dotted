@@ -27,6 +27,8 @@ class Op:
         return hash(self.args)
     def __eq__(self, op):
         return self.__class__ == op.__class__ and self.args == op.args
+    def scrub(self, node):
+        return node
 
 
 class MetaNOP(type):
@@ -199,14 +201,23 @@ class Slot(Key):
             popped += 1
 
 
-class SlotAppend(Slot):
+class SlotAppend(Op):
     @classmethod
     def concrete(cls, val):
         return cls(val)
     def is_pattern(self):
         return False
+    @property
+    def op(self):
+        return None
+    def __repr__(self):
+        return self.args[0]
+    def operator(self, top=False):
+        return str(self)
     def default(self):
-        return []
+         return []
+    def default_keys(self):
+        return ('+',)
     def keys(self, node):
         return (-1,)
     def items(self, node):
@@ -224,16 +235,13 @@ class SlotAppend(Slot):
     def remove(self, node):
         pass
     def add(self, node, key, val):
-        if key == '+':
+        if '+' in key:
             node += val if isinstance(node, (str, bytes)) else node.__class__([val])
-        elif key == '+?':
-            if val not in node:
-                node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         else:
             node[key] = val
         return node
     def update(self, node, val):
-        if isinstance(self.op, AppenderIf) and val in node:
+        if self.args[0] == '+?' and val in node:
             return node
         node += val if isinstance(node, (str, bytes)) else node.__class__([val])
         return node
@@ -387,18 +395,16 @@ def gets(ops, node):
         yield from gets(ops, v)
 
 
-def updates(ops, node, val):
-    def _updates(ops, node, val, has_defaults=False):
-        cur, *ops = ops
-        if not ops:
-            return cur.update(node, val)
-        if cur.is_empty(node) and not has_defaults:
-            node = cur.update(node, build_default(ops))
-            has_defaults = True
-        for v in cur.values(node):
-            _updates(ops, v, val, has_defaults)
-        return node
-    return _updates(ops, node, val)
+def updates(ops, node, val, has_defaults=False):
+    cur, *ops = ops
+    if not ops:
+        return cur.update(node, val)
+    if cur.is_empty(node) and not has_defaults:
+        built = updates(ops, build_default(ops), val, True)
+        return cur.update(node, built)
+    for v in cur.values(node):
+        updates(ops, v, val, has_defaults)
+    return node
 
 
 def removes(ops, node):
