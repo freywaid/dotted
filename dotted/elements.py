@@ -7,6 +7,9 @@ import pyparsing as pp
 import re
 
 
+_marker = object()
+
+
 class Match:
     def __init__(self, val):
         self.val = val
@@ -118,10 +121,13 @@ class AppenderIf(Special):
     def __repr__(self):
         return '+?'
 
+#
+#
+#
+def itemof(node, val):
+    return val if isinstance(node, (str, bytes)) else node.__class__([val])
 
-#
-#
-#
+
 class Key(Op):
     @classmethod
     def concrete(cls, val):
@@ -150,28 +156,37 @@ class Key(Op):
         return ( v for _,v in self.items(node) )
     def is_empty(self, node):
         return not tuple(self.keys(node))
-    def default_keys(self):
-        if self.is_pattern():
-            return ()
-        return (self.op.value,)
     def default(self):
         if self.is_pattern():
             return {}
         return {self.op.value: None}
+
     def match(self, op, specials=False):
         m = self.op.match_op(op.op, specials)
         return m
-    def add(self, node, key, val):
+
+    def update(self, node, key, val):
         node[key] = val
         return node
-    def update(self, node, val):
-        keys = self.keys(node) if self.is_pattern() else self.default_keys()
-        for k in keys:
-            node[k] = val
+    def upsert(self, node, val):
+        if not self.is_pattern():
+            return self.update(node, self.op.value, val)
+        for k in self.keys(node):
+            node = self.update(node, k, val)
         return node
-    def remove(self, node):
+
+    def pop(self, node, key):
+        node.pop(key, None)
+        return node
+    def remove(self, node, val):
+        for k,v in self.items(node):
+            if v == val:
+                return self.pop(node, k)
+        return node
+    def clear(self, node):
         for k in list(self.keys(node)):
-            del node[k]
+            self.pop(node, k)
+        return node
 
 
 class Slot(Key):
@@ -193,29 +208,63 @@ class Slot(Key):
             return (self.op.value,)
         except (KeyError, IndexError):
             return ()
-    def default_keys(self):
-        if self.is_pattern():
-            return ()
-        return (self.op.value,)
     def default(self):
         if isinstance(self.op, Integer):
             return []
         return super().default()
-    def add(self, node, key, val):
+
+    def update(self, node, key, val):
         if isinstance(node, dict):
-            return super().add(node, key, val)
-        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+            return super().update(node, key, val)
+        if len(node) <= key:
+            node += itemof(node, val)
+            return node
+        if node[key] == val:
+            return node
+        try:
+            node[key] = val
+        except TypeError:
+            node = node[:key] + itemof(node, val) + node[key+1:]
         return node
-    def remove(self, node):
+    def upsert(self, node, val):
+        return super().upsert(node, val)
+
+    def pop(self, node, key):
         if isinstance(node, dict):
-            return super().remove(node)
-        popped = 0
-        for k in list(self.keys(node)):
-            node.pop(k - popped)
-            popped += 1
+            return super().pop(node, key)
+        if hasattr(node, 'pop'):
+            node.pop(key)
+            return node
+        return node.__class__(v for i,v in enumerated(node) if i != key)
+    def remove(self, node, val):
+        if isinstance(node, dict):
+            return super().remove(node, val)
+        if hasattr(node, 'remove'):
+            try:
+                node.remove(val)
+            except (ValueError, KeyError):
+                pass
+            return node
+        try:
+            idx = node.index(val)
+            node = node[:idx] + node[idx+1:]
+        except ValueError:
+            pass
+        return node
+    def clear(self, node):
+        if isinstance(node, dict):
+            return super().clear(node)
+        if hasattr(node, 'pop'):
+            popped = 0
+            for k in list(self.keys(node)):
+                node.pop(k - popped)
+                popped += 1
+            return node
+        keys = tuple(self.keys(node))
+        return node.__class__(v for i,v in enumerated(node) if i not in keys)
 
 
-class SlotAppend(Slot):
+class SlotSpecial(Slot):
     @classmethod
     def concrete(cls, val):
         return cls(val)
@@ -233,18 +282,24 @@ class SlotAppend(Slot):
         return ( v for _,v in self.items(node) )
     def is_empty(self, node):
         return True
-    def remove(self, node):
-        pass
-    def add(self, node, key, val):
-        if '+' in key:
-            node += val if isinstance(node, (str, bytes)) else node.__class__([val])
-        else:
-            node[key] = val
+
+    def update(self, node, key, val):
+        if not isinstance(key, str):
+            return super().update(node, key, val)
+        if key == '+' or (key == '+?' and val not in node):
+            node += itemof(node, val)
         return node
-    def update(self, node, val):
-        if isinstance(self.op, AppenderIf) and val in node:
-            return node
-        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+    def upsert(self, node, val):
+        return self.update(node, self.op.value, val)
+
+
+    def pop(self, node, key):
+        if isinstance(key, str):
+            return None
+        return node
+    def remove(self, node, val):
+        return node
+    def clear(self, node):
         return node
 
 
@@ -294,22 +349,58 @@ class Slice(Op):
         return ( v for _,v in self.items(node) )
     def is_empty(self, node):
         return not node[self.slice(node)]
-    def default_keys(self):
-        return (slice(0,1),)
     def default(self):
         return []
+
     def match(self, op, specials=False):
         if not isinstance(op, Slice):
             return None
         return Match(op.slice) if self.slice == op.slice else None
-    def add(self, node, key, val):
-        node += val if isinstance(node, (str, bytes)) else node.__class__([val])
+
+    def update(self, node, key, val):
+        if node[key] == val:
+            return node
+        try:
+            node[key] = val
+            return node
+        except TypeError:
+            pass
+        r = range(key.start, key.stop, key.step)
+        idx = 0
+        out = []
+        for i,v in enumerate(node):
+            if i not in range:
+                out.append(v)
+                continue
+            if idx < len(val):
+                out.append(val[idx])
+                idx += 1
+        if hasattr(node, 'join'):
+            return node.__class__().join(out)
+        return node.__class__(out)
+    def upsert(self, node, val):
+        return self.update(node, self.slice(node), val)
+
+
+    def pop(self, node, key):
+        try:
+            del node[key]
+            return node
+        except TypeError:
+            pass
+        r = range(key.start, key.stop, key.step)
+        iterable = ( v for i,v in enumerate(node) if i not in r )
+        if hasattr(node, 'join'):
+            return node.__class__().join(iterable)
+        return node.__class__(iterable)
+    def remove(self, node, val):
+        key = self.slice(node)
+        if node[key] == val:
+            return self.pop(self, node, key)
         return node
-    def update(self, node, val):
-        node[self.slice(node)] = val
-        return node
-    def remove(self, node):
-        del node[self.slice(node)]
+    def clear(self, node):
+        return self.pop(self, node, self.slice(node))
+
 
 #
 #
@@ -368,9 +459,7 @@ def build_default(ops):
     built = cur.default()
     if not ops:
         return built
-    for k in cur.default_keys():
-        built = cur.add(built, k, build_default(ops))
-    return built
+    return cur.upsert(built, build_default(ops))
 
 
 def build(ops, node, deepcopy=True):
@@ -378,12 +467,10 @@ def build(ops, node, deepcopy=True):
     built = node.__class__()
     for k,v in cur.items(node):
         if not ops:
-            built = cur.add(built, k, copy.deepcopy(v) if deepcopy else v)
+            built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
         else:
-            built = cur.add(built, k, build(ops, v, deepcopy=deepcopy))
-    if not built:
-        built = build_default([cur]+ops)
-    return built
+            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy))
+    return built or build_default([cur]+ops)
 
 
 def gets(ops, node):
@@ -399,22 +486,21 @@ def gets(ops, node):
 def updates(ops, node, val, has_defaults=False):
     cur, *ops = ops
     if not ops:
-        return cur.update(node, val)
+        return cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
         built = updates(ops, build_default(ops), val, True)
-        return cur.update(node, built)
-    for v in cur.values(node):
-        updates(ops, v, val, has_defaults)
+        return cur.upsert(node, built)
+    for k,v in cur.items(node):
+        node = cur.update(node, k, updates(ops, v, val, has_defaults))
     return node
 
 
-def removes(ops, node):
+def removes(ops, node, val=_marker):
     cur, *ops = ops
     if not ops:
-        cur.remove(node)
-        return node
-    for v in cur.values(node):
-        removes(ops, v)
+        return cur.clear(node) if val is _marker else cur.remove(node, val)
+    for k,v in cur.items(node):
+        node = cur.update(node, k, removes(ops, v, val))
     return node
 
 

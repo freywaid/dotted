@@ -14,25 +14,26 @@ slash = pp.Suppress('/')
 num = ppc.signed_integer
 name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
+plus = pp.Literal('+')
 
 # atomic ops
-endof = pp.Literal('+').setParseAction(el.Appender)
-endof_if = pp.Literal('+?').setParseAction(el.AppenderIf)
+appender = pp.Literal('+').setParseAction(el.Appender)
+appender_if = pp.Literal('+?').setParseAction(el.AppenderIf)
 integer = num.copy().setParseAction(el.Integer)
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)
 regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).setParseAction(el.Regex)
-slice = pp.Optional(num | endof) + ':' + pp.Optional(num | endof) \
-         + pp.Optional(':') + pp.Optional(num | endof)
+slice = pp.Optional(num | plus) + ':' + pp.Optional(num | plus) \
+         + pp.Optional(':') + pp.Optional(num | plus)
 
 key = (word | string | wildcard | regex).setParseAction(el.Key)
 slot = (lb + (integer | string | wildcard | regex) + rb).setParseAction(el.Slot)
-slotappend = (lb + (endof_if | endof) + rb).setParseAction(el.SlotAppend)
+slotspecial = (lb + (appender_if | appender) + rb).setParseAction(el.SlotSpecial)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
-multi = pp.OneOrMore((dot + key) | slot | slotappend | slotslice)
-dotted = (key | slot | slotappend | slotslice) + pp.ZeroOrMore(multi)
+multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
+dotted = (key | slot | slotspecial | slotslice) + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.Regex(r'[^|:]*')
 transform = pp.Group(name.copy() + pp.ZeroOrMore(colon + targ))

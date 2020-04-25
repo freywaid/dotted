@@ -96,15 +96,21 @@ def update(obj, key, val, apply_transforms=True):
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
-def remove(obj, key):
+def remove(obj, key, val=el._marker):
     """
-    Remove all matches to dotted key from obj
+    To remove all matches to `key`
+        remove(obj, key)
+    To remove all matches to `key` with `val`
+        remove(obj, key, val)
     >>> d = {'hello': {'there': [1, 2, 3]}}
     >>> remove(d, 'hello.there[-1]')
     {'hello': {'there': [1, 2]}}
+    >>> remove(d, 'hello.there[*]', 1)
+    {'hello': {'there': [2]}}
+    >>> remove(d, 'hello.there', [2])
+    {'hello': {}}
     """
-    el.removes(parse(key), obj)
-    return obj
+    return el.removes(parse(key), obj, val)
 
 
 def match(pattern, key, groups=False, partial=True):
@@ -117,6 +123,8 @@ def match(pattern, key, groups=False, partial=True):
     >>> match('*', 'hello.there', partial=False)
     >>> match('*', 'hello.there', groups=True)
     ('hello.there', ('hello',))
+    >>> match('hello.*', 'hello.there', groups=True)
+    ('hello.there', ('hello', 'there'))
     """
     _matches = []
     for pop,kop in itertools.zip_longest(parse(pattern), parse(key)):
