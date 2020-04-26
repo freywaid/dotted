@@ -23,12 +23,16 @@ integer = num.copy().setParseAction(el.Integer)
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)
-regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).setParseAction(el.Regex)
+wildcard_first = pp.Literal('*?').setParseAction(el.WildcardFirst)
+_regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
+regex = _regex.copy().setParseAction(el.Regex)
+regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFirst)
 slice = pp.Optional(num | plus) + ':' + pp.Optional(num | plus) \
          + pp.Optional(':') + pp.Optional(num | plus)
 
-key = (word | string | wildcard | regex).setParseAction(el.Key)
-slot = (lb + (integer | string | wildcard | regex) + rb).setParseAction(el.Slot)
+_commons = string | wildcard_first | wildcard | regex_first | regex
+key = (word | _commons).setParseAction(el.Key)
+slot = (lb + (integer | _commons) + rb).setParseAction(el.Slot)
 slotspecial = (lb + (appender_if | appender) + rb).setParseAction(el.SlotSpecial)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 

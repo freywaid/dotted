@@ -91,6 +91,8 @@ def update(obj, key, val, apply_transforms=True):
     {'queries': [{'name': 'hello'}]}
     >>> update(d, 'queries[+]', 'bye')
     {'queries': [{'name': 'hello'}, 'bye']}
+    >>> update([1, 2], '[*?]', 'hello')
+    ['hello', 2]
     """
     ops = parse(key)
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)

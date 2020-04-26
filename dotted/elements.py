@@ -16,6 +16,7 @@ class Match:
     def __bool__(self):
         return True
 
+
 class Op:
     def __init__(self, *args, **kwargs):
         if len(args) == 3 and isinstance(args[2], pp.ParseResults):
@@ -38,25 +39,25 @@ class MetaNOP(type):
     def __repr__(cls):
         return ''
 
+
 class NOP(metaclass=MetaNOP):
     @classmethod
-    def match(cls, val):
-        return None
+    def matchable(cls, op, specials=False):
+        return False
     @classmethod
-    def match_op(cls, op, specials=False):
-        return None
+    def matches(cls, vals):
+        return ()
 
 
 class Const(Op):
     @property
     def value(self):
         return self.args[0]
-    def match(self, val):
-        return Match(val) if self.value == val else None
-    def match_op(self, op, specials=False):
-        if not isinstance(op, Const):
-            return None
-        return self.match(op.value)
+    def matchable(self, op, specials=False):
+        return isinstance(op, Const)
+    def matches(self, vals):
+        return ( v for v in vals if self.value == v )
+
 
 class Integer(Const):
     @property
@@ -65,9 +66,11 @@ class Integer(Const):
     def __repr__(self):
         return f'{self.value}'
 
+
 class Word(Const):
     def __repr__(self):
         return f'{self.value}'
+
 
 class String(Const):
     def __repr__(self):
@@ -75,51 +78,67 @@ class String(Const):
 
 
 class Pattern(Op):
-    pass
+    @property
+    def value(self):
+        return self.args[0]
+    def matchable(self, op, specials=False):
+        return isinstance(op, (Const, Special) if specials else Const)
+
 
 class Wildcard(Pattern):
-    def match(self, val):
-        return Match(val)
-    def match_op(self, op, specials=False):
-        if isinstance(op, (Const, Special) if specials else Const):
-            return self.match(op.value)
-        return None
     def __repr__(self):
         return f'*'
+    def matches(self, vals):
+        return iter(vals)
+
+
+class WildcardFirst(Wildcard):
+    def __repr__(self):
+        return f'*?'
+    def matches(self, vals):
+        v = next(iter(vals), _marker)
+        return iter(() if v is _marker else (v,))
+
 
 class Regex(Pattern):
     @property
     def pattern(self):
-        return re.compile(self.args[0])
-    def match(self, val):
-        m = self.pattern.fullmatch(val)
-        return Match(m[0]) if m else None
-    def match_op(self, op, specials=False):
-        if isinstance(op, (Const, Special) if specials else Const):
-            return self.match(op.value)
-        return None
+        return re.compile(self.value)
     def __repr__(self):
-        return f'/{self.args[0]}/'
+        return f'/{self.value}/'
+    def matches(self, vals):
+        iterable = ( self.pattern.fullmatch(v) for v in vals )
+        return ( m[0] for m in iterable if m )
+
+
+class RegexFirst(Regex):
+    def __repr__(self):
+        return f'/{self.value}/?'
+    def matches(self, vals):
+        iterable = super().matches(vals)
+        v = next(iterable, _marker)
+        return iter(() if v is _marker else (v,))
 
 
 class Special(Op):
     @property
     def value(self):
         return self.args[0]
-    def match(self, val):
-        return Match(val) if self.value == val else None
-    def match_op(self, op, specials=False):
-        if isinstance(op, Special):
-            return self.match(op.value)
-        return None
+    def matchable(self, op, specials=False):
+        return isinstance(op, Special)
+    def matches(self, vals):
+        return ( v for v in vals if v == self.value )
+
 
 class Appender(Special):
     def __repr__(self):
         return '+'
 
+
 class AppenderIf(Special):
     def __repr__(self):
         return '+?'
+
 
 #
 #
@@ -144,8 +163,7 @@ class Key(Op):
     def keys(self, node):
         if not isinstance(node, dict):
             return ()
-        matches = ( self.op.match(k) for k in node )
-        return ( m.val for m in matches if m )
+        return self.op.matches(k for k in node)
     def items(self, node):
         for k in self.keys(node):
             try:
@@ -162,8 +180,10 @@ class Key(Op):
         return {self.op.value: None}
 
     def match(self, op, specials=False):
-        m = self.op.match_op(op.op, specials)
-        return m
+        if not self.op.matchable(op.op, specials):
+            return None
+        val = next(self.op.matches((op.op.value,)), _marker)
+        return None if val is _marker else Match(val)
 
     def update(self, node, key, val):
         node[key] = val
@@ -201,8 +221,7 @@ class Slot(Key):
         if isinstance(node, dict):
             return super().keys(node)
         if self.is_pattern():
-            matches = ( self.op.match(idx) for idx,_ in enumerate(node) )
-            return ( m.val for m in matches if m )
+            return self.op.matches(idx for idx,_ in enumerate(node))
         try:
             _ = node[self.op.value]
             return (self.op.value,)
@@ -354,6 +373,8 @@ class Slice(Op):
 
     def match(self, op, specials=False):
         if not isinstance(op, Slice):
+            return None
+        if not self.op.matchable(op.op, specials):
             return None
         return Match(op.slice) if self.slice == op.slice else None
 
