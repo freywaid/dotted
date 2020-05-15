@@ -19,3 +19,8 @@ def test_slice_prepend():
 def test_slice_default():
     m = dotted.update({}, 'stuff[]', ['bye'])
     assert m == {'stuff': ['bye']}
+
+
+def test_slice_match():
+    m = dotted.match('hello[]', 'hello[]')
+    assert m == 'hello[]'

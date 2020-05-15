@@ -374,8 +374,6 @@ class Slice(Op):
     def match(self, op, specials=False):
         if not isinstance(op, Slice):
             return None
-        if not self.op.matchable(op.op, specials):
-            return None
         return Match(op.slice) if self.slice == op.slice else None
 
     def update(self, node, key, val):
