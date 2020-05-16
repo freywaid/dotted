@@ -346,7 +346,7 @@ class Slice(Op):
     def __repr__(self):
         def s(a):
             return str(a) if a is not None else ''
-        if not self.args:
+        if not self.args or self.args == (None, None, None):
             return '[]'
         start, stop, step = self.args
         m = [s(start), s(stop)]
