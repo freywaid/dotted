@@ -33,6 +33,8 @@ class Op:
         return self.__class__ == op.__class__ and self.args == op.args
     def scrub(self, node):
         return node
+    def is_slice(self):
+        return False
 
 
 class MetaNOP(type):
@@ -47,6 +49,8 @@ class NOP(metaclass=MetaNOP):
     @classmethod
     def matches(cls, vals):
         return ()
+    def is_slice(self):
+        return False
 
 
 class Const(Op):
@@ -355,6 +359,8 @@ class Slice(Op):
         return '[' + ':'.join(m) + ']'
     def is_pattern(self):
         return False
+    def is_slice(self):
+        return True
     def operator(self, top=False):
         return str(self)
     def slice(self, node=None):
