@@ -357,9 +357,25 @@ class Slice(Op):
         return False
     def operator(self, top=False):
         return str(self)
-    def slice(self, node):
-        args = ( len(node) if a == '+' else a for a in self.args )
+    def slice(self, node=None):
+        args = self.args
+        if node is not None:
+            args = ( len(node) if a == '+' else a for a in self.args )
         return slice(*args)
+    def cardinality(self, node=None):
+        """
+        Calculate cardinality of a slice; don't both dealing with countably infinite
+        set arithmetic, instead just pick a suitably large integer
+        """
+        s = self.slice(node)
+        start = s.start or 0
+        stop = s.stop or '+'
+        step = s.step or 1
+        if '+' in (start, step):
+            return 0
+        if stop == '+':
+            return 1 << 64
+        return max(0, int((stop - start) / step))
     def keys(self, node):
         return (self.slice(node),)
     def items(self, node):
@@ -370,12 +386,12 @@ class Slice(Op):
         return not node[self.slice(node)]
     def default(self):
         return []
-
     def match(self, op, specials=False):
         if not isinstance(op, Slice):
             return None
-        return Match(op.slice) if self.slice == op.slice else None
-
+        if self.cardinality() < op.cardinality():
+            return None
+        return Match(op.slice())
     def update(self, node, key, val):
         if node[key] == val:
             return node

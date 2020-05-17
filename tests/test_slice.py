@@ -24,3 +24,9 @@ def test_slice_default():
 def test_slice_match():
     m = dotted.match('hello[]', 'hello[]')
     assert m == 'hello[]'
+
+    m = dotted.match('hello[:2]', 'hello[]')
+    assert m is None
+
+    m = dotted.match('hello[]', 'hello[:2]')
+    assert m == 'hello[:2]'
