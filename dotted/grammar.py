@@ -18,7 +18,7 @@ plus = pp.Literal('+')
 
 # atomic ops
 appender = pp.Literal('+').setParseAction(el.Appender)
-appender_if = pp.Literal('+?').setParseAction(el.AppenderIf)
+appender_unique = pp.Literal('+?').setParseAction(el.AppenderUnique)
 integer = num.copy().setParseAction(el.Integer)
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
 string = quoted.copy().setParseAction(el.String)
@@ -33,7 +33,7 @@ slice = pp.Optional(num | plus) + ':' + pp.Optional(num | plus) \
 _commons = string | wildcard_first | wildcard | regex_first | regex
 key = (word | _commons).setParseAction(el.Key)
 slot = (lb + (integer | _commons) + rb).setParseAction(el.Slot)
-slotspecial = (lb + (appender_if | appender) + rb).setParseAction(el.SlotSpecial)
+slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
 multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)

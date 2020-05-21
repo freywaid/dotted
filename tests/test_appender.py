@@ -48,3 +48,9 @@ def test_appender_nested_if():
 def test_appender_match():
     r = dotted.match('[*]', '[+]')
     assert r == '[+]'
+
+    r = dotted.match('[+]', '[+?]')
+    assert r == '[+?]'
+
+    r = dotted.match('[+?]', '[+]')
+    assert r is None

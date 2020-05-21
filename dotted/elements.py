@@ -137,11 +137,16 @@ class Special(Op):
 class Appender(Special):
     def __repr__(self):
         return '+'
+    def matchable(self, op, specials=False):
+        return isinstance(op, Appender)
+    def matches(self, vals):
+        return ( v for v in vals if self.value in v )
 
 
-class AppenderIf(Special):
+class AppenderUnique(Appender):
     def __repr__(self):
         return '+?'
+
 
 
 #
