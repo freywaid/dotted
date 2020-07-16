@@ -124,25 +124,50 @@ def match(pattern, key, groups=False, partial=True):
     'hello.there'
     >>> match('*', 'hello.there', partial=False)
     >>> match('*', 'hello.there', groups=True)
-    ('hello.there', ('hello',))
-    >>> match('hello.*', 'hello.there', groups=True)
+    ('hello.there', ('hello.there',))
+    >>> match('*.*', 'hello.there', groups=True)
     ('hello.there', ('hello', 'there'))
+    >>> match('hello', 'hello.there.bye', groups=True)
+    ('hello.there.bye', ('hello.there.bye',))
+    >>> match('hello.*', 'hello.there.bye', groups=True)
+    ('hello.there.bye', ('hello', 'there.bye'))
     """
+    def returns(r, matches):
+        return (r, tuple(matches)) if groups else r
+
     _matches = []
-    for pop,kop in itertools.zip_longest(parse(pattern), parse(key)):
+    pats = parse(pattern)
+    keys = parse(key)
+    for idx,(pop,kop) in enumerate(zip(pats, keys)):
+        # this means we have more pattern constraints than key items
+        if kop is None:
+            return returns(None, [])
         if pop is None:
             break
-        if kop is None:
-            return None
         m = pop.match(kop, specials=True)
         if not m:
-            return None
+            return returns(None, [])
         _matches.append(m.val)
-    if pop is None and not partial:
-        return None
-    if not groups:
-        return key
-    return key, tuple(_matches)
+
+    # we've completed matching but the last item in match groups is treated 'greedily'
+    assert kop is not None          # sanity
+
+    # exact match
+    if len(pats) == len(keys):
+        return returns(key, _matches)
+
+    # if we're not doing partial matches, fail
+    if not partial:
+        return returns(None, [])
+
+    # otherwise inexact (partial) match
+    # assemble remaining keys
+    rkey = keys.assemble(start=idx)
+    if pop is None:
+        _matches.append(rkey)
+    else:
+        _matches[-1] = rkey
+    return returns(key, _matches)
 
 
 def expand(obj, pattern):

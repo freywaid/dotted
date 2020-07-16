@@ -469,12 +469,14 @@ class Dotted:
     def __init__(self, results):
         self.ops = tuple(results['ops'])
         self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
-    def assemble(self):
-        return ''.join(op.operator(idx==0) for idx,op in enumerate(self.ops))
+    def assemble(self, start=0):
+        return ''.join(op.operator(idx==0) for idx,op in enumerate(self.ops[start:]))
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     def __hash__(self):
         return hash((self.ops, self.transforms))
+    def __len__(self):
+        return len(self.ops)
     def __iter__(self):
         return iter(self.ops)
     def __eq__(self, ops):
