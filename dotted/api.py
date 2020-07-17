@@ -122,6 +122,7 @@ def match(pattern, key, groups=False, partial=True):
     'hello.there'
     >>> match('*', 'hello.there')
     'hello.there'
+    >>> match('*.*', 'hello')
     >>> match('*', 'hello.there', partial=False)
     >>> match('*', 'hello.there', groups=True)
     ('hello.there', ('hello.there',))
@@ -156,8 +157,8 @@ def match(pattern, key, groups=False, partial=True):
     if len(pats) == len(keys):
         return returns(key, _matches)
 
-    # if we're not doing partial matches, fail
-    if not partial:
+    # if we're not doing partial matches or we haven't consumed all pats, fail
+    if not partial or idx < len(pats) - 1:
         return returns(None, [])
 
     # otherwise inexact (partial) match
