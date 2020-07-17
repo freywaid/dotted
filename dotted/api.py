@@ -188,6 +188,20 @@ def expand(obj, pattern):
     return tuple(o.assemble() for o in el.expands(ops, obj))
 
 
+def assemble(keys):
+    """
+    Given a list of keys assemble into a full dotted string
+    >>> assemble(['hello', 'there'])
+    'hello.there'
+    >>> assemble(['hello', '[*]', 'there'])
+    'hello[*].there'
+    >>> assemble(['[0]', 'hello.there'])
+    '[0].hello.there'
+    """
+    iterable = itertools.chain.from_iterable(( parse(key) for key in keys ))
+    return ''.join(op.operator(idx==0) for idx,op in enumerate(iterable))
+
+
 def apply(obj, key):
     """
     Update `obj` with transforms at `key`
@@ -209,7 +223,6 @@ def register(name, fn):
     Register a transform at `name` to call `fn`
     """
     return el.Dotted.register(name, fn)
-
 
 
 def transform(name):

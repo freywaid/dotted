@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="dotted-notation",
-    version="0.1.1",
+    version="0.2.0",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",
