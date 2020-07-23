@@ -170,7 +170,7 @@ class Key(Op):
     def operator(self, top=False):
         return str(self) if top else '.' + str(self)
     def keys(self, node):
-        if not isinstance(node, dict):
+        if not hasattr(node, 'keys'):
             return ()
         return self.op.matches(k for k in node)
     def items(self, node):
@@ -227,7 +227,7 @@ class Slot(Key):
     def operator(self, top=False):
         return str(self)
     def keys(self, node):
-        if isinstance(node, dict):
+        if hasattr(node, 'keys'):
             return super().keys(node)
         if self.is_pattern():
             return self.op.matches(idx for idx,_ in enumerate(node))
@@ -242,7 +242,7 @@ class Slot(Key):
         return super().default()
 
     def update(self, node, key, val):
-        if isinstance(node, dict):
+        if hasattr(node, 'keys'):
             return super().update(node, key, val)
         if len(node) <= key:
             node += itemof(node, val)
@@ -258,14 +258,14 @@ class Slot(Key):
         return super().upsert(node, val)
 
     def pop(self, node, key):
-        if isinstance(node, dict):
+        if hasattr(node, 'keys'):
             return super().pop(node, key)
         if hasattr(node, 'pop'):
             node.pop(key)
             return node
         return node.__class__(v for i,v in enumerated(node) if i != key)
     def remove(self, node, val):
-        if isinstance(node, dict):
+        if hasattr(node, 'keys'):
             return super().remove(node, val)
         if hasattr(node, 'remove'):
             try:
@@ -280,7 +280,7 @@ class Slot(Key):
             pass
         return node
     def clear(self, node):
-        if isinstance(node, dict):
+        if hasattr(node, 'keys'):
             return super().clear(node)
         if hasattr(node, 'pop'):
             popped = 0
