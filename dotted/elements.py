@@ -172,7 +172,7 @@ class Key(Op):
     def keys(self, node):
         if not hasattr(node, 'keys'):
             return ()
-        return self.op.matches(k for k in node)
+        return self.op.matches(node.keys())
     def items(self, node):
         for k in self.keys(node):
             try:
