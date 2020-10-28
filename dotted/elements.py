@@ -63,10 +63,10 @@ class Const(Op):
         return ( v for v in vals if self.value == v )
 
 
-class Integer(Const):
+class Numeric(Const):
     @property
     def value(self):
-        return int(self.args[0])
+        return self.args[0]
     def __repr__(self):
         return f'{self.value}'
 
@@ -221,7 +221,8 @@ class Key(Op):
 class Slot(Key):
     @classmethod
     def concrete(cls, val):
-        return cls(Integer(val) if isinstance(val, int) else String(val))
+        import numbers
+        return cls(Numeric(val) if isinstance(val, numbers.Number) else String(val))
     def __repr__(self):
         return f'[{self.op}]'
     def operator(self, top=False):
