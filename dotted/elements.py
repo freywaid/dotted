@@ -64,11 +64,20 @@ class Const(Op):
 
 
 class Numeric(Const):
-    @property
-    def value(self):
-        return self.args[0]
+    def is_int(self):
+        try:
+            return str(self.value) == str(int(self.value))
+        except (ValueError, TypeError):
+            return False
     def __repr__(self):
         return f'{self.value}'
+
+
+class NumericQuoted(Numeric):
+    def __repr__(self):
+        if self.is_int():
+            return super().__repr__()
+        return f"#'{str(self.value)}'"
 
 
 class Word(Const):
@@ -159,6 +168,9 @@ def itemof(node, val):
 class Key(Op):
     @classmethod
     def concrete(cls, val):
+        import numbers
+        if isinstance(val, numbers.Number):
+            return cls(NumericQuoted(val))
         return cls(Word(val))
     @property
     def op(self):
@@ -222,7 +234,9 @@ class Slot(Key):
     @classmethod
     def concrete(cls, val):
         import numbers
-        return cls(Numeric(val) if isinstance(val, numbers.Number) else String(val))
+        if isinstance(val, numbers.Number):
+            return cls(Numeric(val))
+        return String(val)
     def __repr__(self):
         return f'[{self.op}]'
     def operator(self, top=False):
@@ -238,7 +252,7 @@ class Slot(Key):
         except (KeyError, IndexError):
             return ()
     def default(self):
-        if isinstance(self.op, Integer):
+        if isinstance(self.op, Numeric) and self.op.is_int():
             return []
         return super().default()
 

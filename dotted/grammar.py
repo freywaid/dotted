@@ -16,13 +16,13 @@ name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
+numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
 
 # atomic ops
 appender = pp.Literal('+').setParseAction(el.Appender)
 appender_unique = pp.Literal('+?').setParseAction(el.AppenderUnique)
 
-numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
-numeric_key = (numeric_quoted | integer).setParseAction(el.Numeric)
+numeric_key = (numeric_quoted | integer).setParseAction(el.NumericQuoted)
 numeric_slot = (numeric_quoted | ppc.number).setParseAction(el.Numeric)
 
 word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
