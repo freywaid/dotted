@@ -18,7 +18,7 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    license=read_text(LICENSE),
+    license=open(os.path.join('LICENSE')).read(),
     python_requires='>=3.6',
     install_requires=['pyparsing>=2.4,<3',],
 )
