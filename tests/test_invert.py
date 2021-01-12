@@ -12,8 +12,8 @@ def test_invert_get():
 
 
 def test_invert_remove_via_update():
-    r = dotted.update({'hello': 'there'}, '-hello', dotted.ANY)
-    assert not r
+    r = dotted.update({'hello': {'there': 'me', 'not': 'this'}}, '-hello.there', dotted.ANY)
+    assert r == {'hello': {'not': 'this'}}
 
 
 def test_invert_update_via_remove():

@@ -49,6 +49,18 @@ def is_pattern(key):
     return _is_pattern(parse(key))
 
 
+def is_inverted(key):
+    """
+    True if an inverted style pattern
+    >>> is_inverted('-hello.there')
+    True
+    >>> is_inverted('hello.there')
+    False
+    """
+    ops = parse(key)
+    return isinstance(ops[0], el.Invert)
+
+
 def build(obj, key):
     """
     Build a subset/default obj based on dotted
@@ -100,8 +112,8 @@ def update(obj, key, val, apply_transforms=True):
     {'hello': {7: {'me': 'bye'}}}
     >>> update({}, 'hello.#"7.0".me', 'bye')        # coerces to numeric
     {'hello': {7.0: {'me': 'bye'}}}
-    >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)
-    {'hello': {'there': {'there': None}}}
+    >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)    # invert
+    {'hello': {}}
     """
     ops = parse(key)
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
@@ -210,7 +222,7 @@ def assemble(keys):
     '[0].hello.there'
     """
     iterable = itertools.chain.from_iterable(( parse(key) for key in keys ))
-    return ''.join(op.operator(idx==0) for idx,op in enumerate(iterable))
+    return el.assemble(iterable)
 
 
 def apply(obj, key):

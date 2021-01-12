@@ -4,6 +4,7 @@ import collections.abc
 import contextlib
 import copy
 import functools
+import itertools
 import pyparsing as pp
 import re
 
@@ -500,13 +501,7 @@ class Dotted:
         self.ops = tuple(results['ops'])
         self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
     def assemble(self, start=0):
-        def _gen():
-            top = True
-            for op in self.ops[start:]:
-                yield op.operator(top)
-                if not isinstance(op, Invert):
-                    top = False
-        return ''.join(_gen())
+        return assemble(self, start)
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     def __hash__(self):
@@ -526,6 +521,16 @@ class Dotted:
         return val
 
 Dotted.registry.__doc__ = rdoc()
+
+
+def assemble(ops, start=0):
+    def _gen():
+        top = True
+        for op in itertools.islice(ops, start, None):
+            yield op.operator(top)
+            if not isinstance(op, Invert):
+                top = False
+    return ''.join(_gen())
 
 
 def transform(name):
@@ -572,10 +577,10 @@ def gets(ops, node):
 
 def updates(ops, node, val, has_defaults=False):
     cur, *ops = ops
-    if not ops:
-        return cur.upsert(node, val)
     if isinstance(cur, Invert):
         return removes(ops, node, val)
+    if not ops:
+        return cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
         built = updates(ops, build_default(ops), val, True)
         return cur.upsert(node, built)
@@ -586,10 +591,11 @@ def updates(ops, node, val, has_defaults=False):
 
 def removes(ops, node, val=ANY):
     cur, *ops = ops
+    if isinstance(cur, Invert):
+        assert val is not ANY, 'Value required'
+        return updates(ops, node, val)
     if not ops:
         return cur.remove(node, val)
-    if isinstance(cur, Invert):
-        return updates(ops, node, val)
     for k,v in cur.items(node):
         node = cur.update(node, k, removes(ops, v, val))
     return node
