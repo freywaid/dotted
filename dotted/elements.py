@@ -1,6 +1,7 @@
 """
 """
 import collections.abc
+import contextlib
 import copy
 import functools
 import pyparsing as pp
@@ -8,6 +9,7 @@ import re
 
 
 _marker = object()
+ANY = _marker
 
 
 class Match:
@@ -207,7 +209,7 @@ class Key(Op):
         return None if val is _marker else Match(val)
 
     def update(self, node, key, val):
-        node[key] = val
+        node[key] = self.default() if val is ANY else val
         return node
     def upsert(self, node, val):
         if not self.is_pattern():
@@ -221,12 +223,8 @@ class Key(Op):
         return node
     def remove(self, node, val):
         for k,v in self.items(node):
-            if v == val:
+            if val is ANY or v == val:
                 return self.pop(node, k)
-        return node
-    def clear(self, node):
-        for k in list(self.keys(node)):
-            self.pop(node, k)
         return node
 
 
@@ -265,7 +263,7 @@ class Slot(Key):
         if node[key] == val:
             return node
         try:
-            node[key] = val
+            node[key] = self.default() if val is ANY else val
         except TypeError:
             node = node[:key] + itemof(node, val) + node[key+1:]
         return node
@@ -282,6 +280,15 @@ class Slot(Key):
     def remove(self, node, val):
         if hasattr(node, 'keys'):
             return super().remove(node, val)
+        if val is ANY:
+            if hasattr(node, 'pop'):
+                popped = 0
+                for k in list(self.keys(node)):
+                    node.pop(k - popped)
+                    popped += 1
+                return node
+            keys = tuple(self.keys(node))
+            return node.__class__(v for i,v in enumerated(node) if i not in keys)
         if hasattr(node, 'remove'):
             try:
                 node.remove(val)
@@ -294,17 +301,6 @@ class Slot(Key):
         except ValueError:
             pass
         return node
-    def clear(self, node):
-        if hasattr(node, 'keys'):
-            return super().clear(node)
-        if hasattr(node, 'pop'):
-            popped = 0
-            for k in list(self.keys(node)):
-                node.pop(k - popped)
-                popped += 1
-            return node
-        keys = tuple(self.keys(node))
-        return node.__class__(v for i,v in enumerated(node) if i not in keys)
 
 
 class SlotSpecial(Slot):
@@ -335,14 +331,11 @@ class SlotSpecial(Slot):
     def upsert(self, node, val):
         return self.update(node, self.op.value, val)
 
-
     def pop(self, node, key):
         if isinstance(key, str):
             return None
         return node
     def remove(self, node, val):
-        return node
-    def clear(self, node):
         return node
 
 
@@ -422,7 +415,7 @@ class Slice(Op):
         if node[key] == val:
             return node
         try:
-            node[key] = val
+            node[key] = self.default() if val is ANY else val
             return node
         except TypeError:
             pass
@@ -442,7 +435,6 @@ class Slice(Op):
     def upsert(self, node, val):
         return self.update(node, self.slice(node), val)
 
-
     def pop(self, node, key):
         try:
             del node[key]
@@ -455,12 +447,35 @@ class Slice(Op):
             return node.__class__().join(iterable)
         return node.__class__(iterable)
     def remove(self, node, val):
+        if val is ANY:
+            return self.pop(self, node, self.slice(node))
         key = self.slice(node)
         if node[key] == val:
             return self.pop(self, node, key)
         return node
-    def clear(self, node):
-        return self.pop(self, node, self.slice(node))
+
+
+class Invert(Op):
+    @classmethod
+    def concrete(cls, val):
+        return cls(val)
+    def __repr__(self):
+        return '-'
+    def is_pattern(self):
+        return False
+    @property
+    def op(self):
+        return None
+    def operator(self, top=False):
+        return '-'
+    def match(self, op, specials=False):
+        return Match('-') if isinstance(op, Invert) else None
+    def items(self, node):
+        yield ('-', node)
+    def keys(self, node):
+        yield '-'
+    def values(self, node):
+        yield node
 
 
 #
@@ -485,7 +500,13 @@ class Dotted:
         self.ops = tuple(results['ops'])
         self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
     def assemble(self, start=0):
-        return ''.join(op.operator(idx==0) for idx,op in enumerate(self.ops[start:]))
+        def _gen():
+            top = True
+            for op in self.ops[start:]:
+                yield op.operator(top)
+                if not isinstance(op, Invert):
+                    top = False
+        return ''.join(_gen())
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     def __hash__(self):
@@ -538,6 +559,9 @@ def build(ops, node, deepcopy=True):
 
 def gets(ops, node):
     cur, *ops = ops
+    if isinstance(cur, Invert):
+        yield from gets(ops, node)
+        return
     values = cur.values(node)
     if not ops:
         yield from values
@@ -550,6 +574,8 @@ def updates(ops, node, val, has_defaults=False):
     cur, *ops = ops
     if not ops:
         return cur.upsert(node, val)
+    if isinstance(cur, Invert):
+        return removes(ops, node, val)
     if cur.is_empty(node) and not has_defaults:
         built = updates(ops, build_default(ops), val, True)
         return cur.upsert(node, built)
@@ -558,10 +584,12 @@ def updates(ops, node, val, has_defaults=False):
     return node
 
 
-def removes(ops, node, val=_marker):
+def removes(ops, node, val=ANY):
     cur, *ops = ops
     if not ops:
-        return cur.clear(node) if val is _marker else cur.remove(node, val)
+        return cur.remove(node, val)
+    if isinstance(cur, Invert):
+        return updates(ops, node, val)
     for k,v in cur.items(node):
         node = cur.update(node, k, removes(ops, v, val))
     return node

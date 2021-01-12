@@ -6,8 +6,11 @@ import itertools
 from . import grammar
 from . import elements as el
 
+CACHE_SIZE = 300
+ANY = el.ANY
 
-@functools.lru_cache()
+
+@functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
     results = grammar.template.parseString(ops, parseAll=True)
     return el.Dotted(results)
@@ -24,7 +27,7 @@ def parse(key):
     return _parse(key)
 
 
-@functools.lru_cache()
+@functools.lru_cache(CACHE_SIZE)
 def _is_pattern(ops):
     if not ops:
         return False
@@ -97,15 +100,17 @@ def update(obj, key, val, apply_transforms=True):
     {'hello': {7: {'me': 'bye'}}}
     >>> update({}, 'hello.#"7.0".me', 'bye')        # coerces to numeric
     {'hello': {7.0: {'me': 'bye'}}}
+    >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)
+    {'hello': {'there': {'there': None}}}
     """
     ops = parse(key)
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
-def remove(obj, key, val=el._marker):
+def remove(obj, key, val=ANY):
     """
     To remove all matches to `key`
-        remove(obj, key)
+        remove(obj, key) or remove(obj, key, ANY)
     To remove all matches to `key` with `val`
         remove(obj, key, val)
     >>> d = {'hello': {'there': [1, 2, 3]}}
@@ -115,6 +120,8 @@ def remove(obj, key, val=el._marker):
     {'hello': {'there': [2]}}
     >>> remove(d, 'hello.there', [2])
     {'hello': {}}
+    >>> remove({}, '-hello.there', [2])
+    {'hello': {'there': [2]}}
     """
     return el.removes(parse(key), obj, val)
 

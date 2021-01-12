@@ -42,7 +42,10 @@ slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpe
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
 multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
-dotted = (key | slot | slotspecial | slotslice) + pp.ZeroOrMore(multi)
+invert = pp.Optional(pp.Literal('-').setParseAction(el.Invert))
+dotted_top = key | slot | slotspecial | slotslice
+#dotted_invert = (pp.Suppress('-') + dotted_top).setParseAction(el.Invert)
+dotted = invert + dotted_top + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.Regex(r'[^|:]*')
 transform = pp.Group(name.copy() + pp.ZeroOrMore(colon + targ))
