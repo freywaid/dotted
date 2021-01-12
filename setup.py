@@ -3,6 +3,10 @@ import setuptools
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
+with open('LICENSE', 'r') as f:
+    license = f.read()
+
+
 setuptools.setup(
     name="dotted-notation",
     version="0.4.0",
@@ -18,7 +22,7 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    license=open(os.path.join('LICENSE')).read(),
+    license=license,
     python_requires='>=3.6',
     install_requires=['pyparsing>=2.4,<3',],
 )
