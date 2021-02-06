@@ -10,9 +10,16 @@ CACHE_SIZE = 300
 ANY = el.ANY
 
 
+class ParseError(Exception):
+    pass
+
+
 @functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
-    results = grammar.template.parseString(ops, parseAll=True)
+    try:
+        results = grammar.template.parseString(ops, parseAll=True)
+    except el.pp.ParseException as e:
+        raise ParseError(f'{e.msg} at pos {e.loc}: {repr(e.pstr)}')
     return el.Dotted(results)
 
 

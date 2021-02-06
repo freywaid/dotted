@@ -9,7 +9,7 @@ with open('LICENSE', 'rt') as f:
 
 setuptools.setup(
     name="dotted-notation",
-    version="0.4.2",
+    version="0.4.3",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",
