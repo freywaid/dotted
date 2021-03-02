@@ -100,6 +100,19 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     return found if found else pattern_default
 
 
+def has(obj, key):
+    """
+    True if key/pattern is contained in obj
+    >>> d = {'hello': {'there': [1, '2', 3]}}
+    >>> has(d, 'hello.*')
+    True
+    >>> has(d, 'hello.bye')
+    False
+    """
+    dummy = object()
+    return get(obj, key, dummy, dummy) is not dummy
+
+
 def update(obj, key, val, apply_transforms=True):
     """
     Update obj with all matches to dotted key with val
