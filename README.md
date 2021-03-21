@@ -84,7 +84,7 @@ You may with to _expand_ all fields that match a pattern in an object.
     ('hello.there',)
     >>> dptted.expand(d, '*.*[*]')
     ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
-   >>> dotted.expand(d, '*.*[1:]')
+    >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
 
 ## Grammar
