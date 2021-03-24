@@ -46,3 +46,22 @@ def test_regex():
     m = dotted.match('/a.+/', 'abc.def', partial=False)
     assert m is None
 
+
+
+def test_pattern_to_pattern():
+    assert dotted.match('*', '*') == '*'
+    assert dotted.match('*', '*.*') == '*.*'
+    assert dotted.match('*.*', '*') is None
+    assert dotted.match('*', '*?') == '*?'
+    assert dotted.match('*?', '*') is None
+    assert dotted.match('*', '/hello/') == '/hello/'
+    assert dotted.match('*', '/hello/?') == '/hello/?'
+
+    assert dotted.match('/.*/', '/hello/') == '/hello/'
+    assert dotted.match('/.*/', '/hello/?') == '/hello/?'
+    assert dotted.match('/.*/?', '/hello/') is None
+    assert dotted.match('/.*/?', '/hello/?') == '/hello/?'
+
+    assert dotted.match('*', '-*') is None
+    assert dotted.match('-*', '*') is None
+    assert dotted.match('-*', '-*') == '-*'

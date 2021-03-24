@@ -42,7 +42,10 @@ class Op:
 
 class MetaNOP(type):
     def __repr__(cls):
-        return ''
+        return '<NOP>'
+    @property
+    def value(cls):
+        return cls
 
 
 class NOP(metaclass=MetaNOP):
@@ -98,22 +101,27 @@ class Pattern(Op):
     def value(self):
         return self.args[0]
     def matchable(self, op, specials=False):
-        return isinstance(op, (Const, Special) if specials else Const)
+        raise NotImplementedError
 
 
 class Wildcard(Pattern):
     def __repr__(self):
         return f'*'
     def matches(self, vals):
-        return iter(vals)
+        return iter(v for v in vals if v is not NOP)
+    def matchable(self, op, specials=False):
+        return isinstance(op, Const) or specials
 
 
 class WildcardFirst(Wildcard):
     def __repr__(self):
         return f'*?'
     def matches(self, vals):
-        v = next(iter(vals), _marker)
+        v = next(super().matches(vals), _marker)
         return iter(() if v is _marker else (v,))
+    def matchable(self, op, specials=False):
+        return isinstance(op, Const) or \
+            (specials and isinstance(op, (Special, WildcardFirst, RegexFirst)))
 
 
 class Regex(Pattern):
@@ -123,8 +131,11 @@ class Regex(Pattern):
     def __repr__(self):
         return f'/{self.value}/'
     def matches(self, vals):
+        vals = ( v for v in vals if v is not NOP )
         iterable = ( self.pattern.fullmatch(v) for v in vals )
         return ( m[0] for m in iterable if m )
+    def matchable(self, op, specials=False):
+        return isinstance(op, Const) or (specials and isinstance(op, (Special, Regex)))
 
 
 class RegexFirst(Regex):
@@ -134,6 +145,8 @@ class RegexFirst(Regex):
         iterable = super().matches(vals)
         v = next(iterable, _marker)
         return iter(() if v is _marker else (v,))
+    def matchable(self, op, specials=False):
+        return isinstance(op, Const) or (specials and isinstance(op, (Special, RegexFirst)))
 
 
 class Special(Op):
@@ -466,7 +479,7 @@ class Invert(Op):
         return False
     @property
     def op(self):
-        return None
+        return NOP
     def operator(self, top=False):
         return '-'
     def match(self, op, specials=False):
