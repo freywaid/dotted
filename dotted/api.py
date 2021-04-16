@@ -100,6 +100,17 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     return found if found else pattern_default
 
 
+def get_multi(obj, iterable, apply_transforms=True):
+    """
+    Get all values from obj in iterable; return iterable
+    >>> list(get_multi({'hello': 7, 'there': 9}, ['hello', 'there']))
+    [7, 9]
+    """
+    dummy = object()
+    found = (get(obj, k, dummy, dummy, apply_transforms=apply_transforms) for k in iterable)
+    return (v for v in found if v is not dummy)
+
+
 def has(obj, key):
     """
     True if key/pattern is contained in obj
@@ -139,6 +150,19 @@ def update(obj, key, val, apply_transforms=True):
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
+def update_multi(obj, keyvalues, apply_transforms=True):
+    """
+    Update obj with all keyvalus
+    >>> update_multi({}, [('hello.there', 7), ('my.my', 9)])
+    {'hello': {'there': 7}, 'my': {'my': 9}}
+    >>> update_multi({}, {'stuff.more.stuff': 'mine'})
+    {'stuff': {'more': {'stuff': 'mine'}}}
+    """
+    for k,v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
+        obj = update(obj, k, v, apply_transforms=apply_transforms)
+    return obj
+
+
 def remove(obj, key, val=ANY):
     """
     To remove all matches to `key`
@@ -156,6 +180,21 @@ def remove(obj, key, val=ANY):
     {'hello': {'there': [2]}}
     """
     return el.removes(parse(key), obj, val)
+
+
+def remove_multi(obj, iterable, keys_only=True):
+    """
+    Remove by keys or key-values
+    >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
+    {'my': {}}
+    """
+    if keys_only:
+        iterable = ((k,ANY) for k in iterable)
+    elif hasattr(iterable, 'items') and callable(iterable.items):
+        iterable = iterable.items()
+    for k,v in iterable:
+        obj = remove(obj, k, v)
+    return obj
 
 
 def match(pattern, key, groups=False, partial=True):
@@ -212,6 +251,18 @@ def match(pattern, key, groups=False, partial=True):
     else:
         _matches[-1] = rkey
     return returns(key, _matches)
+
+
+def match_multi(pattern, iterable, groups=False, partial=True):
+    """
+    Match pattern to all in iterable; returns iterable
+    >>> list(match_multi('/h.*/', ['hello', 'there', 'hi']))
+    ['hello', 'hi']
+    """
+    matches = (match(pattern, k, groups=groups, partial=partial) for k in iterable)
+    if groups:
+        return (m for m in matches if m[0])
+    return (m for m in matches if m)
 
 
 def expand(obj, pattern):

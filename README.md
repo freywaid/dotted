@@ -13,6 +13,10 @@ to fetch the ith value from that nested list.
 
 ## API
 
+Probably the easiest thing to do is pydoc the api layer.
+
+    $ pydoc dotted.api
+
 ### Get
 
 See grammar discussion below about things you can do get data via dotted.
@@ -23,8 +27,8 @@ See grammar discussion below about things you can do get data via dotted.
 
 ### Update
 
-Update will mutate the object if it can.  It always returns the changed object though.  So
-if it's not mutable, then get it there.
+Update will mutate the object if it can.  It always returns the changed object though. If
+it's not mutable, then get via the return.
 
     >>> import dotted
     >>> l = []
@@ -49,7 +53,7 @@ You can update all fields that match pattern given by either a wildcard OR regex
 
 ### Remove
 
-You can remove a field or remove a field only if it matches value.  For example,
+You can remove a field or do so only if it matches value.  For example,
 
     >>> import dotted
     >>> d = {'a': 'hello', 'b': 'bye'}
@@ -61,16 +65,26 @@ You can remove a field or remove a field only if it matches value.  For example,
 #### Remove via pattern
 
 Similar to update, all patterns that match will be removed.  If you provide a value as
-well, only those matched that also match value will be removed
+well, only the matched patterns that also match the value will be removed.
 
 ### Match
 
-Use to match a dotted-style pattern to a field.  Partial matching is on by default.
+Use to match a dotted-style pattern to a field.  Partial matching is on by default.  You
+can match via wildcard OR via regex.  Here's a regex example:
 
     >>> import dotted
     >>> dotted.match('/a.+/', 'abced.b')
     'abced.b'
     >>> dotted.match('/a.+/', 'abced.b', partial=False)
+
+With the `groups=True` parameter, you'll see how it was matched:
+
+    >>> import dotted
+    >>> match('hello.*', 'hello.there.bye', groups=True)
+    ('hello.there.bye', ('hello', 'there.bye'))
+
+In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
+matching is enabled by default).
 
 ### Expand
 
@@ -89,8 +103,8 @@ You may with to _expand_ all fields that match a pattern in an object.
 
 ## Grammar
 
-Dotted notation looks similar to python. Both _dot_ fields and _bracketed_ fields,
-call `__getitem__` internally.  A _dot_ field expects to see a dictionary-like object.
+Dotted notation looks similar to python. Both _dot_ fields and _bracketed_ fields
+use `keys()` and `__getitem__()` internally.  A _dot_ field expects to see a dictionary-like object.
 A _slot_ field is biased towards sequences (like lists, tuples, and strs) but can act on
 dicts as well. Dotted also supports slicing notation as well as transforms discussed
 below.
@@ -133,11 +147,11 @@ will interpret the `1` part numerically.
 
 ### Quoting
 
-Sometimes you need to quote a field which you can do, just put the field in quotes.
+Sometimes you need to quote a field which you can do by just putting the field in quotes.
 
     >>> import dotted
     >>> dotted.get({'has . in it': 7}, '"has . in it"')
-    >>> 7
+    7
 
 ### The numericize `#` operator
 
