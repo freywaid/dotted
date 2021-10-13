@@ -3,6 +3,11 @@
 import dotted
 
 
+def test_non_numeric_match():
+    m = dotted.match('*', '0hello')
+    assert m == '0hello'
+
+
 def test_wildcard_partial():
     m = dotted.match('*', 'abc.def')
     assert m == 'abc.def'
@@ -45,7 +50,6 @@ def test_regex():
 
     m = dotted.match('/a.+/', 'abc.def', partial=False)
     assert m is None
-
 
 
 def test_pattern_to_pattern():

@@ -72,9 +72,12 @@ class Const(Op):
 class Numeric(Const):
     def is_int(self):
         try:
-            return str(self.value) == str(int(self.value))
+            return str(self.args[0]) == str(int(self.args[0]))
         except (ValueError, TypeError):
             return False
+    @property
+    def value(self):
+        return int(self.args[0]) if self.is_int() else float(self.args[0])
     def __repr__(self):
         return f'{self.value}'
 

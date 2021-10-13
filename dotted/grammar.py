@@ -17,19 +17,23 @@ name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
 
 reserved = '.[]*:|+?/'
+breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
 appender = pp.Literal('+').setParseAction(el.Appender)
 appender_unique = pp.Literal('+?').setParseAction(el.AppenderUnique)
 
-numeric_key = (numeric_quoted | integer).setParseAction(el.NumericQuoted)
-numeric_slot = (numeric_quoted | ppc.number).setParseAction(el.Numeric)
+_numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
+numeric_quoted = _numeric_quoted.setParseAction(el.NumericQuoted)
 
-#word = pp.Word(pp.alphanums + '_').setParseAction(el.Word)
+numeric_key = integer.copy().setParseAction(el.Numeric)
+numeric_slot = ppc.number.copy().setParseAction(el.Numeric)
+
 word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).setParseAction(el.Word)
+non_integer = pp.Regex(f'[^-{breserved}]?[^0-9{breserved}]+').setParseAction(el.Word)
+
 string = quoted.copy().setParseAction(el.String)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)
 wildcard_first = pp.Literal('*?').setParseAction(el.WildcardFirst)
@@ -39,16 +43,15 @@ regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFir
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
-_commons = string | wildcard_first | wildcard | regex_first | regex
-key = (numeric_key | _commons | word).setParseAction(el.Key)
-slot = (lb + (numeric_slot | _commons) + rb).setParseAction(el.Slot)
+_commons = string | wildcard_first | wildcard | regex_first | regex | numeric_quoted
+key = (_commons | non_integer | numeric_key | word).setParseAction(el.Key)
+slot = (lb + (_commons | numeric_slot) + rb).setParseAction(el.Slot)
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
 
 multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
 invert = pp.Optional(pp.Literal('-').setParseAction(el.Invert))
 dotted_top = key | slot | slotspecial | slotslice
-#dotted_invert = (pp.Suppress('-') + dotted_top).setParseAction(el.Invert)
 dotted = invert + dotted_top + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.CharsNotIn('|:')
