@@ -32,7 +32,7 @@ numeric_key = integer.copy().setParseAction(el.Numeric)
 numeric_slot = ppc.number.copy().setParseAction(el.Numeric)
 
 word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).setParseAction(el.Word)
-non_integer = (integer + pp.CharsNotIn(pp.nums + reserved)).setParseAction(el.Word)
+non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').setParseAction(el.Word)
 
 string = quoted.copy().setParseAction(el.String)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)

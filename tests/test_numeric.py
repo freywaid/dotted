@@ -49,3 +49,7 @@ def test_numeric_expand_float():
     m = dotted.expand(T, '[*].*')
     assert m == ('[111.0].stuff',)
 
+
+def test_numeric_update():
+    m = dotted.update({}, '07a', 8)
+    assert m == {'07a': 8}
