@@ -4,6 +4,9 @@ import dotted
 
 
 def test_non_numeric_match():
+    m = dotted.match('*', 'street1')
+    assert m == 'street1'
+
     m = dotted.match('*', '0hello')
     assert m == '0hello'
 
