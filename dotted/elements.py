@@ -199,7 +199,8 @@ class Key(Op):
     def __repr__(self):
         return f'{self.op}'
     def operator(self, top=False):
-        return str(self) if top else '.' + str(self)
+        s = quote(self.op.value)
+        return s if top else '.' + s
     def keys(self, node):
         if not hasattr(node, 'keys'):
             return ()
@@ -255,7 +256,16 @@ class Slot(Key):
     def __repr__(self):
         return f'[{self.op}]'
     def operator(self, top=False):
-        return str(self)
+        return '[' + quote(self.op.value, as_key=False) + ']'
+        s = str(self.op)
+        if isinstance(s, Word):
+            try:
+                int(s)
+                if isinstance(self.op, str):
+                    s = repr(s)
+            except ValueError:
+                pass
+        return '[' + s + ']'
     def keys(self, node):
         if hasattr(node, 'keys'):
             return super().keys(node)
@@ -379,7 +389,7 @@ class Slice(Op):
         self.args = tuple(self.munge(self.args))
     def __repr__(self):
         def s(a):
-            return str(a) if a is not None else ''
+            return quote(a, False) if a is not None else ''
         if not self.args or self.args == (None, None, None):
             return '[]'
         start, stop, step = self.args
@@ -537,6 +547,25 @@ class Dotted:
         return val
 
 Dotted.registry.__doc__ = rdoc()
+
+
+def quote(key, as_key=True):
+    if isinstance(key, str):
+        try:
+            int(key)
+            s = repr(key)
+        except ValueError:
+            s = key
+    elif isinstance(key, int):
+        s = str(key)
+    elif isinstance(key, float):
+        if as_key:
+            s = f"#'{key}'"
+        else:
+            s = str(key)
+    else:
+        raise NotImplementedError
+    return s
 
 
 def assemble(ops, start=0):

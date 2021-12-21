@@ -34,6 +34,25 @@ def parse(key):
     return _parse(key)
 
 
+def quote(key, as_key=True):
+    """
+    How to quote a key
+    >>> quote('hello')
+    'hello'
+    >>> quote(7)
+    '7'
+    >>> quote(7, as_key=False)
+    '7'
+    >>> quote(7.2)
+    "#'7.2'"
+    >>> quote(7.2, as_key=False)
+    '7.2'
+    >>> quote('7')
+    "'7'"
+    """
+    return el.quote(key, as_key=as_key)
+
+
 @functools.lru_cache(CACHE_SIZE)
 def _is_pattern(ops):
     if not ops:
@@ -265,23 +284,6 @@ def match_multi(pattern, iterable, groups=False, partial=True):
     return (m for m in matches if m)
 
 
-def expand(obj, pattern):
-    """
-    Return all keys that match `pattern` in `obj`
-    >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7}
-    >>> expand(d, '*')
-    ('hello', 'bye')
-    >>> expand(d, '*.*')
-    ('hello.there',)
-    >>> expand(d, '*.*[*]')
-    ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
-    >>> expand(d, '*.*[1:]')
-    ('hello.there[1:]',)
-    """
-    ops = parse(pattern)
-    return tuple(o.assemble() for o in el.expands(ops, obj))
-
-
 def assemble(keys):
     """
     Given a list of keys assemble into a full dotted string
@@ -291,9 +293,29 @@ def assemble(keys):
     'hello[*].there'
     >>> assemble(['[0]', 'hello.there'])
     '[0].hello.there'
+    >>> assemble([7, 'hello'])
+    '7.hello'
     """
-    iterable = itertools.chain.from_iterable(( parse(key) for key in keys ))
+    keys = (quote(k) for k in keys)
+    iterable = itertools.chain.from_iterable(parse(key) for key in keys)
     return el.assemble(iterable)
+
+
+def expand(obj, pattern):
+    """
+    Return all keys that match `pattern` in `obj`
+    >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
+    >>> expand(d, '*')
+    ('hello', 'bye', '9', "'9'")
+    >>> expand(d, '*.*')
+    ('hello.there',)
+    >>> expand(d, '*.*[*]')
+    ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
+    >>> expand(d, '*.*[1:]')
+    ('hello.there[1:]',)
+    """
+    ops = parse(pattern)
+    return tuple(o.assemble() for o in el.expands(ops, obj))
 
 
 def apply(obj, key):
