@@ -389,7 +389,7 @@ def apply(obj, pattern):
     return apply_multi(obj, (pattern,))
 
 
-def pluck_multi(obj, patterns):
+def pluck_multi(obj, patterns, default=None):
     """
     Return the concrete field,value pairs from obj given patterns
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
@@ -398,11 +398,11 @@ def pluck_multi(obj, patterns):
     """
     out = ()
     for field in expand_multi(obj, patterns):
-        out += ((field, get(obj, field)),)
+        out += ((field, get(obj, field, default=default)),)
     return out
 
 
-def pluck(obj, pattern):
+def pluck(obj, pattern, default=None):
     """
     Return the concrete field,value pairs from obj given pattern
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
@@ -411,7 +411,7 @@ def pluck(obj, pattern):
     >>> pluck(d, 'a.b')
     ('a.b', 'seven')
     """
-    out = pluck_multi(obj, (pattern,))
+    out = pluck_multi(obj, (pattern,), default=default)
     if not out:
         return ()
     if is_pattern(pattern):
