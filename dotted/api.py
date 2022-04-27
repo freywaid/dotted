@@ -87,6 +87,18 @@ def is_inverted(key):
     return isinstance(ops[0], el.Invert)
 
 
+def build_multi(obj, keys):
+    """
+    Build a subset/default obj based on concrete key fields
+    >>> build_multi({}, ('hello.bye[]', 'hello.there', ))
+    {'hello': {'bye': [], 'there': None}}
+    """
+    for key in keys:
+        built = el.build(parse(key), obj)
+        obj = update_multi(obj, pluck_multi(built, (key,)))
+    return obj
+
+
 def build(obj, key):
     """
     Build a subset/default obj based on dotted
@@ -94,7 +106,7 @@ def build(obj, key):
     {'hello': {'there': None}}
     >>> # build({}, 'a.b.c[:2].d')
     """
-    return el.build(parse(key), obj)
+    return build_multi(obj, (key,))
 
 
 def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
@@ -284,6 +296,21 @@ def match_multi(pattern, iterable, groups=False, partial=True):
     return (m for m in matches if m)
 
 
+def assemble_multi(keys_list):
+    """
+    Given a list of a list of keys assemble into a full dotted string
+    >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
+    ('hello.there', 'a.1.c')
+    """
+    out = ()
+    for keys in keys_list:
+        keys = (quote(k) for k in keys)
+        iterable = itertools.chain.from_iterable(parse(key) for key in keys)
+        found = el.assemble(iterable)
+        out += (found,)
+    return out
+
+
 def assemble(keys):
     """
     Given a list of keys assemble into a full dotted string
@@ -296,9 +323,23 @@ def assemble(keys):
     >>> assemble([7, 'hello'])
     '7.hello'
     """
-    keys = (quote(k) for k in keys)
-    iterable = itertools.chain.from_iterable(parse(key) for key in keys)
-    return el.assemble(iterable)
+    return assemble_multi((keys,))[0]
+
+
+def expand_multi(obj, patterns):
+    """
+    Expand across a set of patterns
+    >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
+    >>> expand_multi(d, ('hello', '*'))
+    ('hello', 'bye', '9', "'9'")
+    """
+    seen = {}
+    for pat in patterns:
+        keys = (o.assemble() for o in el.expands(parse(pat), obj))
+        for found in keys:
+            if found not in seen:
+                seen[found] = None
+    return tuple(seen)
 
 
 def expand(obj, pattern):
@@ -314,26 +355,73 @@ def expand(obj, pattern):
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    ops = parse(pattern)
-    return tuple(o.assemble() for o in el.expands(ops, obj))
+    return expand_multi(obj, (pattern,))
 
 
-def apply(obj, key):
+def apply_multi(obj, patterns):
     """
-    Update `obj` with transforms at `key`
+    Update `obj` with transforms at `patterns`
+    >>> d = {'hello': 7, 'there': 9}
+    >>> apply_multi(d, ('*|float', 'hello|str'))
+    {'hello': '7.0', 'there': 9.0}
+    """
+    seen = {}
+    for pat in patterns:
+        for ops in el.expands(parse(pat), obj):
+            if ops in seen:
+                continue
+            seen[ops] = None
+            vals = tuple(el.gets(ops, obj))
+            if not vals:
+                continue
+            val = ops.apply(vals[0])
+            obj = el.updates(ops, obj, val)
+    return obj
+
+
+def apply(obj, pattern):
+    """
+    Update `obj` with transforms at `pattern`
     >>> d = {'hello': 7}
     >>> apply(d, 'hello|str')
     {'hello': '7'}
     """
-    for ops in el.expands(parse(key), obj):
-        vals = tuple(el.gets(ops, obj))
-        if not vals:
-            continue
-        val = ops.apply(vals[0])
-        obj = el.updates(ops, obj, val)
-    return obj
+    return apply_multi(obj, (pattern,))
 
 
+def pluck_multi(obj, patterns):
+    """
+    Return the concrete field,value pairs from obj given patterns
+    >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
+    >>> pluck_multi(d, ('hello', 'a.b'))
+    (('hello', 7), ('a.b', 'seven'))
+    """
+    out = ()
+    for field in expand_multi(obj, patterns):
+        out += ((field, get(obj, field)),)
+    return out
+
+
+def pluck(obj, pattern):
+    """
+    Return the concrete field,value pairs from obj given pattern
+    >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
+    >>> pluck(d, 'a.*')
+    (('a.b', 'seven'), ('a.c', 'nine'))
+    >>> pluck(d, 'a.b')
+    ('a.b', 'seven')
+    """
+    out = pluck_multi(obj, (pattern,))
+    if not out:
+        return ()
+    if is_pattern(pattern):
+        return out
+    return out[0]
+
+
+#
+# transform registry
+#
 def register(name, fn):
     """
     Register a transform at `name` to call `fn`
