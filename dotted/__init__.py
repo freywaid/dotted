@@ -9,6 +9,7 @@ from .api import \
     match, match_multi, \
     apply, apply_multi, \
     get, get_multi, \
+    has, \
     update, update_multi, \
     remove, remove_multi, \
     pluck, pluck_multi
