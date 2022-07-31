@@ -4,6 +4,7 @@ Default transforms
 import decimal
 from .elements import transform
 
+
 @transform('str')
 def transform_str(val, fmt=None, mode=None):
     """
@@ -21,6 +22,7 @@ def transform_str(val, fmt=None, mode=None):
             raise
     return val
 
+
 @transform('int')
 def transform_int(val, base=None, mode=None):
     """
@@ -28,13 +30,23 @@ def transform_int(val, base=None, mode=None):
         <dotted>|int                int(val)
         <dotted>|int:<base>         int(val, base=<base>)
         <dotted>|int::force         int(val) or raises
+    >>> import dotted
+    >>> dotted.get('10', '|int')
+    10
+    >>> dotted.get('hello', '|int::force')
+    Traceback (most recent call last):
+    ...
+    ValueError: invalid literal for int() with base 10: 'hello'
     """
     try:
-        return int(val, base=base or 10)
+        if base is None:
+            return int(val)
+        return int(str(val), base=base or 10)
     except (ValueError, TypeError):
         if mode == 'force':
             raise
     return val
+
 
 @transform('float')
 def transform_float(val, mode=None):
@@ -50,6 +62,7 @@ def transform_float(val, mode=None):
             raise
     return val
 
+
 @transform('decimal')
 def transform_decimal(val, mode=None):
     """
@@ -64,6 +77,7 @@ def transform_decimal(val, mode=None):
             raise
     return val
 
+
 @transform('none')
 def transform_none(val, *none_vals):
     """
@@ -74,6 +88,7 @@ def transform_none(val, *none_vals):
     if not none_vals:
         return None if not val else val
     return None if val in none_vals else val
+
 
 @transform('strip')
 def transform_strip(val, chars=None, mode=None):
@@ -90,6 +105,7 @@ def transform_strip(val, chars=None, mode=None):
             raise
     return val
 
+
 @transform('len')
 def transform_len(val, default=None):
     """
@@ -105,6 +121,7 @@ def transform_len(val, default=None):
         raise
     return val
 
+
 @transform('lowercase')
 def transform_lowercase(val, mode=None):
     """
@@ -119,6 +136,7 @@ def transform_lowercase(val, mode=None):
             raise
     return val
 
+
 @transform('uppercase')
 def transform_uppercase(val, mode=None):
     """
@@ -132,6 +150,7 @@ def transform_uppercase(val, mode=None):
         if mode == 'force':
             raise
     return val
+
 
 @transform('add')
 def transform_add(val, rhs):

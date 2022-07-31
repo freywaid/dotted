@@ -184,6 +184,23 @@ def itemof(node, val):
     return val if isinstance(node, (str, bytes)) else node.__class__([val])
 
 
+class Empty(Op):
+    def __repr__(self):
+        return ''
+    def is_pattern(self):
+        return False
+    def operator(self, top=False):
+        return ''
+    def values(self, node):
+        return (node,)
+    def default(self):
+        return ''
+    def match(self, op, specials=False):
+        if isinstance(op, Empty):
+            return Match('')
+        return None
+
+
 class Key(Op):
     @classmethod
     def concrete(cls, val):
@@ -525,7 +542,7 @@ class Dotted:
 
     def __init__(self, results):
         self.ops = tuple(results['ops'])
-        self.transforms = tuple( tuple(r) for r in results.get('transforms', ()) )
+        self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
     def assemble(self, start=0):
         return assemble(self, start)
     def __repr__(self):

@@ -48,14 +48,16 @@ key = (_commons | non_integer | numeric_key | word).setParseAction(el.Key)
 slot = (lb + (_commons | numeric_slot) + rb).setParseAction(el.Slot)
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
 slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
+empty = pp.Empty().setParseAction(el.Empty)
 
 multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
 invert = pp.Optional(pp.Literal('-').setParseAction(el.Invert))
-dotted_top = key | slot | slotspecial | slotslice
+dotted_top = key | slot | slotspecial | slotslice | empty
 dotted = invert + dotted_top + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.CharsNotIn('|:')
-transform = pp.Group(name.copy() + pp.ZeroOrMore(colon + targ))
+param = (colon + targ) | colon.copy().setParseAction(lambda: [None])
+transform = pp.Group(name.copy() + pp.ZeroOrMore(param))
 transforms = pp.ZeroOrMore(pipe + transform)
 
 template = dotted('ops') + transforms('transforms')
