@@ -14,6 +14,7 @@ pipe = pp.Suppress('|')
 slash = pp.Suppress('/')
 backslash = pp.Suppress('\\')
 name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
+transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
@@ -57,7 +58,7 @@ dotted = invert + dotted_top + pp.ZeroOrMore(multi)
 
 targ = quoted | ppc.number | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().setParseAction(lambda: [None])
-transform = pp.Group(name.copy() + pp.ZeroOrMore(param))
+transform = pp.Group(transform_name.copy() + pp.ZeroOrMore(param))
 transforms = pp.ZeroOrMore(pipe + transform)
 
 template = dotted('ops') + transforms('transforms')
