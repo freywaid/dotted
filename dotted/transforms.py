@@ -6,34 +6,34 @@ from .elements import transform
 
 
 @transform('str')
-def transform_str(val, fmt=None, mode=None):
+def transform_str(val, fmt=None, *modes):
     """
     Transform to string with optional str format notation
       <dotted>|str                  str(val)
       <dotted>|str:<fmt>            <fmt> % val
-      <dotted>|str:<fmt>:force      <fmt> % val or raises
+      <dotted>|str:<fmt>:raises     <fmt> % val or raises
     """
     try:
         if not fmt:
             return str(val)
         return fmt % val
     except TypeError:
-        if mode == 'force':
+        if 'raises' in modes:
             raise
     return val
 
 
 @transform('int')
-def transform_int(val, base=None, mode=None):
+def transform_int(val, base=None, *modes):
     """
     Transform to an int with optional base notation
         <dotted>|int                int(val)
         <dotted>|int:<base>         int(val, base=<base>)
-        <dotted>|int::force         int(val) or raises
+        <dotted>|int::raises        int(val) or raises
     >>> import dotted
     >>> dotted.get('10', '|int')
     10
-    >>> dotted.get('hello', '|int::force')
+    >>> dotted.get('hello', '|int::raises')
     Traceback (most recent call last):
     ...
     ValueError: invalid literal for int() with base 10: 'hello'
@@ -43,37 +43,40 @@ def transform_int(val, base=None, mode=None):
             return int(val)
         return int(str(val), base=base or 10)
     except (ValueError, TypeError):
-        if mode == 'force':
+        if 'raises' in modes:
             raise
     return val
 
 
 @transform('float')
-def transform_float(val, mode=None):
+def transform_float(val, *modes):
     """
     Transform to a float
         <dotted>|float              float(val)
-        <dotted>|float:force        float(val) or raises
+        <dotted>|float:raises       float(val) or raises
     """
     try:
         return float(val)
     except ValueError:
-        if node == 'force':
+        if 'raises' in modes:
             raise
     return val
 
 
 @transform('decimal')
-def transform_decimal(val, mode=None):
+def transform_decimal(val, *modes):
     """
     Transform to a decimal
         <dotted>|decimal            Decimal(val)
-        <dotted>|decimal:force      Decimal(val) or raises
+        <dotted>|decimal:raises     Decimal(val) or raises
+    >>> import dotted
+    >>> dotted.get('10', '|decimal')
+    Decimal('10')
     """
     try:
         return decimal.Decimal(val)
-    except decimal.InvalidOperation:
-        if mode == 'force':
+    except (TypeError, decimal.InvalidOperation):
+        if 'raises' in modes:
             raise
     return val
 
@@ -91,17 +94,17 @@ def transform_none(val, *none_vals):
 
 
 @transform('strip')
-def transform_strip(val, chars=None, mode=None):
+def transform_strip(val, chars=None, *modes):
     """
     Strip val of chars
         <dotted>|strip              val.strip()
         <dotted>|strip:abc          val.strip('abc')
-        <dotted>|strip::force       val.strip() or raises
+        <dotted>|strip::raises      val.strip() or raises
     """
     try:
         return val.strip(chars or None)
     except AttributeError:
-        if mode == 'force':
+        if 'raises' in modes:
             raise
     return val
 
@@ -123,31 +126,31 @@ def transform_len(val, default=None):
 
 
 @transform('lowercase')
-def transform_lowercase(val, mode=None):
+def transform_lowercase(val, *modes):
     """
     Convert to lowercase
         <dotted>|lowercase          string to lowercase
-        <dotted>|lowercase:force    string to lowercase or raises
+        <dotted>|lowercase:raises   string to lowercase or raises
     """
     try:
         return val.lower()
     except TypeError:
-        if mode == 'force':
+        if 'raises' in modes:
             raise
     return val
 
 
 @transform('uppercase')
-def transform_uppercase(val, mode=None):
+def transform_uppercase(val, *modes):
     """
     Convert to uppercase
         <dotted>|uppercase          string to uppercase
-        <dotted>|uppercase:force    string to uppercase or raises
+        <dotted>|uppercase:raises   string to uppercase or raises
     """
     try:
         return val.upper()
     except TypeError:
-        if mode == 'force':
+        if 'raises' in modes:
             raise
     return val
 

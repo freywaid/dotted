@@ -18,6 +18,9 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
+none = pp.Literal('None').setParseAction(pp.tokenMap(lambda a: None))
+true = pp.Literal('True').setParseAction(pp.tokenMap(lambda a: True))
+false = pp.Literal('False').setParseAction(pp.tokenMap(lambda a: False))
 
 reserved = '.[]*:|+?/'
 breserved = ''.join('\\' + i for i in reserved)
@@ -56,7 +59,7 @@ invert = pp.Optional(pp.Literal('-').setParseAction(el.Invert))
 dotted_top = key | slot | slotspecial | slotslice | empty
 dotted = invert + dotted_top + pp.ZeroOrMore(multi)
 
-targ = quoted | ppc.number | pp.CharsNotIn('|:')
+targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().setParseAction(lambda: [None])
 transform = pp.Group(transform_name.copy() + pp.ZeroOrMore(param))
 transforms = pp.ZeroOrMore(pipe + transform)
