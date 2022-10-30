@@ -304,8 +304,8 @@ def assemble_multi(keys_list):
     """
     out = ()
     for keys in keys_list:
-        keys = (quote(k) for k in keys)
-        iterable = itertools.chain.from_iterable(parse(key) for key in keys)
+        keys = ([k] if isinstance(k, el.Op) else parse(quote(k)) for k in keys)
+        iterable = itertools.chain.from_iterable(keys)
         found = el.assemble(iterable)
         out += (found,)
     return out
