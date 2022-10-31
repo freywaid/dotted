@@ -302,13 +302,11 @@ def assemble_multi(keys_list):
     >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
     ('hello.there', 'a.1.c')
     """
-    out = ()
-    for keys in keys_list:
+    def _assemble(keys):
         keys = ([k] if isinstance(k, el.Op) else parse(quote(k)) for k in keys)
         iterable = itertools.chain.from_iterable(keys)
-        found = el.assemble(iterable)
-        out += (found,)
-    return out
+        return el.assemble(iterable)
+    return tuple(_assemble(keys) for keys in keys_list)
 
 
 def assemble(keys):
