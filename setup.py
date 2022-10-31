@@ -21,5 +21,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.6',
-    install_requires=['pyparsing>=2.4,<3',],
+    install_requires=['pyparsing>=2.4'],
 )
