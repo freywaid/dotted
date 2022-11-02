@@ -100,16 +100,16 @@ class String(Const):
 
 
 class Pattern(Op):
-    @property
-    def value(self):
-        return self.args[0]
+    def __repr__(self):
+        return str(self.value)
     def matchable(self, op, specials=False):
         raise NotImplementedError
 
 
 class Wildcard(Pattern):
-    def __repr__(self):
-        return f'*'
+    @property
+    def value(self):
+        return '*'
     def matches(self, vals):
         return iter(v for v in vals if v is not NOP)
     def matchable(self, op, specials=False):
@@ -117,8 +117,9 @@ class Wildcard(Pattern):
 
 
 class WildcardFirst(Wildcard):
-    def __repr__(self):
-        return f'*?'
+    @property
+    def value(self):
+        return '*?'
     def matches(self, vals):
         v = next(super().matches(vals), _marker)
         return iter(() if v is _marker else (v,))
@@ -129,21 +130,23 @@ class WildcardFirst(Wildcard):
 
 class Regex(Pattern):
     @property
+    def value(self):
+        return f'/{self.args[0]}/'
+    @property
     def pattern(self):
-        return re.compile(self.value)
-    def __repr__(self):
-        return f'/{self.value}/'
+        return re.compile(self.args[0])
     def matches(self, vals):
-        vals = ( v for v in vals if v is not NOP )
-        iterable = ( self.pattern.fullmatch(v) for v in vals )
-        return ( m[0] for m in iterable if m )
+        vals = (v for v in vals if v is not NOP)
+        iterable = (self.pattern.fullmatch(v) for v in vals)
+        return (m[0] for m in iterable if m)
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or (specials and isinstance(op, (Special, Regex)))
 
 
 class RegexFirst(Regex):
-    def __repr__(self):
-        return f'/{self.value}/?'
+    @property
+    def value(self):
+        return f'/{self.args[0]}/?'
     def matches(self, vals):
         iterable = super().matches(vals)
         v = next(iterable, _marker)
@@ -159,22 +162,23 @@ class Special(Op):
     def matchable(self, op, specials=False):
         return isinstance(op, Special)
     def matches(self, vals):
-        return ( v for v in vals if v == self.value )
+        return (v for v in vals if v == self.value)
 
 
 class Appender(Special):
-    def __repr__(self):
+    @property
+    def value(self):
         return '+'
     def matchable(self, op, specials=False):
         return isinstance(op, Appender)
     def matches(self, vals):
-        return ( v for v in vals if self.value in v )
+        return (v for v in vals if self.value in v)
 
 
 class AppenderUnique(Appender):
-    def __repr__(self):
+    @property
+    def value(self):
         return '+?'
-
 
 
 #
@@ -580,6 +584,8 @@ def quote(key, as_key=True):
             s = f"#'{key}'"
         else:
             s = str(key)
+    elif isinstance(key, Op):
+        return str(key)
     else:
         raise NotImplementedError
     return s
