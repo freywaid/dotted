@@ -6,7 +6,13 @@ from pyparsing import pyparsing_common as ppc
 from . import elements as el
 
 S = pp.Suppress
+L = pp.Literal
+Opt = pp.Optional
+ZM = pp.ZeroOrMore
+OM = pp.OneOrMore
+equal = pp.Suppress('=')
 dot = pp.Suppress('.')
+comma = pp.Suppress(',')
 lb = pp.Suppress('[')
 rb = pp.Suppress(']')
 colon = pp.Suppress(':')
@@ -22,7 +28,7 @@ none = pp.Literal('None').setParseAction(pp.tokenMap(lambda a: None))
 true = pp.Literal('True').setParseAction(pp.tokenMap(lambda a: True))
 false = pp.Literal('False').setParseAction(pp.tokenMap(lambda a: False))
 
-reserved = '.[]*:|+?/'
+reserved = '.[]*:|+?/=,'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -47,21 +53,45 @@ regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFir
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
+value = string | wildcard | regex | numeric_quoted | numeric_key
+
 _commons = string | wildcard_first | wildcard | regex_first | regex | numeric_quoted
-key = (_commons | non_integer | numeric_key | word).setParseAction(el.Key)
-slot = (lb + (_commons | numeric_slot) + rb).setParseAction(el.Slot)
+_key = _commons | non_integer | numeric_key | word
+
+__filter_keyvalue = pp.Group(_key + equal + value)
+_filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
+filter_keyvalue = _filter_keyvalue.setParseAction(el.FilterKeyValue)
+
+filters = filter_keyvalue
+
+key_last = (_key + ZM(dot + filters)).setParseAction(el.Key)
+key_mid = (_key + ZM(dot + filters) + dot).setParseAction(el.Key)
+
+_slot_guts = _commons | numeric_slot
+_slot = (_slot_guts + ZM(dot + filters)) | (filters + ZM(dot + filters))
+
+keyed_slot = _key + lb + _slot + rb
+
+
+
+
+_slot = __slot + ZM(dot + filter_keyvalue) | (filter_keyvalue + ZM(dot + filter_keyvalue))
+slot = (lb + _slot + rb).setParseAction(el.Slot)
+
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
-slotslice = (lb + pp.Optional(slice) + rb).setParseAction(el.Slice)
+slotslice = (lb + Opt(slice) + rb).setParseAction(el.Slice)
+
 empty = pp.Empty().setParseAction(el.Empty)
+empty_filtered = OM(filter_keyvalue).setParseAction(el.Empty)
 
 multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
-invert = pp.Optional(pp.Literal('-').setParseAction(el.Invert))
-dotted_top = key | slot | slotspecial | slotslice | empty
-dotted = invert + dotted_top + pp.ZeroOrMore(multi)
+invert = Opt(L('-').setParseAction(el.Invert))
+dotted_top = empty_filtered | key | slot | slotspecial | slotslice | empty
+dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().setParseAction(lambda: [None])
-transform = pp.Group(transform_name.copy() + pp.ZeroOrMore(param))
-transforms = pp.ZeroOrMore(pipe + transform)
+transform = pp.Group(transform_name.copy() + ZM(param))
+transforms = ZM(pipe + transform)
 
 template = dotted('ops') + transforms('transforms')

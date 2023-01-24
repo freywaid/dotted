@@ -188,15 +188,46 @@ def itemof(node, val):
     return val if isinstance(node, (str, bytes)) else node.__class__([val])
 
 
+class FilterKeyValue(Op):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.kv = tuple((k, v) for k, v in self.args)
+    def is_pattern(self):
+        return False  # this acts as a filter and not as a pattern
+    def __hash__(self):
+        return hash(self.kv)
+    def __repr__(self):
+        return ','.join(f'{k}={v}' for k, v in self.kv)
+
+    def has_match(self, node):
+        # conjunctive evaluation
+        for k, v in self.kv:
+            for km in k.matches(node.keys()):
+                for vm in v.matches((node[km],)):
+                    break
+                else:
+                    return False
+                break
+            else:
+                return False
+        return True
+
+
 class Empty(Op):
     def __repr__(self):
+        if self.args:
+            return '.'.join(repr(a) for a in self.args)
         return ''
     def is_pattern(self):
         return False
     def operator(self, top=False):
         return ''
     def values(self, node):
-        return (node,)
+        for a in self.args:
+            if not a.has_match(node):
+                return ()
+        else:
+            return (node,)
     def default(self):
         return ''
     def match(self, op, specials=False):
@@ -212,34 +243,48 @@ class Key(Op):
         if isinstance(val, numbers.Number):
             return cls(NumericQuoted(val))
         return cls(Word(val))
-    @property
-    def op(self):
-        return self.args[0]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.op = self.args[0]
+        self.filters = self.args[1:]
     def is_pattern(self):
         return isinstance(self.op, Pattern)
     def __repr__(self):
-        return f'{self.op}'
+        return '.'.join(repr(a) for a in self.args)
     def operator(self, top=False):
         s = quote(self.op.value)
         return s if top else '.' + s
-    def keys(self, node):
-        if not hasattr(node, 'keys'):
-            return ()
-        return self.op.matches(node.keys())
+
+    def is_filtered(self, node):
+        for a in self.filters:
+            if not a.has_match(node):
+                return False
+        return True
+
     def items(self, node):
-        for k in self.keys(node):
+        if not hasattr(node, 'keys'):
+            return
+        keys = self.op.matches(node.keys()) if self.op is not None else node.keys()
+        for k in keys:
             try:
-                yield k, node[k]
-            except TypeError:
-                pass
+                v = node[k]
+            except (KeyError, TypeError, IndexError):
+                continue
+            if self.is_filtered(v):
+                yield (k, v)
+    def keys(self, node):
+        return (k for k, _ in self.items(node))
     def values(self, node):
-        return ( v for _,v in self.items(node) )
+        return (v for _, v in self.items(node))
     def is_empty(self, node):
         return not tuple(self.keys(node))
     def default(self):
         if self.is_pattern():
             return {}
-        return {self.op.value: None}
+        if not self.filters:
+            return {self.op.value: None}
+        return {self.op.value: {}}
 
     def match(self, op, specials=False):
         if not self.op.matchable(op.op, specials):
@@ -274,29 +319,44 @@ class Slot(Key):
         if isinstance(val, numbers.Number):
             return cls(Numeric(val))
         return String(val)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if isinstance(self.op, FilterKeyValue):
+            self.filters = self.args
+            self.op = None
     def __repr__(self):
-        return f'[{self.op}]'
+        return '[' + super().__repr__()  + ']'
+    def is_pattern(self):
+        return super().is_pattern() or bool(self.lookaheads)
     def operator(self, top=False):
-        return '[' + quote(self.op.value, as_key=False) + ']'
-        s = str(self.op)
-        if isinstance(s, Word):
-            try:
-                int(s)
-                if isinstance(self.op, str):
-                    s = repr(s)
-            except ValueError:
-                pass
-        return '[' + s + ']'
-    def keys(self, node):
+        iterable = (repr(a) for a in self.filters)
+        if self.op is not None:
+            iterable = itertools.chain((quote(self.op.value, as_key=False),), iterable)
+        return '[' + '.'.join(iterable) + ']'
+
+    def items(self, node):
         if hasattr(node, 'keys'):
-            return super().keys(node)
+            if self.op is not None:
+                yield from super().items(node)
+                return
+
+
         if self.is_pattern():
-            return self.op.matches(idx for idx,_ in enumerate(node))
-        try:
-            _ = node[self.op.value]
-            return (self.op.value,)
-        except (KeyError, IndexError):
-            return ()
+            keys = self.op.matches(idx for idx, _ in enumerate(node))
+        else:
+            keys = (self.op.value,)
+        for k in keys:
+            try:
+                v = node[k]
+            except (KeyError, TypeError, IndexError):
+                continue
+            for a in self.lookaheads:
+                if not a.has_match(v):
+                    break
+            else:
+                yield (k, v)
+
     def default(self):
         if isinstance(self.op, Numeric) and self.op.is_int():
             return []
@@ -316,6 +376,8 @@ class Slot(Key):
             node = node[:key] + itemof(node, val) + node[key+1:]
         return node
     def upsert(self, node, val):
+        import pdb
+        pdb.set_trace()
         return super().upsert(node, val)
 
     def pop(self, node, key):
@@ -349,6 +411,10 @@ class Slot(Key):
         except ValueError:
             pass
         return node
+
+
+class MatchSlotValue(Slot):
+    pass
 
 
 class SlotSpecial(Slot):
@@ -446,9 +512,13 @@ class Slice(Op):
     def keys(self, node):
         return (self.slice(node),)
     def items(self, node):
-        return ( (k,node[k]) for k in self.keys(node) )
+        for k in self.keys(node):
+            try:
+                yield (k, node[k])
+            except (TypeError, KeyError, IndexError):
+                pass
     def values(self, node):
-        return ( v for _,v in self.items(node) )
+        return (v for _, v in self.items(node))
     def is_empty(self, node):
         return not node[self.slice(node)]
     def default(self):
