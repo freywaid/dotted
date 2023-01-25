@@ -188,7 +188,16 @@ def itemof(node, val):
     return val if isinstance(node, (str, bytes)) else node.__class__([val])
 
 
-class Empty(Op):
+class CmdOp(Op):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.parent = None
+        self.child = None
+    def __copy__(self):
+        return type(self)(*self.args, **self.kwargs)
+
+
+class Empty(CmdOp):
     def __repr__(self):
         return ''
     def is_pattern(self):
@@ -205,7 +214,7 @@ class Empty(Op):
         return None
 
 
-class Key(Op):
+class Key(CmdOp):
     @classmethod
     def concrete(cls, val):
         import numbers
@@ -215,27 +224,33 @@ class Key(Op):
     @property
     def op(self):
         return self.args[0]
+
     def is_pattern(self):
         return isinstance(self.op, Pattern)
+
     def __repr__(self):
         return f'{self.op}'
+
     def operator(self, top=False):
         s = quote(self.op.value)
         return s if top else '.' + s
-    def keys(self, node):
-        if not hasattr(node, 'keys'):
-            return ()
-        return self.op.matches(node.keys())
+
     def items(self, node):
-        for k in self.keys(node):
+        if not hasattr(node, 'keys'):
+            return
+        for k in self.op.matches(node.keys()):
             try:
                 yield k, node[k]
-            except TypeError:
+            except (TypeError, KeyError, IndexError):
                 pass
+    def keys(self, node):
+        return (k for k, _ in self.items(node))
     def values(self, node):
-        return ( v for _,v in self.items(node) )
+        return (v for _, v in self.items(node))
+
     def is_empty(self, node):
         return not tuple(self.keys(node))
+
     def default(self):
         if self.is_pattern():
             return {}
@@ -276,27 +291,23 @@ class Slot(Key):
         return String(val)
     def __repr__(self):
         return f'[{self.op}]'
+
     def operator(self, top=False):
         return '[' + quote(self.op.value, as_key=False) + ']'
-        s = str(self.op)
-        if isinstance(s, Word):
-            try:
-                int(s)
-                if isinstance(self.op, str):
-                    s = repr(s)
-            except ValueError:
-                pass
-        return '[' + s + ']'
-    def keys(self, node):
+
+    def items(self, node):
         if hasattr(node, 'keys'):
-            return super().keys(node)
-        if self.is_pattern():
-            return self.op.matches(idx for idx,_ in enumerate(node))
-        try:
-            _ = node[self.op.value]
-            return (self.op.value,)
-        except (KeyError, IndexError):
-            return ()
+            keys = self.op.matches(node.keys())
+        elif self.is_pattern():
+            keys = self.op.matches(idx for idx,_ in enumerate(node))
+        else:
+            keys = (self.op.value,)
+        for k in keys:
+            try:
+                yield (k, node[k])
+            except (TypeError, KeyError, IndexError):
+                pass
+
     def default(self):
         if isinstance(self.op, Numeric) and self.op.is_int():
             return []
@@ -357,16 +368,13 @@ class SlotSpecial(Slot):
         return cls(val)
     def default(self):
         return []
-    def keys(self, node):
-        return (-1,)
+
     def items(self, node):
-        for k in self.keys(node):
-            try:
-                yield k, node[k]
-            except TypeError:
-                pass
-    def values(self, node):
-        return ( v for _,v in self.items(node) )
+        try:
+            yield -1, node[-1]
+        except TypeError:
+            pass
+
     def is_empty(self, node):
         return True
 
@@ -387,7 +395,7 @@ class SlotSpecial(Slot):
         return node
 
 
-class Slice(Op):
+class Slice(CmdOp):
     @classmethod
     def concrete(cls, val):
         o = cls()
@@ -443,12 +451,14 @@ class Slice(Op):
         if stop == '+':
             return 1 << 64
         return max(0, int((stop - start) / step))
+
     def keys(self, node):
         return (self.slice(node),)
     def items(self, node):
-        return ( (k,node[k]) for k in self.keys(node) )
+        return ((k, node[k]) for k in self.keys(node))
     def values(self, node):
-        return ( v for _,v in self.items(node) )
+        return (v for _,v in self.items(node))
+
     def is_empty(self, node):
         return not node[self.slice(node)]
     def default(self):
@@ -503,7 +513,7 @@ class Slice(Op):
         return node
 
 
-class Invert(Op):
+class Invert(CmdOp):
     @classmethod
     def concrete(cls, val):
         return cls(val)
@@ -534,6 +544,21 @@ class rdoc(str):
         title = 'Supported transforms\n\n'
         return title + '\n'.join(f'{name}\t{fn.__doc__ or ""}' for name,fn in Dotted._registry.items())
 
+
+def _connect(ops):
+    # ensure that we aren't reusing
+    assert ops[0].parent is None, 'Reusing a partial dotted chain ist verboten'
+    assert ops[-1].child is None, 'Reusing a partial dotted chain ist verboten'
+    parent = None
+    for op in ops:
+        assert op.parent is None, 'Reusing a partial dotted chain ist verboten'
+        if parent is not None:
+            parent.child = op
+        op.parent = parent
+        parent = op
+    return ops
+
+
 class Dotted:
     _registry = {}
 
@@ -545,8 +570,9 @@ class Dotted:
         cls._registry[name] = fn
 
     def __init__(self, results):
-        self.ops = tuple(results['ops'])
+        self.ops = _connect(tuple(results['ops']))
         self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
+
     def assemble(self, start=0):
         return assemble(self, start)
     def __repr__(self):

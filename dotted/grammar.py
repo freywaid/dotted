@@ -22,7 +22,7 @@ none = pp.Literal('None').setParseAction(pp.tokenMap(lambda a: None))
 true = pp.Literal('True').setParseAction(pp.tokenMap(lambda a: True))
 false = pp.Literal('False').setParseAction(pp.tokenMap(lambda a: False))
 
-reserved = '.[]*:|+?/'
+reserved = '.[]*:|+?/=,'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -48,6 +48,8 @@ slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
 _commons = string | wildcard_first | wildcard | regex_first | regex | numeric_quoted
+
+# cmd ops
 key = (_commons | non_integer | numeric_key | word).setParseAction(el.Key)
 slot = (lb + (_commons | numeric_slot) + rb).setParseAction(el.Slot)
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
