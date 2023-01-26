@@ -66,6 +66,9 @@ def test_get_filter_keyvalue_on_dict():
     r = dotted.get(d, '*.id=1')
     assert r == ({'id': 1, 'hello': 'there'},)
 
+    r = dotted.get(d, '*.id=*')
+    assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
+
     r = dotted.get(d, '*.hello="there"')
     assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 

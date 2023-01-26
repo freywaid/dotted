@@ -255,3 +255,40 @@ the `:` operator.
 
 You may register new transforms via either `register` or the `@transform`
 decorator. Look at transforms.py for preregistered.
+
+## Filters
+
+### The key-value filter
+
+You may filter by key-value to narrow your result set.  You may use key or bracketed
+fields.
+
+A key-value field on key field looks like: `keyfield.key1=value1,key2=value2...`.  This
+will return all key-value matches on a subordinate dict-like object.  For example,
+
+    >>> d = {
+    ...    'a': {
+    ...         'id': 1,
+    ...         'hello': 'there',
+    ...     },
+    ...     'b': {
+    ...         'id': 2,
+    ...         'hello': 'there',
+    ...     },
+    ... }
+    >>> dotted.get(d, '*.id=1')
+    ({'id': 1, 'hello': 'there'},)
+    >>> dotted.get(d, '*.id=*')
+    ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
+
+A key-value field on a bracket field looks like: `[key1=value1,key2=value2...]`.  This
+will return all items in a list that match key-value filter.  For example,
+
+    >>> d = {
+    ...     'a': [{'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'}],
+    ...     'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
+    ... }
+    >>> dotted.get(d, 'a[hello="there"].id')
+    (1, 2)
+    >>> dotted.get(d, '*[hello="there"].id')
+    r == (1, 2, 3)
