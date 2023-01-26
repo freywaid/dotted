@@ -28,7 +28,7 @@ def test_match_filter_keyvalue():
     assert r == 'a.id=1,other=*'
 
     r = dotted.match('[*.id=*]', '[id=1]')
-    assert r == '[id=1]'
+    assert r is None
 
 
 def test_get_filter_keyvalue_on_dict():
@@ -45,10 +45,7 @@ def test_get_filter_keyvalue_on_dict():
 
     #
     r = dotted.get(d, 'a[id=1]')
-    assert r == ()
-
-    r = dotted.get(d, 'a[id=3]')
-    assert r == ()
+    assert r == {}
 
     # FIXME: move to different test
     r = dotted.get(d, 'a[*]')
@@ -79,13 +76,9 @@ def test_get_filter_keyvalue_on_dict():
     r = dotted.get(d, 'a.id=7')
     assert r is None
 
-    # top match
-    r = dotted.get({'a': 1, 'b': 2}, 'a=1')
-    assert r == {'a': 1, 'b': 2}
-
-    # top no match
-    r = dotted.get({'a': 1, 'b': 2}, 'a=2')
-    assert r is None
+    # fails to parse
+    with pytest.raises(dotted.api.ParseError):
+        dotted.get({'a': 1, 'b': 2}, 'a=1')
 
 
 def test_get_filter_keyvalue_on_list():
@@ -94,10 +87,14 @@ def test_get_filter_keyvalue_on_list():
         'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
     }
 
-    r = dotted.get(d, 'a[hello="there"].id')
+    r = dotted.get(d, '*[id=1]')
+    assert r == ([{'id': 1, 'hello': 'there'}], [])
+
+
+    r = dotted.get(d, 'a[hello="there"][*].id')
     assert r == (1, 2)
 
-    r = dotted.get(d, '*[hello="there"].id')
+    r = dotted.get(d, '*[hello="there"][*].id')
     assert r == (1, 2, 3)
 
 
@@ -118,9 +115,6 @@ def test_update_fiter_keyvalue_on_dict():
     r = dotted.update(d, 'b["id"]', 5)
     assert r == {'a': 6, 'b': {'id': 5, 'hello': 'there'}}
 
-    with pytest.raises(RuntimeError):
-        dotted.update(d, 'b[id=2]', 7)
-
 
 def test_update_filter_keyvalue_on_list():
     d = {
@@ -128,11 +122,13 @@ def test_update_filter_keyvalue_on_list():
         'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
     }
 
-    r = dotted.update(d, 'a[id=1]', 7)
-    assert r == {'a': [7, {'id': 2, 'hello': 'there'}], 'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}]}
+    with pytest.raises(RuntimeError):
+        r = dotted.update(d, 'a[id=1]', [7])
+        assert r == {'a': [7, {'id': 2, 'hello': 'there'}], 'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}]}
 
-    r = dotted.update(d, '*[hello="there"]', 'gone')
-    assert r == {'a': [7, 'gone'], 'b': ['gone', {'id': 4, 'hello': 'bye'}]}
+    with pytest.raises(RuntimeError):
+        r = dotted.update(d, '*[hello="there"]', 'gone')
+        assert r == {'a': [7, 'gone'], 'b': ['gone', {'id': 4, 'hello': 'bye'}]}
 
 
 def test_remove_filter_keyvalue_on_dict():
@@ -162,8 +158,36 @@ def test_remove_filter_keyvalue_on_list():
         'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
     }
 
-    r = dotted.remove(d, 'a[id=1]')
-    assert r == {'a': [{'id': 2, 'hello': 'there'}], 'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}]}
+    # remove by value
+    r = dotted.remove(d, '*[hello="there"]', [])
+    assert r == {'a': [], 'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}]}
 
+    # no change
+    r = dotted.remove(d, 'a[id=1]')
+    assert r == {'a': [], 'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}]}
+
+    # remove again
     r = dotted.remove(d, '*[hello="there"]')
     assert r == {'a': [], 'b': [{'id': 4, 'hello': 'bye'}]}
+
+
+def test_get_via_briheuga():
+    data = {
+        'clients': [
+            {'name':'John', 'city':'London'},
+            {'name':'David', 'city':'Paris'},
+            {'name':'Anne', 'city':'London'}
+        ],
+    }
+
+    r = dotted.get(data, 'clients[1:]')
+    assert r == [{'name': 'David', 'city': 'Paris'}, {'name': 'Anne', 'city': 'London'}]
+
+    r = dotted.get(data, 'clients[city="London"]')
+    assert r == [{'name': 'John', 'city': 'London'}, {'name': 'Anne', 'city': 'London'}]
+
+    r = dotted.get(data, 'clients[city="London"][0]')
+    assert r == {'name': 'John', 'city': 'London'}
+
+    r = dotted.get(data, 'clients[city="London"][1:]')
+    assert r == [{'name': 'Anne', 'city': 'London'}]

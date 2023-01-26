@@ -65,19 +65,19 @@ filters = filter_keyvalue
 
 keycmd = (key + ZM(dot + filters)).setParseAction(el.Key)
 
-_slotguts = (_commons | numeric_slot | filters) + ZM(dot + filters)
+_slotguts = (_commons | numeric_slot) + ZM(dot + filters)
 slotcmd = (lb + _slotguts + rb).setParseAction(el.Slot)
 
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
 
 slicecmd = (lb + Opt(slice) + rb).setParseAction(el.Slice)
+slicefilter = (lb + filters + ZM(dot + filters) + rb).setParseAction(el.SliceFilter)
 
 empty = pp.Empty().setParseAction(el.Empty)
-empty_filtered = (filters + ZM(dot + filters)).setParseAction(el.Empty)
 
-multi = OM((dot + keycmd) | slotcmd | slotspecial | slicecmd)
+multi = OM((dot + keycmd) | slotcmd | slotspecial | slicefilter | slicecmd)
 invert = Opt(L('-').setParseAction(el.Invert))
-dotted_top = empty_filtered | keycmd | slotcmd | slotspecial | slicecmd | empty
+dotted_top = keycmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')

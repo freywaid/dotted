@@ -333,6 +333,7 @@ class Key(CmdOp):
 
     def keys(self, node):
         return (k for k, _ in self.items(node))
+
     def values(self, node):
         return (v for _, v in self.items(node))
 
@@ -350,20 +351,14 @@ class Key(CmdOp):
         if not isinstance(op, Key):
             return None
         results = ()
-        if self.op is None: # always matchable since None is implicit wilcard
-            if op.op is not None:
-                results += (Match(op.op.value),)
-        elif op.op is None:
-            if not isinstance(self.op, Wildcard):
-                return None
-        elif not self.op.matchable(op.op, specials):
+        if not self.op.matchable(op.op, specials):
             return None
-        else:
-            # match key
-            val = next(self.op.matches((op.op.value,)), _marker)
-            if val is _marker:
-                return None
-            results += (Match(val),)
+
+        # match key
+        val = next(self.op.matches((op.op.value,)), _marker)
+        if val is _marker:
+            return None
+        results += (Match(val),)
 
         # match filters
         found = ()
@@ -404,17 +399,8 @@ class Slot(Key):
             return cls(Numeric(val))
         return String(val)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if isinstance(self.op, FilterOp):
-            self.filters = self.args
-            self.op = None
     def __repr__(self):
         return '[' + super().__repr__()  + ']'
-
-    def is_pattern(self):
-        # a pure filter treats op as an implicit wildcard
-        return super().is_pattern() or bool(self.filters)
 
     def operator(self, top=False):
         iterable = (repr(a) for a in self.filters)
@@ -427,12 +413,11 @@ class Slot(Key):
             yield from super().items(node)
             return
 
-        if self.op is None:
-            keys = (idx for idx, _ in enumerate(node))
-        elif self.is_pattern():
+        if self.is_pattern():
             keys = self.op.matches(idx for idx, _ in enumerate(node))
         else:
             keys = (self.op.value,)
+
         for k in keys:
             try:
                 v = node[k]
@@ -461,9 +446,6 @@ class Slot(Key):
         return node
 
     def upsert(self, node, val):
-        if hasattr(node, 'keys'):
-            if self.op is None:
-                raise RuntimeError('Bracket updates not permitted on dicts with naked op')
         return super().upsert(node, val)
 
     def pop(self, node, key):
@@ -530,6 +512,75 @@ class SlotSpecial(Slot):
         return node
     def remove(self, node, val):
         return node
+
+
+class SliceFilter(CmdOp):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = self.args
+
+    def is_pattern(self):
+        return False
+
+    def match(self, op, specials=False):
+        if not isinstance(op, SliceFilter):
+            return None
+        found = ()
+        for f in self.filters:
+            m = next(f.matches(op.filters), _marker)
+            if m is _marker:
+                return None
+            if m not in found:
+                found += m
+        return tuple(Match(m) for m in found)
+
+    def values(self, node):
+        found = (v for v in node if is_filtered(v, self.filters))
+        return (type(node)(found),)
+    def items(self, node):
+        return ((None, self.values(node)),)
+    def keys(self, node):
+        return (k for k, _ in self.items(node))
+
+    def upsert(self, node, val):
+        return self.update(node, None, val)
+
+    def update(self, node, key, val):
+        raise RuntimeError('Updates not supported for slice filtering')
+
+    def remove(self, node, val):
+        removes = []
+        for idx, v in enumerate(node):
+            if is_filtered(v, self.filters):
+                removes.append(idx)
+
+        if not removes:
+            return node
+
+        def _build():
+            iterable = (v for idx, v in enumerate(node) if idx not in removes)
+            return type(node)(iterable)
+
+        # if we're removing by value, then we need to see _if_ new list will equal
+        new = None
+        if val is not ANY:
+            new = _build()
+            if new != val:
+                return node
+
+        # attempt to mutate
+        try:
+            for idx in reversed(removes):
+                del node[idx]
+            return node
+        except TypeError:
+            pass
+
+        # otherwise we can't mutate, so generate a new one
+        return _build() if new is not None else new
+
+    def pop(self, node, key):
+        return self.remove(node, ANY)
 
 
 class Slice(CmdOp):
@@ -646,10 +697,10 @@ class Slice(CmdOp):
         return node.__class__(iterable)
     def remove(self, node, val):
         if val is ANY:
-            return self.pop(self, node, self.slice(node))
+            return self.pop(node, self.slice(node))
         key = self.slice(node)
         if node[key] == val:
-            return self.pop(self, node, key)
+            return self.pop(node, key)
         return node
 
 
