@@ -53,40 +53,31 @@ regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFir
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
-value = string | wildcard | regex | numeric_quoted | numeric_key
-
 _commons = string | wildcard_first | wildcard | regex_first | regex | numeric_quoted
-_key = _commons | non_integer | numeric_key | word
+value = string | wildcard | regex | numeric_quoted | numeric_key
+key = _commons | non_integer | numeric_key | word
 
-__filter_keyvalue = pp.Group(_key + equal + value)
+__filter_keyvalue = pp.Group(key + equal + value)
 _filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
 filter_keyvalue = _filter_keyvalue.setParseAction(el.FilterKeyValue)
 
 filters = filter_keyvalue
 
-key_last = (_key + ZM(dot + filters)).setParseAction(el.Key)
-key_mid = (_key + ZM(dot + filters) + dot).setParseAction(el.Key)
+keycmd = (key + ZM(dot + filters)).setParseAction(el.Key)
 
-_slot_guts = _commons | numeric_slot
-_slot = (_slot_guts + ZM(dot + filters)) | (filters + ZM(dot + filters))
-
-keyed_slot = _key + lb + _slot + rb
-
-
-
-
-_slot = __slot + ZM(dot + filter_keyvalue) | (filter_keyvalue + ZM(dot + filter_keyvalue))
-slot = (lb + _slot + rb).setParseAction(el.Slot)
+_slotguts = (_commons | numeric_slot | filters) + ZM(dot + filters)
+slotcmd = (lb + _slotguts + rb).setParseAction(el.Slot)
 
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
-slotslice = (lb + Opt(slice) + rb).setParseAction(el.Slice)
+
+slicecmd = (lb + Opt(slice) + rb).setParseAction(el.Slice)
 
 empty = pp.Empty().setParseAction(el.Empty)
-empty_filtered = OM(filter_keyvalue).setParseAction(el.Empty)
+empty_filtered = (filters + ZM(dot + filters)).setParseAction(el.Empty)
 
-multi = pp.OneOrMore((dot + key) | slot | slotspecial | slotslice)
+multi = OM((dot + keycmd) | slotcmd | slotspecial | slicecmd)
 invert = Opt(L('-').setParseAction(el.Invert))
-dotted_top = empty_filtered | key | slot | slotspecial | slotslice | empty
+dotted_top = empty_filtered | keycmd | slotcmd | slotspecial | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')

@@ -261,7 +261,10 @@ def match(pattern, key, groups=False, partial=True):
         m = pop.match(kop, specials=True)
         if not m:
             return returns(None, [])
-        _matches.append(m.val)
+        if isinstance(m, (tuple, list)):
+            _matches.extend(_m.val for _m in m)
+        else:
+            _matches.append(m.val)
 
     # we've completed matching but the last item in match groups is treated 'greedily'
     assert kop is not None          # sanity

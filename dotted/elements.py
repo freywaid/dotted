@@ -66,7 +66,7 @@ class Const(Op):
     def matchable(self, op, specials=False):
         return isinstance(op, Const)
     def matches(self, vals):
-        return ( v for v in vals if self.value == v )
+        return (v for v in vals if self.value == v)
 
 
 class Numeric(Const):
@@ -137,8 +137,17 @@ class Regex(Pattern):
         return re.compile(self.args[0])
     def matches(self, vals):
         vals = (v for v in vals if v is not NOP)
+        vals = {v if isinstance(v, (str, bytes)) else str(v): v for v in vals}
         iterable = (self.pattern.fullmatch(v) for v in vals)
-        return (m[0] for m in iterable if m)
+        # we want to regex match numerics as strings but return numerics
+        # unless they were transformed, of course
+        for m in iterable:
+            if not m:
+                continue
+            if m[0] != m.string:
+                yield m[0]
+            else:
+                yield vals[m.string]
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or (specials and isinstance(op, (Special, Regex)))
 
@@ -181,25 +190,25 @@ class AppenderUnique(Appender):
         return '+?'
 
 
-#
-#
-#
-def itemof(node, val):
-    return val if isinstance(node, (str, bytes)) else node.__class__([val])
+class FilterOp(Op):
+    def is_pattern(self):
+        return False
+    def is_filtered(self, node):
+        raise NotImplementedError
 
 
-class FilterKeyValue(Op):
+class FilterKeyValue(FilterOp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.kv = tuple((k, v) for k, v in self.args)
-    def is_pattern(self):
-        return False  # this acts as a filter and not as a pattern
     def __hash__(self):
         return hash(self.kv)
     def __repr__(self):
         return ','.join(f'{k}={v}' for k, v in self.kv)
 
-    def has_match(self, node):
+    def is_filtered(self, node):
+        if not hasattr(node, 'keys'):
+            return False
         # conjunctive evaluation
         for k, v in self.kv:
             for km in k.matches(node.keys()):
@@ -212,8 +221,58 @@ class FilterKeyValue(Op):
                 return False
         return True
 
+    def match_one(self, item):
+        if not isinstance(item, FilterKeyValue):
+            return None
+        r = ()
+        for k, v in self.kv:
+            found = False
+            for ik, iv in item.kv:
+                if not k.matchable(ik) or not v.matchable(iv):
+                    continue
+                mk = next(k.matches((ik.value,)), _marker)
+                mv = next(v.matches((iv.value,)), _marker)
+                if _marker in (mk, mv):
+                    continue
+                if (mk, mv) not in r:
+                    r += ((mk, mv),)
+                found = True
+            if not found:
+                return None
+        return r
 
-class Empty(Op):
+    def matches(self, items):
+        r = ()
+        for item in items:
+            o = self.match_one(item)
+            if o is None:
+                return
+            if not o:
+                continue
+            r += (type(self)(*o),)
+        yield r
+
+
+def is_filtered(node, filters):
+    for f in filters:
+        if not f.is_filtered(node):
+            return False
+    return True
+
+
+#
+#
+#
+def itemof(node, val):
+    return val if isinstance(node, (str, bytes)) else node.__class__([val])
+
+
+
+class CmdOp(Op):
+    pass
+
+
+class Empty(CmdOp):
     def __repr__(self):
         if self.args:
             return '.'.join(repr(a) for a in self.args)
@@ -223,11 +282,9 @@ class Empty(Op):
     def operator(self, top=False):
         return ''
     def values(self, node):
-        for a in self.args:
-            if not a.has_match(node):
-                return ()
-        else:
+        if is_filtered(node, self.args):
             return (node,)
+        return ()
     def default(self):
         return ''
     def match(self, op, specials=False):
@@ -236,7 +293,7 @@ class Empty(Op):
         return None
 
 
-class Key(Op):
+class Key(CmdOp):
     @classmethod
     def concrete(cls, val):
         import numbers
@@ -248,19 +305,19 @@ class Key(Op):
         super().__init__(*args, **kwargs)
         self.op = self.args[0]
         self.filters = self.args[1:]
+
     def is_pattern(self):
         return isinstance(self.op, Pattern)
+
     def __repr__(self):
         return '.'.join(repr(a) for a in self.args)
+
     def operator(self, top=False):
         s = quote(self.op.value)
         return s if top else '.' + s
 
     def is_filtered(self, node):
-        for a in self.filters:
-            if not a.has_match(node):
-                return False
-        return True
+        return is_filtered(node, self.filters)
 
     def items(self, node):
         if not hasattr(node, 'keys'):
@@ -273,12 +330,15 @@ class Key(Op):
                 continue
             if self.is_filtered(v):
                 yield (k, v)
+
     def keys(self, node):
         return (k for k, _ in self.items(node))
     def values(self, node):
         return (v for _, v in self.items(node))
+
     def is_empty(self, node):
         return not tuple(self.keys(node))
+
     def default(self):
         if self.is_pattern():
             return {}
@@ -287,10 +347,34 @@ class Key(Op):
         return {self.op.value: {}}
 
     def match(self, op, specials=False):
-        if not self.op.matchable(op.op, specials):
+        if not isinstance(op, Key):
             return None
-        val = next(self.op.matches((op.op.value,)), _marker)
-        return None if val is _marker else Match(val)
+        results = ()
+        if self.op is None: # always matchable since None is implicit wilcard
+            if op.op is not None:
+                results += (Match(op.op.value),)
+        elif op.op is None:
+            if not isinstance(self.op, Wildcard):
+                return None
+        elif not self.op.matchable(op.op, specials):
+            return None
+        else:
+            # match key
+            val = next(self.op.matches((op.op.value,)), _marker)
+            if val is _marker:
+                return None
+            results += (Match(val),)
+
+        # match filters
+        found = ()
+        for f in self.filters:
+            m = next(f.matches(op.filters), _marker)
+            if m is _marker:
+                return None
+            found += m
+        results += tuple(Match(f) for f in found)
+
+        return results
 
     def update(self, node, key, val):
         node[key] = self.default() if val is ANY else val
@@ -322,13 +406,16 @@ class Slot(Key):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if isinstance(self.op, FilterKeyValue):
+        if isinstance(self.op, FilterOp):
             self.filters = self.args
             self.op = None
     def __repr__(self):
         return '[' + super().__repr__()  + ']'
+
     def is_pattern(self):
-        return super().is_pattern() or bool(self.lookaheads)
+        # a pure filter treats op as an implicit wildcard
+        return super().is_pattern() or bool(self.filters)
+
     def operator(self, top=False):
         iterable = (repr(a) for a in self.filters)
         if self.op is not None:
@@ -337,12 +424,12 @@ class Slot(Key):
 
     def items(self, node):
         if hasattr(node, 'keys'):
-            if self.op is not None:
-                yield from super().items(node)
-                return
+            yield from super().items(node)
+            return
 
-
-        if self.is_pattern():
+        if self.op is None:
+            keys = (idx for idx, _ in enumerate(node))
+        elif self.is_pattern():
             keys = self.op.matches(idx for idx, _ in enumerate(node))
         else:
             keys = (self.op.value,)
@@ -351,10 +438,7 @@ class Slot(Key):
                 v = node[k]
             except (KeyError, TypeError, IndexError):
                 continue
-            for a in self.lookaheads:
-                if not a.has_match(v):
-                    break
-            else:
+            if self.is_filtered(v):
                 yield (k, v)
 
     def default(self):
@@ -375,9 +459,11 @@ class Slot(Key):
         except TypeError:
             node = node[:key] + itemof(node, val) + node[key+1:]
         return node
+
     def upsert(self, node, val):
-        import pdb
-        pdb.set_trace()
+        if hasattr(node, 'keys'):
+            if self.op is None:
+                raise RuntimeError('Bracket updates not permitted on dicts with naked op')
         return super().upsert(node, val)
 
     def pop(self, node, key):
@@ -413,26 +499,19 @@ class Slot(Key):
         return node
 
 
-class MatchSlotValue(Slot):
-    pass
-
-
 class SlotSpecial(Slot):
     @classmethod
     def concrete(cls, val):
         return cls(val)
     def default(self):
         return []
-    def keys(self, node):
-        return (-1,)
+
     def items(self, node):
-        for k in self.keys(node):
-            try:
-                yield k, node[k]
-            except TypeError:
-                pass
-    def values(self, node):
-        return ( v for _,v in self.items(node) )
+        try:
+            yield -1, node[-1]
+        except TypeError:
+            pass
+
     def is_empty(self, node):
         return True
 
@@ -453,7 +532,7 @@ class SlotSpecial(Slot):
         return node
 
 
-class Slice(Op):
+class Slice(CmdOp):
     @classmethod
     def concrete(cls, val):
         o = cls()
@@ -509,6 +588,7 @@ class Slice(Op):
         if stop == '+':
             return 1 << 64
         return max(0, int((stop - start) / step))
+
     def keys(self, node):
         return (self.slice(node),)
     def items(self, node):
@@ -573,7 +653,7 @@ class Slice(Op):
         return node
 
 
-class Invert(Op):
+class Invert(CmdOp):
     @classmethod
     def concrete(cls, val):
         return cls(val)
@@ -604,6 +684,7 @@ class rdoc(str):
         title = 'Supported transforms\n\n'
         return title + '\n'.join(f'{name}\t{fn.__doc__ or ""}' for name,fn in Dotted._registry.items())
 
+
 class Dotted:
     _registry = {}
 
@@ -617,6 +698,7 @@ class Dotted:
     def __init__(self, results):
         self.ops = tuple(results['ops'])
         self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
+
     def assemble(self, start=0):
         return assemble(self, start)
     def __repr__(self):
@@ -722,7 +804,7 @@ def updates(ops, node, val, has_defaults=False):
     if cur.is_empty(node) and not has_defaults:
         built = updates(ops, build_default(ops), val, True)
         return cur.upsert(node, built)
-    for k,v in cur.items(node):
+    for k, v in cur.items(node):
         node = cur.update(node, k, updates(ops, v, val, has_defaults))
     return node
 
