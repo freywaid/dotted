@@ -194,11 +194,8 @@ class FilterOp(Op):
     def is_pattern(self):
         return False
 
-    def is_filtered(self, node):
-        raise NotImplementedError
-
     def filtered(self, items):
-        return (item for item in items if self.is_filtered(item))
+        raise NotImplementedError
 
     def matchable(self, op):
         raise NotImplementedError
@@ -231,10 +228,15 @@ class FilterKeyValue(FilterOp):
                 return False
         return True
 
+    def filtered(self, items):
+        return (item for item in items if self.is_filtered(item))
+
     def matchable(self, op):
         return isinstance(op, FilterKeyValue)
 
     def match(self, op):
+        if not self.matchable(op):
+            return None
         r = ()
         for k, v in self.kv:
             found = False
@@ -253,8 +255,14 @@ class FilterKeyValue(FilterOp):
         return type(op)(*r)
 
 
-class FiterKeyValueFirst(FilterKeyValue):
-    pass
+class FilterKeyValueFirst(FilterKeyValue):
+    def matchable(self, op):
+        return isinstance(op, FilterKeyValueFirst)
+
+    def filtered(self, items):
+        for item in super().filtered(items):
+            yield item
+            break
 
 
 #
@@ -306,9 +314,6 @@ class Empty(CmdOp):
 
     def default(self):
         return ''
-
-    def matchable(self, op):
-        return isinstance(op, Empty)
 
     def match(self, op):
         if not isinstance(op, Empty):

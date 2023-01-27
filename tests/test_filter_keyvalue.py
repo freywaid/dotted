@@ -191,3 +191,16 @@ def test_get_via_briheuga():
 
     r = dotted.get(data, 'clients[city="London"][1:]')
     assert r == [{'name': 'Anne', 'city': 'London'}]
+
+
+def test_get_filter_keyvaluefirst_on_list():
+    d = {
+        'a': [{'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'}],
+        'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
+    }
+
+    r = dotted.get(d, '*[hello="there"?]')
+    assert r == ([{'id': 1, 'hello': 'there'}], [{'id': 3, 'hello': 'there'}])
+
+    r = dotted.get(d, '*?[hello="there"?]')
+    assert r == ([{'id': 1, 'hello': 'there'}],)

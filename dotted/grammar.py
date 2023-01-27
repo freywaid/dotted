@@ -59,9 +59,11 @@ key = _commons | non_integer | numeric_key | word
 
 __filter_keyvalue = pp.Group(key + equal + value)
 _filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
-filter_keyvalue = _filter_keyvalue.setParseAction(el.FilterKeyValue)
 
-filters = filter_keyvalue
+filter_keyvalue = _filter_keyvalue.copy().setParseAction(el.FilterKeyValue)
+filter_keyvalue_first = (_filter_keyvalue + S('?')).setParseAction(el.FilterKeyValueFirst)
+
+filters = filter_keyvalue_first | filter_keyvalue
 
 keycmd = (key + ZM(dot + filters)).setParseAction(el.Key)
 

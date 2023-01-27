@@ -288,7 +288,18 @@ will return all items in a list that match key-value filter.  For example,
     ...     'a': [{'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'}],
     ...     'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
     ... }
-    >>> dotted.get(d, 'a[hello="there"].id')
+    >>> dotted.get(d, 'a[hello="there"][*].id')
     (1, 2)
-    >>> dotted.get(d, '*[hello="there"].id')
+    >>> dotted.get(d, '*[hello="there"][*].id')
     r == (1, 2, 3)
+
+### The key-value first filter
+
+You can have it match first by appending a `?` to the end of the filter.
+
+    >>> d = {
+    ...     'a': [{'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'}],
+    ...     'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
+    ... }
+    >>> dotted.get(d, 'a[hello="there"?]')
+    return [{'id': 1, 'hello': 'there'}]
