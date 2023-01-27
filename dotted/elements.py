@@ -193,7 +193,17 @@ class AppenderUnique(Appender):
 class FilterOp(Op):
     def is_pattern(self):
         return False
+
     def is_filtered(self, node):
+        raise NotImplementedError
+
+    def filtered(self, items):
+        return (item for item in items if self.is_filtered(item))
+
+    def matchable(self, op):
+        raise NotImplementedError
+
+    def match(self, op):
         raise NotImplementedError
 
 
@@ -221,13 +231,14 @@ class FilterKeyValue(FilterOp):
                 return False
         return True
 
-    def match_one(self, item):
-        if not isinstance(item, FilterKeyValue):
-            return None
+    def matchable(self, op):
+        return isinstance(op, FilterKeyValue)
+
+    def match(self, op):
         r = ()
         for k, v in self.kv:
             found = False
-            for ik, iv in item.kv:
+            for ik, iv in op.kv:
                 if not k.matchable(ik) or not v.matchable(iv):
                     continue
                 mk = next(k.matches((ik.value,)), _marker)
@@ -239,25 +250,11 @@ class FilterKeyValue(FilterOp):
                 found = True
             if not found:
                 return None
-        return r
-
-    def matches(self, items):
-        r = ()
-        for item in items:
-            o = self.match_one(item)
-            if o is None:
-                return
-            if not o:
-                continue
-            r += (type(self)(*o),)
-        yield r
+        return type(op)(*r)
 
 
-def is_filtered(node, filters):
-    for f in filters:
-        if not f.is_filtered(node):
-            return False
-    return True
+class FiterKeyValueFirst(FilterKeyValue):
+    pass
 
 
 #
@@ -269,28 +266,57 @@ def itemof(node, val):
 
 
 class CmdOp(Op):
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = ()
+
+    def match(self, op):
+        results = ()
+        for f, of in zip(self.filters, op.filters):
+            if not f.matchable(of):
+                return None
+            m = f.match(of)
+            if m is None:
+                return None
+            results += (Match(m),)
+        return results
+
+    def filtered(self, items):
+        for f in self.filters:
+            items = f.filtered(items)
+        return items
 
 
 class Empty(CmdOp):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = self.args
+
     def __repr__(self):
-        if self.args:
-            return '.'.join(repr(a) for a in self.args)
-        return ''
+        return '.'.join(repr(f) for f in self.filters)
+
     def is_pattern(self):
         return False
+
     def operator(self, top=False):
-        return ''
+        return self.__repr__()
+
     def values(self, node):
-        if is_filtered(node, self.args):
-            return (node,)
-        return ()
+        return self.filtered((node,))
+
     def default(self):
         return ''
-    def match(self, op, specials=False):
-        if isinstance(op, Empty):
-            return Match('')
-        return None
+
+    def matchable(self, op):
+        return isinstance(op, Empty)
+
+    def match(self, op):
+        if not isinstance(op, Empty):
+            return None
+        m = super().match(op)
+        if m is None:
+            return m
+        return (Match(''),) + m
 
 
 class Key(CmdOp):
@@ -313,23 +339,35 @@ class Key(CmdOp):
         return '.'.join(repr(a) for a in self.args)
 
     def operator(self, top=False):
-        s = quote(self.op.value)
-        return s if top else '.' + s
+        iterable = itertools.chain((quote(self.op.value),), (repr(f) for f in self.filters))
+        s = '.'.join(iterable)
+        if top:
+            return s
+        return '.' + s
 
-    def is_filtered(self, node):
-        return is_filtered(node, self.filters)
+    def _items(self, node, keys):
+        curkey = None
+
+        def _values():
+            nonlocal curkey
+            for k in keys:
+                try:
+                    v = node[k]
+                except (TypeError, KeyError, IndexError):
+                    continue
+                curkey = k
+                yield v
+
+        def _items():
+            for v in self.filtered(_values()):
+                yield (curkey, v)
+
+        return _items()
 
     def items(self, node):
         if not hasattr(node, 'keys'):
-            return
-        keys = self.op.matches(node.keys()) if self.op is not None else node.keys()
-        for k in keys:
-            try:
-                v = node[k]
-            except (KeyError, TypeError, IndexError):
-                continue
-            if self.is_filtered(v):
-                yield (k, v)
+            return ()
+        return self._items(node, self.op.matches(node.keys()))
 
     def keys(self, node):
         return (k for k, _ in self.items(node))
@@ -350,8 +388,11 @@ class Key(CmdOp):
     def match(self, op, specials=False):
         if not isinstance(op, Key):
             return None
-        results = ()
         if not self.op.matchable(op.op, specials):
+            return None
+
+        results = super().match(op)
+        if results is None:
             return None
 
         # match key
@@ -359,16 +400,6 @@ class Key(CmdOp):
         if val is _marker:
             return None
         results += (Match(val),)
-
-        # match filters
-        found = ()
-        for f in self.filters:
-            m = next(f.matches(op.filters), _marker)
-            if m is _marker:
-                return None
-            found += m
-        results += tuple(Match(f) for f in found)
-
         return results
 
     def update(self, node, key, val):
@@ -410,21 +441,14 @@ class Slot(Key):
 
     def items(self, node):
         if hasattr(node, 'keys'):
-            yield from super().items(node)
-            return
+            return super().items(node)
 
         if self.is_pattern():
             keys = self.op.matches(idx for idx, _ in enumerate(node))
         else:
             keys = (self.op.value,)
 
-        for k in keys:
-            try:
-                v = node[k]
-            except (KeyError, TypeError, IndexError):
-                continue
-            if self.is_filtered(v):
-                yield (k, v)
+        return self._items(node, keys)
 
     def default(self):
         if isinstance(self.op, Numeric) and self.op.is_int():
@@ -525,18 +549,10 @@ class SliceFilter(CmdOp):
     def match(self, op, specials=False):
         if not isinstance(op, SliceFilter):
             return None
-        found = ()
-        for f in self.filters:
-            m = next(f.matches(op.filters), _marker)
-            if m is _marker:
-                return None
-            if m not in found:
-                found += m
-        return tuple(Match(m) for m in found)
+        return super().match(op)
 
     def values(self, node):
-        found = (v for v in node if is_filtered(v, self.filters))
-        return (type(node)(found),)
+        return (type(node)(self.filtered(node)),)
     def items(self, node):
         return ((None, self.values(node)),)
     def keys(self, node):
@@ -550,9 +566,16 @@ class SliceFilter(CmdOp):
 
     def remove(self, node, val):
         removes = []
-        for idx, v in enumerate(node):
-            if is_filtered(v, self.filters):
-                removes.append(idx)
+
+        curidx = None
+        def _items():
+            nonlocal curidx
+            for idx, item in enumerate(node):
+                curidx = idx
+                yield item
+
+        for v in self.filtered(_items()):
+            removes.append(curidx)
 
         if not removes:
             return node
