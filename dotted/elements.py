@@ -408,18 +408,39 @@ class Key(CmdOp):
         return results
 
     def update(self, node, key, val):
-        node[key] = self.default() if val is ANY else val
-        return node
+        val = self.default() if val is ANY else val
+        try:
+            node[key] = val
+            return node
+        except TypeError:
+            pass
+        iterable = ((k, node[k]) for k in node if k != key)
+        iterable = itertools.chain(iterable, ((key, val),))
+        return type(node)(iterable)
     def upsert(self, node, val):
         if not self.is_pattern():
             return self.update(node, self.op.value, val)
-        for k in self.keys(node):
-            node = self.update(node, k, val)
-        return node
+
+        keys = tuple(self.keys(node))
+        iterable = ((k, node[k]) for k in node if k not in keys)
+        items = itertools.chain(iterable, ((k, val) for k in keys))
+        try:
+            for k, v in items:
+                node[k] = v
+            return node
+        except TypeError:
+            pass
+        return type(node)(items)
 
     def pop(self, node, key):
-        node.pop(key, None)
-        return node
+        try:
+            del node[key]
+            return node
+        except KeyError:
+            return node
+        except TypeError:
+            pass
+        return type(node)((k, v) for k, v in node.items() if k != key)
     def remove(self, node, val):
         for k,v in self.items(node):
             if val is ANY or v == val:
@@ -463,39 +484,66 @@ class Slot(Key):
     def update(self, node, key, val):
         if hasattr(node, 'keys'):
             return super().update(node, key, val)
+        val = self.default() if val is ANY else val
         if len(node) <= key:
             node += itemof(node, val)
             return node
-        if node[key] == val:
-            return node
         try:
-            node[key] = self.default() if val is ANY else val
+            node[key] = val
         except TypeError:
             node = node[:key] + itemof(node, val) + node[key+1:]
         return node
 
     def upsert(self, node, val):
-        return super().upsert(node, val)
+        if hasattr(node, 'keys'):
+            return super().upsert(node, val)
+        val = self.default() if val is ANY else val
+        if self.is_pattern():
+            keys = tuple(self.keys(node))
+        else:
+            keys = (self.op.value,)
+        update_keys = tuple(k for k in keys if k < len(node))
+        append_keys = tuple(k for k in keys if k >= len(node))
+        try:
+            for k in update_keys:
+                node[k] = val
+            node += type(node)(val for _ in append_keys)
+            return node
+        except TypeError:
+            pass
+
+        def _gen():
+            for k in node:
+                if k in update_keys:
+                    yield val
+                else:
+                    yield node[k]
+
+        node = type(node)(_gen())
+        node += type(node)(val for _ in append_keys)
+        return node
 
     def pop(self, node, key):
         if hasattr(node, 'keys'):
             return super().pop(node, key)
-        if hasattr(node, 'pop'):
-            node.pop(key)
+        try:
+            del node[key]
             return node
-        return node.__class__(v for i,v in enumerated(node) if i != key)
+        except (KeyError, IndexError):
+            return node
+        except TypeError:
+            pass
+        return type(node)(v for i,v in enumerated(node) if i != key)
     def remove(self, node, val):
         if hasattr(node, 'keys'):
             return super().remove(node, val)
+        keys = tuple(self.keys(node))
         if val is ANY:
-            if hasattr(node, 'pop'):
-                popped = 0
-                for k in list(self.keys(node)):
-                    node.pop(k - popped)
-                    popped += 1
+            if hasattr(node, '__delitem__'):
+                for k in reversed(keys):
+                    del node[k]
                 return node
-            keys = tuple(self.keys(node))
-            return node.__class__(v for i,v in enumerated(node) if i not in keys)
+            return node.__class__(v for i, v in enumerated(node) if i not in keys)
         if hasattr(node, 'remove'):
             try:
                 node.remove(val)
@@ -503,10 +551,13 @@ class Slot(Key):
                 pass
             return node
         try:
-            idx = node.index(val)
-            node = node[:idx] + node[idx+1:]
-        except ValueError:
-            pass
+            if hasattr(node, 'index'):
+                idx = node.index(val)
+            else:
+                idx = next(idx for idx, v in enumerate(node) if val == v)
+        except (ValueError, StopIteration):
+            return node
+        node = node[:idx] + node[idx+1:]
         return node
 
 
