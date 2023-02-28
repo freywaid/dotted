@@ -88,7 +88,7 @@ matching is enabled by default).
 
 ### Expand
 
-You may with to _expand_ all fields that match a pattern in an object.
+You may wish to _expand_ all fields that match a pattern in an object.
 
     >>> import dotted
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7}
@@ -104,17 +104,17 @@ You may with to _expand_ all fields that match a pattern in an object.
 ## Grammar
 
 Dotted notation looks similar to python. Both _dot_ fields and _bracketed_ fields
-use `keys()` and `__getitem__()` internally.  A _dot_ field expects to see a dictionary-like object.
-A _slot_ field is biased towards sequences (like lists, tuples, and strs) but can act on
-dicts as well. Dotted also supports slicing notation as well as transforms discussed
-below.
+use `keys()` and `__getitem__()` internally.  A _dot_ field expects to see a
+dictionary-like object. A _slot_ field is biased towards sequences (like lists, tuples,
+and strs) but can act on dicts as well. Dotted also supports slicing notation as well as
+transforms discussed below.
 
 ### Key fields
 
 A key field is expressed as `a` or part of a dotted expression, such as `a.b`.  The
-grammar parser is pretty permissive for what can be in a key field.  Pretty much any
-non-reserved char will match.  Note that key fields will only work on objects that have
-a `keys()` method.  Basically, they work with dictionary or dictionary-like objects
+grammar parser is permissive for what can be in a key field.  Pretty much any non-reserved
+char will match.  Note that key fields will only work on objects that have a `keys()`
+method.  Basically, they work with dictionary or dictionary-like objects.
 
     >>> import dotted
     >>> dotted.get({'a': {'b': 'hello'}}, 'a.b')
@@ -126,7 +126,7 @@ a `\` as the first char.
 ### Bracketed fields
 
 You may also use bracket notation, such as `a[0]` which does a `__getitem__` at key 0.
-The parser prefers numeric types over string types (if you wish to look  up a non-numeric
+The parser prefers numeric types over string types (if you wish to look up a non-numeric
 field using brackets be sure to quote it).  Bracketed fields will work with pretty much
 any object that can be looked up via `__getitem__`.
 
@@ -213,9 +213,9 @@ to remove an item using `update`:
     >>> dotted.remove(d, '-b', 'bye again')
     {'a': 'hello', 'b': 'bye again'}
 
-### Patterns
+## Patterns
 
-You can use dotted for pattern matching. You can match to wildcards or regular
+You may use dotted for pattern matching. You can match to wildcards or regular
 expressions.  You'll note that patterns always return a tuple of matches.
 
     >>> import dotted
@@ -227,9 +227,18 @@ expressions.  You'll note that patterns always return a tuple of matches.
 
 Dotted will return all values that match the pattern(s).
 
+### Wildcards
+
+The wildcard pattern is `*`.  It will match anything.
+
+### Regular expressions
+
+The regex pattern is enclosed in slashes: `/regex/`. Note that if the field is a non-str,
+the regex pattern will internally match to its str representation.
+
 ### The match-first operatoer
 
-You can also postfix the wildcard or regex with a `?`.  This will return only
+You can also postfix any pattern with a `?`.  This will return only
 the first match.
 
     >>> import dotted
@@ -260,11 +269,11 @@ decorator. Look at transforms.py for preregistered.
 
 ### The key-value filter
 
-You may filter by key-value to narrow your result set.  You may use key or bracketed
-fields.
+You may filter by key-value to narrow your result set.  You may use with __key__ or
+__bracketed__ fields.
 
-A key-value field on key field looks like: `keyfield.key1=value1,key2=value2...`.  This
-will return all key-value matches on a subordinate dict-like object.  For example,
+A key-value field on __key__ field looks like: `keyfield.key1=value1,key2=value2...`.
+This will return all key-value matches on a subordinate dict-like object.  For example,
 
     >>> d = {
     ...    'a': {
@@ -281,8 +290,8 @@ will return all key-value matches on a subordinate dict-like object.  For exampl
     >>> dotted.get(d, '*.id=*')
     ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
-A key-value field on a bracket field looks like: `[key1=value1,key2=value2...]`.  This
-will return all items in a list that match key-value filter.  For example,
+A key-value field on a __bracketed__ field looks like: `[key1=value1,key2=value2...]`.
+This will return all items in a list that match key-value filter.  For example,
 
     >>> d = {
     ...     'a': [{'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'}],
@@ -303,3 +312,8 @@ You can have it match first by appending a `?` to the end of the filter.
     ... }
     >>> dotted.get(d, 'a[hello="there"?]')
     return [{'id': 1, 'hello': 'there'}]
+
+### Chaining filters
+
+You can chain filters using the `.` operator if you'd like:
+`*.key1=value1,key2=value2.key3=value3`.
