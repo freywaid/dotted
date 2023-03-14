@@ -216,17 +216,12 @@ class FilterKeyValue(FilterOp):
     def is_filtered(self, node):
         if not hasattr(node, 'keys'):
             return False
-        # conjunctive evaluation
+        # disjunctive evaluation
         for k, v in self.kv:
             for km in k.matches(node.keys()):
                 for vm in v.matches((node[km],)):
-                    break
-                else:
-                    return False
-                break
-            else:
-                return False
-        return True
+                    return True
+        return False
 
     def filtered(self, items):
         return (item for item in items if self.is_filtered(item))

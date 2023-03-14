@@ -270,7 +270,8 @@ decorator. Look at transforms.py for preregistered.
 ### The key-value filter
 
 You may filter by key-value to narrow your result set.  You may use with __key__ or
-__bracketed__ fields.
+__bracketed__ fields.  Key-value fields may be disjunctively (OR) specified via the `,`
+delimiter.
 
 A key-value field on __key__ field looks like: `keyfield.key1=value1,key2=value2...`.
 This will return all key-value matches on a subordinate dict-like object.  For example,
@@ -313,7 +314,14 @@ You can have it match first by appending a `?` to the end of the filter.
     >>> dotted.get(d, 'a[hello="there"?]')
     return [{'id': 1, 'hello': 'there'}]
 
-### Chaining filters
+### Conjunction vs disjunction
 
-You can chain filters using the `.` operator if you'd like:
-`*.key1=value1,key2=value2.key3=value3`.
+To _conjunctively_ connect filters use the `.` operator. Filters offer the ability to act
+_disjunctively_ as well by using the `,` operator.
+
+For example, given
+`*.key1=value1,key2=value2.key3=value3`. This will filter
+(`key1=value1` OR `key2=value2`) AND `key3=value3`.
+
+Note that this gives you the abilty to have a key filter multiple values, such as:
+`*.key1=value1,key2=value2`.

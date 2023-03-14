@@ -2,10 +2,9 @@ import pytest
 import dotted
 
 
-def _test_parse_lookahead_keyvalue():
+def test_parse_lookahead_keyvalue():
     dotted.parse('hello.id=1')
     dotted.parse('*.id=1')
-    dotted.parse('id=1')
     dotted.parse('a[id=1]')
     dotted.parse('a[*]')
     dotted.parse('a[*.id=1]')
@@ -79,6 +78,18 @@ def test_get_filter_keyvalue_on_dict():
     # fails to parse
     with pytest.raises(dotted.api.ParseError):
         dotted.get({'a': 1, 'b': 2}, 'a=1')
+
+    # conjunctive eval
+    r = dotted.get(d, '*.id=1.hello="there"')
+    assert r == ({'id': 1, 'hello': 'there'},)
+
+    # disjunctive eval
+    r = dotted.get(d, '*.id=1,hello="there"')
+    assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
+
+    # match multiple values
+    r = dotted.get(d, '*.id=1,id=2')
+    assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
 
 def test_get_filter_keyvalue_on_list():
