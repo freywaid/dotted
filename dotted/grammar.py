@@ -10,6 +10,7 @@ L = pp.Literal
 Opt = pp.Optional
 ZM = pp.ZeroOrMore
 OM = pp.OneOrMore
+at = pp.Suppress('@')
 equal = pp.Suppress('=')
 dot = pp.Suppress('.')
 comma = pp.Suppress(',')
@@ -28,7 +29,7 @@ none = pp.Literal('None').setParseAction(pp.tokenMap(lambda a: None))
 true = pp.Literal('True').setParseAction(pp.tokenMap(lambda a: True))
 false = pp.Literal('False').setParseAction(pp.tokenMap(lambda a: False))
 
-reserved = '.[]*:|+?/=,'
+reserved = '.[]*:|+?/=,@'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -43,6 +44,7 @@ numeric_slot = ppc.number.copy().setParseAction(el.Numeric)
 
 word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).setParseAction(el.Word)
 non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').setParseAction(el.Word)
+nameop = name.copy().setParseAction(el.Word)
 
 string = quoted.copy().setParseAction(el.String)
 wildcard = pp.Literal('*').setParseAction(el.Wildcard)
@@ -53,7 +55,8 @@ regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFir
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
-_commons = string | wildcard_first | wildcard | regex_first | regex | numeric_quoted
+_common_pats = wildcard_first | wildcard | regex_first | regex
+_commons = string | _common_pats | numeric_quoted
 value = string | wildcard | regex | numeric_quoted | numeric_key
 key = _commons | non_integer | numeric_key | word
 
@@ -70,6 +73,8 @@ keycmd = (key + ZM(dot + filters)).setParseAction(el.Key)
 _slotguts = (_commons | numeric_slot) + ZM(dot + filters)
 slotcmd = (lb + _slotguts + rb).setParseAction(el.Slot)
 
+attrcmd = (at + (nameop | _common_pats) + ZM(dot + filters)).setParseAction(el.Attr)
+
 slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
 
 slicecmd = (lb + Opt(slice) + rb).setParseAction(el.Slice)
@@ -77,9 +82,9 @@ slicefilter = (lb + filters + ZM(dot + filters) + rb).setParseAction(el.SliceFil
 
 empty = pp.Empty().setParseAction(el.Empty)
 
-multi = OM((dot + keycmd) | slotcmd | slotspecial | slicefilter | slicecmd)
+multi = OM((dot + keycmd) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd)
 invert = Opt(L('-').setParseAction(el.Invert))
-dotted_top = keycmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
+dotted_top = keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')

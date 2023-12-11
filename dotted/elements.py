@@ -6,6 +6,7 @@ import copy
 import functools
 import itertools
 import pyparsing as pp
+import types
 import re
 
 
@@ -443,6 +444,80 @@ class Key(CmdOp):
         return node
 
 
+class Attr(Key):
+    @classmethod
+    def concrete(cls, val):
+        return cls(Word(val))
+
+    def __repr__(self):
+        return '@' + '.'.join(repr(a) for a in self.args)
+
+    def operator(self, top=False):
+        iterable = itertools.chain((quote(self.op.value),), (repr(f) for f in self.filters))
+        return '@' + '.'.join(iterable)
+
+    def _items(self, node, keys):
+        curkey = None
+
+        def _values():
+            nonlocal curkey
+            for k in keys:
+                try:
+                    v = getattr(node, k)
+                except AttributeError:
+                    continue
+                curkey = k
+                yield v
+
+        def _items():
+            for v in self.filtered(_values()):
+                yield (curkey, v)
+
+        return _items()
+
+    def items(self, node):
+        try:
+            keys = node.__dict__.keys()
+        except AttributeError:
+            keys = ()
+        return self._items(node, self.op.matches(keys))
+
+    def default(self):
+        o = types.SimpleNamespae()
+        if self.is_pattern():
+            return o
+        if not self.filters:
+            setattr(o, self.op.value, None)
+            return o
+        setattr(o, self.op.value, types.SimpleNamespace())
+        return o
+
+    def update(self, node, key, val):
+        val = self.default() if val is ANY else val
+        setattr(node, key, val)
+        return node
+    def upsert(self, node, val):
+        if not self.is_pattern():
+            return self.update(node, self.op.value, val)
+        keys = tuple(self.keys(node))
+        iterable = ((k, getattr(node, k)) for k in node if k not in keys)
+        items = itertools.chain(iterable, ((k, val) for k in keys))
+        for k, v in items:
+            setattr(node, k, v)
+        return node
+
+    def pop(self, node, key):
+        try:
+            delattr(node, key)
+        except AttributeError:
+            return node
+    def remove(self, node, val):
+        for k,v in self.items(node):
+            if val is ANY or v == val:
+                return self.pop(node, k)
+        return node
+
+
 class Slot(Key):
     @classmethod
     def concrete(cls, val):
@@ -609,15 +684,7 @@ class SliceFilter(CmdOp):
     def keys(self, node):
         return (k for k, _ in self.items(node))
 
-    def upsert(self, node, val):
-        return self.update(node, None, val)
-
-    def update(self, node, key, val):
-        raise RuntimeError('Updates not supported for slice filtering')
-
-    def remove(self, node, val):
-        removes = []
-
+    def _items(self, node):
         curidx = None
         def _items():
             nonlocal curidx
@@ -626,7 +693,16 @@ class SliceFilter(CmdOp):
                 yield item
 
         for v in self.filtered(_items()):
-            removes.append(curidx)
+            yield (curidx, v)
+
+    def upsert(self, node, val):
+        return self.update(node, None, val)
+
+    def update(self, node, key, val):
+        raise RuntimeError('Updates not supported for slice filtering')
+
+    def remove(self, node, val):
+        removes = [idx for idx, _ in self._items(node)]
 
         if not removes:
             return node

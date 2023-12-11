@@ -103,17 +103,17 @@ You may wish to _expand_ all fields that match a pattern in an object.
 
 ## Grammar
 
-Dotted notation looks similar to python. Both _dot_ fields and _bracketed_ fields
-use `keys()` and `__getitem__()` internally.  A _dot_ field expects to see a
-dictionary-like object. A _slot_ field is biased towards sequences (like lists, tuples,
-and strs) but can act on dicts as well. Dotted also supports slicing notation as well as
-transforms discussed below.
+Dotted notation shares similarities with python. A _dot_ `.` field expects to see a
+dictionary-like object (using `keys` and `__getitem__` internally.  A _bracket_ `[]`
+field is biased towards sequences (like lists or strs) but can also act on dicts.  A
+_attr_ `@` field uses `getattr/setattr/delattr`.  Dotted also support slicing notation
+as well as transforms discussed below.
 
 ### Key fields
 
 A key field is expressed as `a` or part of a dotted expression, such as `a.b`.  The
 grammar parser is permissive for what can be in a key field.  Pretty much any non-reserved
-char will match.  Note that key fields will only work on objects that have a `keys()`
+char will match.  Note that key fields will only work on objects that have a `keys`
 method.  Basically, they work with dictionary or dictionary-like objects.
 
     >>> import dotted
@@ -135,6 +135,18 @@ any object that can be looked up via `__getitem__`.
     'first'
     >>> dotted.get({'a': {'b': 'hello'}}, 'a["b"]')
     'first'
+
+### Attr fields
+
+An attr field is expressed by prefixing with `@`. This will fetch data at that attribute.
+You may wonder why have this when you can just as easily use standard python to access.
+Two important reasons: nested expressions and patterns.
+
+    >>> import dotted, types
+    >>> ns = types.SimpleNamespace
+    >>> ns.hello = {'me': 'goodbye'}
+    >>> dotted.get(ns, '@hello.me')
+    'goodbye'
 
 ### Numeric types
 
