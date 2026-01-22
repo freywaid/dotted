@@ -3,6 +3,24 @@
 Sometimes you want to fetch data from a deeply nested data structure. Dotted notation
 helps you do that.
 
+## Safe Traversal (Optional Chaining)
+
+Dotted treats all path traversals as optional—similar to JavaScript's optional chaining
+operator (`?.`). If any part of the path doesn't exist, `get` returns `None` (or a 
+specified default) instead of raising an exception:
+
+    >>> import dotted
+    >>> d = {'a': {'b': 1}}
+    >>> dotted.get(d, 'a.b.c.d.e')  # path doesn't exist
+    None
+    >>> dotted.get(d, 'a.b.c.d.e', 'default')  # with default
+    'default'
+    >>> dotted.get(d, 'x.y.z', 42)  # missing from the start
+    42
+
+This makes dotted ideal for safely navigating deeply nested or uncertain data structures
+without defensive coding or try/except blocks.
+
 ## Breaking Changes
 
 ### v0.13.0
