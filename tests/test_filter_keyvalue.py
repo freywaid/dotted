@@ -3,30 +3,30 @@ import dotted
 
 
 def test_parse_lookahead_keyvalue():
-    dotted.parse('hello.id=1')
-    dotted.parse('*.id=1')
+    dotted.parse('hello&id=1')
+    dotted.parse('*&id=1')
     dotted.parse('a[id=1]')
     dotted.parse('a[*]')
-    dotted.parse('a[*.id=1]')
+    dotted.parse('a[*&id=1]')
 
 
 def test_match_filter_keyvalue():
-    r = dotted.match('a.id=1', 'a.id=1')
-    assert r == 'a.id=1'
+    r = dotted.match('a&id=1', 'a&id=1')
+    assert r == 'a&id=1'
 
-    r = dotted.match('*.id=1', 'a.id=1')
-    assert r == 'a.id=1'
+    r = dotted.match('*&id=1', 'a&id=1')
+    assert r == 'a&id=1'
 
-    r = dotted.match('[*]', '[*.id=1]')
-    assert r == '[*.id=1]'
+    r = dotted.match('[*]', '[*&id=1]')
+    assert r == '[*&id=1]'
 
     r = dotted.match('[id=*]', '[id=1]')
     assert r == '[id=1]'
 
-    r = dotted.match('*.id=*', 'a.id=1,other=*')
-    assert r == 'a.id=1,other=*'
+    r = dotted.match('*&id=*', 'a&id=1,other=*')
+    assert r == 'a&id=1,other=*'
 
-    r = dotted.match('[*.id=*]', '[id=1]')
+    r = dotted.match('[*&id=*]', '[id=1]')
     assert r is None
 
 
@@ -55,24 +55,24 @@ def test_get_filter_keyvalue_on_dict():
     assert r is None
 
     # as non-pattern
-    r = dotted.get(d, 'a.id=1')
+    r = dotted.get(d, 'a&id=1')
     assert r == {'id': 1, 'hello': 'there'}
 
     # as pattern
-    r = dotted.get(d, '*.id=1')
+    r = dotted.get(d, '*&id=1')
     assert r == ({'id': 1, 'hello': 'there'},)
 
-    r = dotted.get(d, '*.id=*')
+    r = dotted.get(d, '*&id=*')
     assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
-    r = dotted.get(d, '*.hello="there"')
+    r = dotted.get(d, '*&hello="there"')
     assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
-    r = dotted.get(d, '*.hello="there".id')
+    r = dotted.get(d, '*&hello="there".id')
     assert r == (1, 2)
 
     # no match
-    r = dotted.get(d, 'a.id=7')
+    r = dotted.get(d, 'a&id=7')
     assert r is None
 
     # fails to parse
@@ -80,15 +80,15 @@ def test_get_filter_keyvalue_on_dict():
         dotted.get({'a': 1, 'b': 2}, 'a=1')
 
     # conjunctive eval
-    r = dotted.get(d, '*.id=1.hello="there"')
+    r = dotted.get(d, '*&id=1&hello="there"')
     assert r == ({'id': 1, 'hello': 'there'},)
 
     # disjunctive eval
-    r = dotted.get(d, '*.id=1,hello="there"')
+    r = dotted.get(d, '*&id=1,hello="there"')
     assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
     # match multiple values
-    r = dotted.get(d, '*.id=1,id=2')
+    r = dotted.get(d, '*&id=1,id=2')
     assert r == ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
 
@@ -120,7 +120,7 @@ def test_update_fiter_keyvalue_on_dict():
             'hello': 'there',
         }
     }
-    r = dotted.update(d, 'a.id=1', 6)
+    r = dotted.update(d, 'a&id=1', 6)
     assert r == {'a': 6, 'b': {'id': 2, 'hello': 'there'}}
 
     r = dotted.update(d, 'b["id"]', 5)
@@ -155,11 +155,11 @@ def test_remove_filter_keyvalue_on_dict():
     }
 
     # no match
-    r = dotted.remove(d, 'a.id=2')
+    r = dotted.remove(d, 'a&id=2')
     assert r == {'a': {'id': 1, 'hello': 'there'}, 'b': {'id': 2, 'hello': 'there'}}
 
     # match with pattern
-    r = dotted.remove(d, '*.id=1')
+    r = dotted.remove(d, '*&id=1')
     assert r == {'b': {'id': 2, 'hello': 'there'}}
 
 
@@ -222,10 +222,10 @@ def test_has_filter_keyvalue():
         'a': {'id': 1, 'name': 'alice'},
         'b': {'id': 2, 'name': 'bob'},
     }
-    assert dotted.has(d, '*.id=1') is True
-    assert dotted.has(d, '*.id=999') is False
-    assert dotted.has(d, 'a.id=1') is True
-    assert dotted.has(d, 'a.id=2') is False
+    assert dotted.has(d, '*&id=1') is True
+    assert dotted.has(d, '*&id=999') is False
+    assert dotted.has(d, 'a&id=1') is True
+    assert dotted.has(d, 'a&id=2') is False
 
 
 def test_expand_filter_keyvalue():
@@ -235,7 +235,7 @@ def test_expand_filter_keyvalue():
         'c': {'id': 3, 'type': 'admin'},
     }
     # expand returns matching keys (without filter suffix)
-    r = dotted.expand(d, '*.type="admin"')
+    r = dotted.expand(d, '*&type="admin"')
     assert set(r) == {'a', 'c'}
 
 
@@ -245,7 +245,7 @@ def test_pluck_filter_keyvalue():
         'b': {'id': 2, 'val': 'y'},
     }
     # pluck returns key without filter suffix
-    r = dotted.pluck(d, '*.id=1')
+    r = dotted.pluck(d, '*&id=1')
     assert r == (('a', {'id': 1, 'val': 'x'}),)
 
 
@@ -255,7 +255,7 @@ def test_setdefault_filter_keyvalue():
         'b': {'id': 2},
     }
     # key with filter exists - no change
-    r = dotted.setdefault(d, 'a.id=1', 'new')
+    r = dotted.setdefault(d, 'a&id=1', 'new')
     assert d['a'] == {'id': 1}  # unchanged
 
 
@@ -264,3 +264,38 @@ def test_get_filter_chained():
     d = {'items': [{'id': 1, 'name': 'alice'}, {'id': 2, 'name': 'bob'}]}
     r = dotted.get(d, 'items[id=1][0].name')
     assert r == 'alice'
+
+
+def test_dotted_filter_key():
+    """Test filters with dotted paths in the key (e.g., user.id=1)"""
+    d = {
+        'items': [
+            {'user': {'id': 1, 'name': 'alice'}, 'value': 100},
+            {'user': {'id': 2, 'name': 'bob'}, 'value': 200},
+        ]
+    }
+    # Filter on nested path
+    r = dotted.get(d, 'items[user.id=1]')
+    assert r == [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
+
+    r = dotted.get(d, 'items[user.name="bob"]')
+    assert r == [{'user': {'id': 2, 'name': 'bob'}, 'value': 200}]
+
+    # Filter on nested path, then access value
+    r = dotted.get(d, 'items[user.id=1][0].value')
+    assert r == 100
+
+
+def test_dotted_filter_key_deep():
+    """Test filters with deeper dotted paths"""
+    d = {
+        'records': [
+            {'meta': {'author': {'id': 1}}, 'data': 'first'},
+            {'meta': {'author': {'id': 2}}, 'data': 'second'},
+        ]
+    }
+    r = dotted.get(d, 'records[meta.author.id=1]')
+    assert r == [{'meta': {'author': {'id': 1}}, 'data': 'first'}]
+
+    r = dotted.get(d, 'records[meta.author.id=2][0].data')
+    assert r == 'second'
