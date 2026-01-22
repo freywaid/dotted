@@ -17,7 +17,7 @@ class ParseError(Exception):
 @functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
     try:
-        results = grammar.template.parseString(ops, parseAll=True)
+        results = grammar.template.parse_string(ops, parse_all=True)
     except el.pp.ParseException as e:
         raise ParseError(f'{e.msg} at pos {e.loc}: {repr(e.pstr)}')
     return el.Dotted(results)

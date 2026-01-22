@@ -5,7 +5,7 @@ with open("README.md", "rt") as f:
 
 setuptools.setup(
     name="dotted-notation",
-    version="0.11.0",
+    version="0.11.1",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",
@@ -21,5 +21,5 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires='>=3.6',
-    install_requires=['pyparsing>=2.4'],
+    install_requires=['pyparsing>=3.0'],
 )
