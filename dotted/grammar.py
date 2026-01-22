@@ -25,33 +25,33 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').setParseAction(pp.tokenMap(lambda a: None))
-true = pp.Literal('True').setParseAction(pp.tokenMap(lambda a: True))
-false = pp.Literal('False').setParseAction(pp.tokenMap(lambda a: False))
+none = pp.Literal('None').set_parse_action(pp.tokenMap(lambda a: None))
+true = pp.Literal('True').set_parse_action(pp.tokenMap(lambda a: True))
+false = pp.Literal('False').set_parse_action(pp.tokenMap(lambda a: False))
 
 reserved = '.[]*:|+?/=,@'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
-appender = pp.Literal('+').setParseAction(el.Appender)
-appender_unique = pp.Literal('+?').setParseAction(el.AppenderUnique)
+appender = pp.Literal('+').set_parse_action(el.Appender)
+appender_unique = pp.Literal('+?').set_parse_action(el.AppenderUnique)
 
 _numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
-numeric_quoted = _numeric_quoted.setParseAction(el.NumericQuoted)
+numeric_quoted = _numeric_quoted.set_parse_action(el.NumericQuoted)
 
-numeric_key = integer.copy().setParseAction(el.Numeric)
-numeric_slot = ppc.number.copy().setParseAction(el.Numeric)
+numeric_key = integer.copy().set_parse_action(el.Numeric)
+numeric_slot = ppc.number.copy().set_parse_action(el.Numeric)
 
-word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).setParseAction(el.Word)
-non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').setParseAction(el.Word)
-nameop = name.copy().setParseAction(el.Word)
+word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).set_parse_action(el.Word)
+non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(el.Word)
+nameop = name.copy().set_parse_action(el.Word)
 
-string = quoted.copy().setParseAction(el.String)
-wildcard = pp.Literal('*').setParseAction(el.Wildcard)
-wildcard_first = pp.Literal('*?').setParseAction(el.WildcardFirst)
+string = quoted.copy().set_parse_action(el.String)
+wildcard = pp.Literal('*').set_parse_action(el.Wildcard)
+wildcard_first = pp.Literal('*?').set_parse_action(el.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
-regex = _regex.copy().setParseAction(el.Regex)
-regex_first = (_regex + pp.Suppress(pp.Literal('?'))).setParseAction(el.RegexFirst)
+regex = _regex.copy().set_parse_action(el.Regex)
+regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(el.RegexFirst)
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
@@ -63,32 +63,32 @@ key = _commons | non_integer | numeric_key | word
 __filter_keyvalue = pp.Group(key + equal + value)
 _filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
 
-filter_keyvalue = _filter_keyvalue.copy().setParseAction(el.FilterKeyValue)
-filter_keyvalue_first = (_filter_keyvalue + S('?')).setParseAction(el.FilterKeyValueFirst)
+filter_keyvalue = _filter_keyvalue.copy().set_parse_action(el.FilterKeyValue)
+filter_keyvalue_first = (_filter_keyvalue + S('?')).set_parse_action(el.FilterKeyValueFirst)
 
 filters = filter_keyvalue_first | filter_keyvalue
 
-keycmd = (key + ZM(dot + filters)).setParseAction(el.Key)
+keycmd = (key + ZM(dot + filters)).set_parse_action(el.Key)
 
 _slotguts = (_commons | numeric_slot) + ZM(dot + filters)
-slotcmd = (lb + _slotguts + rb).setParseAction(el.Slot)
+slotcmd = (lb + _slotguts + rb).set_parse_action(el.Slot)
 
-attrcmd = (at + (nameop | _common_pats) + ZM(dot + filters)).setParseAction(el.Attr)
+attrcmd = (at + (nameop | _common_pats) + ZM(dot + filters)).set_parse_action(el.Attr)
 
-slotspecial = (lb + (appender_unique | appender) + rb).setParseAction(el.SlotSpecial)
+slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
 
-slicecmd = (lb + Opt(slice) + rb).setParseAction(el.Slice)
-slicefilter = (lb + filters + ZM(dot + filters) + rb).setParseAction(el.SliceFilter)
+slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
+slicefilter = (lb + filters + ZM(dot + filters) + rb).set_parse_action(el.SliceFilter)
 
-empty = pp.Empty().setParseAction(el.Empty)
+empty = pp.Empty().set_parse_action(el.Empty)
 
 multi = OM((dot + keycmd) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd)
-invert = Opt(L('-').setParseAction(el.Invert))
+invert = Opt(L('-').set_parse_action(el.Invert))
 dotted_top = keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
-param = (colon + targ) | colon.copy().setParseAction(lambda: [None])
+param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = pp.Group(transform_name.copy() + ZM(param))
 transforms = ZM(pipe + transform)
 
