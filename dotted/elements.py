@@ -500,7 +500,11 @@ class Attr(Key):
         if not self.is_pattern():
             return self.update(node, self.op.value, val)
         keys = tuple(self.keys(node))
-        iterable = ((k, getattr(node, k)) for k in node if k not in keys)
+        try:
+            node_keys = node.__dict__.keys()
+        except AttributeError:
+            node_keys = ()
+        iterable = ((k, getattr(node, k)) for k in node_keys if k not in keys)
         items = itertools.chain(iterable, ((k, val) for k in keys))
         for k, v in items:
             setattr(node, k, v)
@@ -510,11 +514,13 @@ class Attr(Key):
         try:
             delattr(node, key)
         except AttributeError:
-            return node
+            pass
+        return node
+
     def remove(self, node, val):
-        for k,v in self.items(node):
-            if val is ANY or v == val:
-                return self.pop(node, k)
+        to_remove = [k for k, v in self.items(node) if val is ANY or v == val]
+        for k in to_remove:
+            self.pop(node, k)
         return node
 
 
@@ -671,6 +677,9 @@ class SliceFilter(CmdOp):
 
     def is_pattern(self):
         return False
+
+    def is_empty(self, node):
+        return not node
 
     def match(self, op, specials=False):
         if not isinstance(op, SliceFilter):
@@ -966,9 +975,13 @@ def transform(name):
 
 def build_default(ops):
     cur, *ops = ops
-    built = cur.default()
     if not ops:
-        return built
+        # At leaf - for numeric Slot, populate index with None
+        if isinstance(cur, Slot) and isinstance(cur.op, Numeric) and cur.op.is_int():
+            idx = cur.op.value
+            return [None] * (idx + 1)
+        return cur.default()
+    built = cur.default()
     return cur.upsert(built, build_default(ops))
 
 

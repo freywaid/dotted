@@ -4,8 +4,8 @@ with open("README.md", "rt") as f:
     long_description = f.read()
 
 setuptools.setup(
-    name="dotted-notation",
-    version="0.11.1",
+    name="dotted_notation",
+    version="0.12.0",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation parser with pattern matching",

@@ -160,7 +160,7 @@ def test_remove_filter_keyvalue_on_dict():
 
     # match with pattern
     r = dotted.remove(d, '*.id=1')
-    {'b': {'id': 2, 'hello': 'there'}}
+    assert r == {'b': {'id': 2, 'hello': 'there'}}
 
 
 def test_remove_filter_keyvalue_on_list():
@@ -215,3 +215,52 @@ def test_get_filter_keyvaluefirst_on_list():
 
     r = dotted.get(d, '*?[hello="there"?]')
     assert r == ([{'id': 1, 'hello': 'there'}],)
+
+
+def test_has_filter_keyvalue():
+    d = {
+        'a': {'id': 1, 'name': 'alice'},
+        'b': {'id': 2, 'name': 'bob'},
+    }
+    assert dotted.has(d, '*.id=1') is True
+    assert dotted.has(d, '*.id=999') is False
+    assert dotted.has(d, 'a.id=1') is True
+    assert dotted.has(d, 'a.id=2') is False
+
+
+def test_expand_filter_keyvalue():
+    d = {
+        'a': {'id': 1, 'type': 'admin'},
+        'b': {'id': 2, 'type': 'user'},
+        'c': {'id': 3, 'type': 'admin'},
+    }
+    # expand returns matching keys (without filter suffix)
+    r = dotted.expand(d, '*.type="admin"')
+    assert set(r) == {'a', 'c'}
+
+
+def test_pluck_filter_keyvalue():
+    d = {
+        'a': {'id': 1, 'val': 'x'},
+        'b': {'id': 2, 'val': 'y'},
+    }
+    # pluck returns key without filter suffix
+    r = dotted.pluck(d, '*.id=1')
+    assert r == (('a', {'id': 1, 'val': 'x'}),)
+
+
+def test_setdefault_filter_keyvalue():
+    d = {
+        'a': {'id': 1},
+        'b': {'id': 2},
+    }
+    # key with filter exists - no change
+    r = dotted.setdefault(d, 'a.id=1', 'new')
+    assert d['a'] == {'id': 1}  # unchanged
+
+
+def test_get_filter_chained():
+    # Test chaining filter with further access
+    d = {'items': [{'id': 1, 'name': 'alice'}, {'id': 2, 'name': 'bob'}]}
+    r = dotted.get(d, 'items[id=1][0].name')
+    assert r == 'alice'

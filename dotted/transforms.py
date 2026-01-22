@@ -134,7 +134,7 @@ def transform_lowercase(val, *modes):
     """
     try:
         return val.lower()
-    except TypeError:
+    except AttributeError:
         if 'raises' in modes:
             raise
     return val
@@ -149,7 +149,7 @@ def transform_uppercase(val, *modes):
     """
     try:
         return val.upper()
-    except TypeError:
+    except AttributeError:
         if 'raises' in modes:
             raise
     return val
@@ -162,3 +162,48 @@ def transform_add(val, rhs):
         <dotted>|add:<rhs>          add <rhs> to value
     """
     return val + rhs
+
+
+@transform('list')
+def transform_list(val, *modes):
+    """
+    Transform to list
+        <dotted>|list               list(val)
+        <dotted>|list:raises        list(val) or raises
+    """
+    try:
+        return list(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('tuple')
+def transform_tuple(val, *modes):
+    """
+    Transform to tuple
+        <dotted>|tuple              tuple(val)
+        <dotted>|tuple:raises       tuple(val) or raises
+    """
+    try:
+        return tuple(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('set')
+def transform_set(val, *modes):
+    """
+    Transform to set
+        <dotted>|set                set(val)
+        <dotted>|set:raises         set(val) or raises
+    """
+    try:
+        return set(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
