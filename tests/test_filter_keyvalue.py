@@ -299,3 +299,41 @@ def test_dotted_filter_key_deep():
 
     r = dotted.get(d, 'records[meta.author.id=2][0].data')
     assert r == 'second'
+
+
+def test_wildcard_filter_key():
+    """Test filters with wildcard keys (e.g., *=1)"""
+    d = {
+        'items': [
+            {'name': 'foo', 'val': 1},
+            {'name': 'bar', 'val': 2},
+        ]
+    }
+    # Wildcard key - match any key with value 1
+    r = dotted.get(d, 'items[*=1]')
+    assert r == [{'name': 'foo', 'val': 1}]
+
+    # Wildcard key with string value
+    r = dotted.get(d, 'items[*="foo"]')
+    assert r == [{'name': 'foo', 'val': 1}]
+
+    # Wildcard key and value - match all items
+    r = dotted.get(d, 'items[*=*]')
+    assert r == [{'name': 'foo', 'val': 1}, {'name': 'bar', 'val': 2}]
+
+
+def test_regex_filter_key():
+    """Test filters with regex pattern keys"""
+    d = {
+        'items': [
+            {'name': 'foo', 'value': 100},
+            {'name': 'bar', 'count': 200},
+        ]
+    }
+    # Regex key - match keys starting with 'val'
+    r = dotted.get(d, 'items[/val.*/=100]')
+    assert r == [{'name': 'foo', 'value': 100}]
+
+    # Regex key - match keys ending with 'ount'
+    r = dotted.get(d, 'items[/.*ount/=200]')
+    assert r == [{'name': 'bar', 'count': 200}]

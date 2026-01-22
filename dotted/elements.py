@@ -228,27 +228,43 @@ class FilterKey(Op):
     def is_dotted(self):
         return len(self.parts) > 1
 
-    def get_value(self, node):
-        """Get value from node, traversing dotted path if needed"""
+    def get_values(self, node):
+        """Get all values from node matching this key, traversing dotted path if needed.
+        Yields (value, True) for each match, or (None, False) if no matches."""
+        if not hasattr(node, 'keys'):
+            yield None, False
+            return
         if not self.is_dotted():
-            # Simple key - direct lookup
+            # Simple key - yield all matching values
             key = self.parts[0]
-            for km in key.matches(node.keys() if hasattr(node, 'keys') else ()):
-                return node[km], True
-            return None, False
-        # Dotted path - traverse
+            found_any = False
+            for km in key.matches(node.keys()):
+                yield node[km], True
+                found_any = True
+            if not found_any:
+                yield None, False
+            return
+        # Dotted path - traverse (only first match at each level)
         current = node
         for part in self.parts:
             if not hasattr(current, 'keys'):
-                return None, False
+                yield None, False
+                return
             found = False
             for km in part.matches(current.keys()):
                 current = current[km]
                 found = True
                 break
             if not found:
-                return None, False
-        return current, True
+                yield None, False
+                return
+        yield current, True
+
+    def get_value(self, node):
+        """Get first matching value from node (backwards compat)"""
+        for val, found in self.get_values(node):
+            return val, found
+        return None, False
 
     def matches(self, keys):
         """For simple keys, delegate to the inner part's matches"""
@@ -294,10 +310,10 @@ class FilterKeyValue(FilterOp):
             return False
         # disjunctive evaluation
         for k, v in self.kv:
-            val, found = k.get_value(node)
-            if found:
-                for vm in v.matches((val,)):
-                    return True
+            for val, found in k.get_values(node):
+                if found:
+                    for vm in v.matches((val,)):
+                        return True
         return False
 
     def filtered(self, items):

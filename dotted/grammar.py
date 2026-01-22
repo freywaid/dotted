@@ -62,7 +62,8 @@ value = string | wildcard | regex | numeric_quoted | numeric_key
 key = _commons | non_integer | numeric_key | word
 
 # filter_key allows dotted paths like user.id or config.db.host
-_filter_key_part = string | non_integer | numeric_key | word
+# also supports wildcards and regex patterns for matching
+_filter_key_part = string | _common_pats | non_integer | numeric_key | word
 filter_key = pp.Group(_filter_key_part + ZM(dot + _filter_key_part)).set_parse_action(el.FilterKey)
 
 __filter_keyvalue = pp.Group(filter_key + equal + value)
