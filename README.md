@@ -5,9 +5,9 @@ helps you do that.
 
 ## Safe Traversal (Optional Chaining)
 
-Dotted treats all path traversals as optional—similar to JavaScript's optional chaining
-operator (`?.`). If any part of the path doesn't exist, `get` returns `None` (or a 
-specified default) instead of raising an exception:
+Like JavaScript's optional chaining operator (`?.`), dotted safely handles missing paths.
+If any part of the path doesn't exist, `get` returns `None` (or a specified default) 
+instead of raising an exception:
 
     >>> import dotted
     >>> d = {'a': {'b': 1}}
