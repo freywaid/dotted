@@ -23,7 +23,7 @@ slash = pp.Suppress('/')
 backslash = pp.Suppress('\\')
 name = pp.Word(pp.alphas + '_', pp.alphanums + '_')
 transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
-quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
+quoted = pp.QuotedString('"', esc_char='\\') | pp.QuotedString("'", esc_char='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
 none = pp.Literal('None').set_parse_action(pp.token_map(lambda a: None))
