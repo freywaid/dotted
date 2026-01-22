@@ -26,9 +26,9 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', escChar='\\') | pp.QuotedString("'", escChar='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').set_parse_action(pp.tokenMap(lambda a: None))
-true = pp.Literal('True').set_parse_action(pp.tokenMap(lambda a: True))
-false = pp.Literal('False').set_parse_action(pp.tokenMap(lambda a: False))
+none = pp.Literal('None').set_parse_action(pp.token_map(lambda a: None))
+true = pp.Literal('True').set_parse_action(pp.token_map(lambda a: True))
+false = pp.Literal('False').set_parse_action(pp.token_map(lambda a: False))
 
 reserved = '.[]*:|+?/=,@&'
 breserved = ''.join('\\' + i for i in reserved)

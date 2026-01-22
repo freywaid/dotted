@@ -24,7 +24,7 @@ class Match:
 class Op:
     def __init__(self, *args, **kwargs):
         if len(args) == 3 and isinstance(args[2], pp.ParseResults):
-            self.args = tuple(args[2].asList())
+            self.args = tuple(args[2].as_list())
             self.parsed = args
         else:
             self.args = tuple(args)
