@@ -5,10 +5,10 @@ with open("README.md", "rt") as f:
 
 setuptools.setup(
     name="dotted_notation",
-    version="0.12.0",
+    version="0.13.0",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
-    description="Dotted notation parser with pattern matching",
+    description="Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms",
     license="MIT license",
     long_description=long_description,
     long_description_content_type="text/markdown",

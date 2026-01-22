@@ -3,6 +3,32 @@
 Sometimes you want to fetch data from a deeply nested data structure. Dotted notation
 helps you do that.
 
+## Safe Traversal (Optional Chaining)
+
+Like JavaScript's optional chaining operator (`?.`), dotted safely handles missing paths.
+If any part of the path doesn't exist, `get` returns `None` (or a specified default) 
+instead of raising an exception:
+
+    >>> import dotted
+    >>> d = {'a': {'b': 1}}
+    >>> dotted.get(d, 'a.b.c.d.e')  # path doesn't exist
+    None
+    >>> dotted.get(d, 'a.b.c.d.e', 'default')  # with default
+    'default'
+    >>> dotted.get(d, 'x.y.z', 42)  # missing from the start
+    42
+
+This makes dotted ideal for safely navigating deeply nested or uncertain data structures
+without defensive coding or try/except blocks.
+
+## Breaking Changes
+
+### v0.13.0
+- **Filter conjunction operator changed from `.` to `&`**: The conjunction operator for
+  chaining multiple filters has changed. Previously, `*.id=1.name="alice"` was used for
+  conjunctive (AND) filtering. Now use `*&id=1&name="alice"`. This change enables support
+  for dotted paths within filter keys (e.g., `items[user.id=1]` to filter on nested fields).
+
 Let's say you have a dictionary containing a dictionary containing a list and you wish
 to fetch the ith value from that nested list.
 
@@ -285,7 +311,7 @@ You may filter by key-value to narrow your result set.  You may use with __key__
 __bracketed__ fields.  Key-value fields may be disjunctively (OR) specified via the `,`
 delimiter.
 
-A key-value field on __key__ field looks like: `keyfield.key1=value1,key2=value2...`.
+A key-value field on __key__ field looks like: `keyfield&key1=value1,key2=value2...`.
 This will return all key-value matches on a subordinate dict-like object.  For example,
 
     >>> d = {
@@ -298,9 +324,9 @@ This will return all key-value matches on a subordinate dict-like object.  For e
     ...         'hello': 'there',
     ...     },
     ... }
-    >>> dotted.get(d, '*.id=1')
+    >>> dotted.get(d, '*&id=1')
     ({'id': 1, 'hello': 'there'},)
-    >>> dotted.get(d, '*.id=*')
+    >>> dotted.get(d, '*&id=*')
     ({'id': 1, 'hello': 'there'}, {'id': 2, 'hello': 'there'})
 
 A key-value field on a __bracketed__ field looks like: `[key1=value1,key2=value2...]`.
@@ -315,6 +341,21 @@ This will return all items in a list that match key-value filter.  For example,
     >>> dotted.get(d, '*[hello="there"][*].id')
     r == (1, 2, 3)
 
+### Dotted filter keys
+
+Filter keys can contain dotted paths to filter on nested fields:
+
+    >>> d = {
+    ...     'items': [
+    ...         {'user': {'id': 1, 'name': 'alice'}, 'value': 100},
+    ...         {'user': {'id': 2, 'name': 'bob'}, 'value': 200},
+    ...     ]
+    ... }
+    >>> dotted.get(d, 'items[user.id=1]')
+    [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
+    >>> dotted.get(d, 'items[user.name="bob"][0].value')
+    200
+
 ### The key-value first filter
 
 You can have it match first by appending a `?` to the end of the filter.
@@ -328,12 +369,12 @@ You can have it match first by appending a `?` to the end of the filter.
 
 ### Conjunction vs disjunction
 
-To _conjunctively_ connect filters use the `.` operator. Filters offer the ability to act
+To _conjunctively_ connect filters use the `&` operator. Filters offer the ability to act
 _disjunctively_ as well by using the `,` operator.
 
 For example, given
-`*.key1=value1,key2=value2.key3=value3`. This will filter
+`*&key1=value1,key2=value2&key3=value3`. This will filter
 (`key1=value1` OR `key2=value2`) AND `key3=value3`.
 
 Note that this gives you the abilty to have a key filter multiple values, such as:
-`*.key1=value1,key2=value2`.
+`*&key1=value1,key2=value2`.

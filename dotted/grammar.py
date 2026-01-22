@@ -13,6 +13,7 @@ OM = pp.OneOrMore
 at = pp.Suppress('@')
 equal = pp.Suppress('=')
 dot = pp.Suppress('.')
+amp = pp.Suppress('&')
 comma = pp.Suppress(',')
 lb = pp.Suppress('[')
 rb = pp.Suppress(']')
@@ -29,7 +30,7 @@ none = pp.Literal('None').set_parse_action(pp.tokenMap(lambda a: None))
 true = pp.Literal('True').set_parse_action(pp.tokenMap(lambda a: True))
 false = pp.Literal('False').set_parse_action(pp.tokenMap(lambda a: False))
 
-reserved = '.[]*:|+?/=,@'
+reserved = '.[]*:|+?/=,@&'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -60,7 +61,11 @@ _commons = string | _common_pats | numeric_quoted
 value = string | wildcard | regex | numeric_quoted | numeric_key
 key = _commons | non_integer | numeric_key | word
 
-__filter_keyvalue = pp.Group(key + equal + value)
+# filter_key allows dotted paths like user.id or config.db.host
+_filter_key_part = string | non_integer | numeric_key | word
+filter_key = pp.Group(_filter_key_part + ZM(dot + _filter_key_part)).set_parse_action(el.FilterKey)
+
+__filter_keyvalue = pp.Group(filter_key + equal + value)
 _filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
 
 filter_keyvalue = _filter_keyvalue.copy().set_parse_action(el.FilterKeyValue)
@@ -68,17 +73,17 @@ filter_keyvalue_first = (_filter_keyvalue + S('?')).set_parse_action(el.FilterKe
 
 filters = filter_keyvalue_first | filter_keyvalue
 
-keycmd = (key + ZM(dot + filters)).set_parse_action(el.Key)
+keycmd = (key + ZM(amp + filters)).set_parse_action(el.Key)
 
-_slotguts = (_commons | numeric_slot) + ZM(dot + filters)
+_slotguts = (_commons | numeric_slot) + ZM(amp + filters)
 slotcmd = (lb + _slotguts + rb).set_parse_action(el.Slot)
 
-attrcmd = (at + (nameop | _common_pats) + ZM(dot + filters)).set_parse_action(el.Attr)
+attrcmd = (at + (nameop | _common_pats) + ZM(amp + filters)).set_parse_action(el.Attr)
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
 
 slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
-slicefilter = (lb + filters + ZM(dot + filters) + rb).set_parse_action(el.SliceFilter)
+slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
 empty = pp.Empty().set_parse_action(el.Empty)
 

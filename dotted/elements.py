@@ -205,6 +205,81 @@ class FilterOp(Op):
         raise NotImplementedError
 
 
+class FilterKey(Op):
+    """Represents a dotted path in a filter key, e.g. user.id or config.db.host"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # args comes as a single list from pyparsing Group, flatten it
+        if len(self.args) == 1 and isinstance(self.args[0], (list, tuple)):
+            self.parts = tuple(self.args[0])
+        else:
+            self.parts = tuple(self.args)
+        # Override args with tuple of parts for proper hashing
+        self.args = self.parts
+        # For simple keys (single part), expose value for backwards compat
+        self.value = self.parts[0].value if len(self.parts) == 1 else None
+
+    def __repr__(self):
+        return '.'.join(repr(p) for p in self.parts)
+
+    def __hash__(self):
+        return hash(self.parts)
+
+    def is_dotted(self):
+        return len(self.parts) > 1
+
+    def get_value(self, node):
+        """Get value from node, traversing dotted path if needed"""
+        if not self.is_dotted():
+            # Simple key - direct lookup
+            key = self.parts[0]
+            for km in key.matches(node.keys() if hasattr(node, 'keys') else ()):
+                return node[km], True
+            return None, False
+        # Dotted path - traverse
+        current = node
+        for part in self.parts:
+            if not hasattr(current, 'keys'):
+                return None, False
+            found = False
+            for km in part.matches(current.keys()):
+                current = current[km]
+                found = True
+                break
+            if not found:
+                return None, False
+        return current, True
+
+    def matches(self, keys):
+        """For simple keys, delegate to the inner part's matches"""
+        if not self.is_dotted():
+            return self.parts[0].matches(keys)
+        return ()
+
+    def matchable(self, op):
+        """Check if this filter key can match another"""
+        if not isinstance(op, FilterKey):
+            return False
+        if len(self.parts) != len(op.parts):
+            return False
+        for sp, op_p in zip(self.parts, op.parts):
+            if not sp.matchable(op_p):
+                return False
+        return True
+
+    def match(self, op):
+        """Match against another filter key"""
+        if not self.matchable(op):
+            return None
+        result = []
+        for sp, op_p in zip(self.parts, op.parts):
+            m = sp.match(op_p)
+            if m is None:
+                return None
+            result.append(m)
+        return '.'.join(str(r) for r in result)
+
+
 class FilterKeyValue(FilterOp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -219,8 +294,9 @@ class FilterKeyValue(FilterOp):
             return False
         # disjunctive evaluation
         for k, v in self.kv:
-            for km in k.matches(node.keys()):
-                for vm in v.matches((node[km],)):
+            val, found = k.get_value(node)
+            if found:
+                for vm in v.matches((val,)):
                     return True
         return False
 
