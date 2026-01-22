@@ -155,6 +155,35 @@ def has(obj, key):
     return get(obj, key, dummy, dummy) is not dummy
 
 
+def setdefault(obj, key, val, apply_transforms=True):
+    """
+    Set value at key only if key does not exist; return obj
+    >>> d = {'hello': 'there'}
+    >>> setdefault(d, 'hello', 'world')
+    {'hello': 'there'}
+    >>> setdefault(d, 'bye', 'world')
+    {'hello': 'there', 'bye': 'world'}
+    >>> setdefault({}, 'a.b.c', 7)
+    {'a': {'b': {'c': 7}}}
+    """
+    if has(obj, key):
+        return obj
+    return update(obj, key, val, apply_transforms=apply_transforms)
+
+
+def setdefault_multi(obj, keyvalues, apply_transforms=True):
+    """
+    Set multiple values, only where keys do not exist
+    >>> setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    {'a': 1, 'b': 2}
+    >>> setdefault_multi({'debug': True}, {'debug': False, 'timeout': 30})
+    {'debug': True, 'timeout': 30}
+    """
+    for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
+        obj = setdefault(obj, k, v, apply_transforms=apply_transforms)
+    return obj
+
+
 def update(obj, key, val, apply_transforms=True):
     """
     Update obj with all matches to dotted key with val
