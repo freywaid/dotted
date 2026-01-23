@@ -1157,6 +1157,9 @@ def updates(ops, node, val, has_defaults=False):
         built = updates(ops, build_default(ops), val, True)
         return cur.upsert(node, built)
     for k, v in cur.items(node):
+        # Handle None values by building default structure
+        if v is None and ops:
+            v = build_default(ops)
         node = cur.update(node, k, updates(ops, v, val, has_defaults))
     return node
 

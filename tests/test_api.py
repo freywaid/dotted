@@ -499,3 +499,34 @@ def test_frozenset_append_unique():
     assert result == fs
     result = dotted.update(fs, '[+?]', 4)  # new
     assert result == frozenset([1, 2, 3, 4])
+
+
+# None handling in nested updates
+
+def test_update_nested_none_to_dict():
+    d = {'a': None}
+    result = dotted.update(d, 'a.b', 1)
+    assert result == {'a': {'b': 1}}
+
+
+def test_update_nested_none_to_list():
+    d = {'a': None}
+    result = dotted.update(d, 'a[0]', 1)
+    assert result == {'a': [1]}
+
+
+def test_update_deeply_nested_none():
+    d = {'a': {'b': None}}
+    result = dotted.update(d, 'a.b.c.d', 1)
+    assert result == {'a': {'b': {'c': {'d': 1}}}}
+
+
+def test_update_none_in_list():
+    d = {'items': [None, None]}
+    result = dotted.update(d, 'items[0].x', 1)
+    assert result == {'items': [{'x': 1}, None]}
+
+
+def test_update_top_level_none_errors():
+    with pytest.raises(TypeError):
+        dotted.update(None, 'x', 1)
