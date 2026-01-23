@@ -45,7 +45,7 @@ Probably the easiest thing to do is pydoc the api layer.
 
 ### Get
 
-See grammar discussion below about things you can do get data via dotted.
+See grammar discussion below about things you can do to get data via dotted.
 
     >>> import dotted
     >>> dotted.get({'a': {'b': {'c': {'d': 'nested'}}}}, 'a.b.c.d')
@@ -67,13 +67,13 @@ it's not mutable, then get via the return.
     ('hello',)
     >>> t
     ()
-    ```
+
 #### Update via pattern
 
 You can update all fields that match pattern given by either a wildcard OR regex.
 
     >>> import dotted
-    >>> d = {'a': 'hello', 'b': {'bye'}}
+    >>> d = {'a': 'hello', 'b': 'bye'}
     >>> dotted.update(d, '*', 'me')
     {'a': 'me', 'b': 'me'}
 
@@ -106,7 +106,7 @@ can match via wildcard OR via regex.  Here's a regex example:
 With the `groups=True` parameter, you'll see how it was matched:
 
     >>> import dotted
-    >>> match('hello.*', 'hello.there.bye', groups=True)
+    >>> dotted.match('hello.*', 'hello.there.bye', groups=True)
     ('hello.there.bye', ('hello', 'there.bye'))
 
 In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
@@ -122,15 +122,119 @@ You may wish to _expand_ all fields that match a pattern in an object.
     ('hello', 'bye')
     >>> dotted.expand(d, '*.*')
     ('hello.there',)
-    >>> dptted.expand(d, '*.*[*]')
+    >>> dotted.expand(d, '*.*[*]')
     ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
     >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
 
+### Has
+
+Check if a key or pattern exists in an object.
+
+    >>> import dotted
+    >>> d = {'a': {'b': 1}}
+    >>> dotted.has(d, 'a.b')
+    True
+    >>> dotted.has(d, 'a.c')
+    False
+    >>> dotted.has(d, 'a.*')
+    True
+
+### Setdefault
+
+Set a value only if the key doesn't already exist. Creates nested structures as needed.
+
+    >>> import dotted
+    >>> d = {'a': 1}
+    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change
+    {'a': 1}
+    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value
+    {'a': 1, 'b': 2}
+    >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure
+    {'a': {'b': {'c': 7}}}
+
+### Pluck
+
+Extract (key, value) pairs from an object matching a pattern.
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'nested': {'x': 10}}
+    >>> dotted.pluck(d, 'a')
+    ('a', 1)
+    >>> dotted.pluck(d, '*')
+    (('a', 1), ('b', 2), ('nested', {'x': 10}))
+    >>> dotted.pluck(d, 'nested.*')
+    (('nested.x', 10),)
+
+### Build
+
+Create a default nested structure for a dotted key.
+
+    >>> import dotted
+    >>> dotted.build({}, 'a.b.c')
+    {'a': {'b': {'c': None}}}
+    >>> dotted.build({}, 'items[]')
+    {'items': []}
+    >>> dotted.build({}, 'items[0]')
+    {'items': [None]}
+
+### Apply
+
+Apply transforms to values in an object in-place.
+
+    >>> import dotted
+    >>> d = {'price': '99.99', 'quantity': '5'}
+    >>> dotted.apply(d, 'price|float')
+    {'price': 99.99, 'quantity': '5'}
+    >>> dotted.apply(d, '*|int')
+    {'price': 99, 'quantity': 5}
+
+### Assemble
+
+Build a dotted notation string from a list of keys.
+
+    >>> import dotted
+    >>> dotted.assemble(['a', 'b', 'c'])
+    'a.b.c'
+    >>> dotted.assemble(['items', '[0]', 'name'])
+    'items[0].name'
+    >>> dotted.assemble([7, 'hello'])
+    '7.hello'
+
+### Quote
+
+Properly quote a key for use in dotted notation.
+
+    >>> import dotted
+    >>> dotted.quote('hello')
+    'hello'
+    >>> dotted.quote('has.dot')
+    '"has.dot"'
+    >>> dotted.quote(7.5)
+    "#'7.5'"
+
+### Multi Operations
+
+Most operations have `*_multi` variants for batch processing:
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> list(dotted.get_multi(d, ['a', 'b']))
+    [1, 2]
+    >>> dotted.update_multi({}, [('a.b', 1), ('c.d', 2)])
+    {'a': {'b': 1}, 'c': {'d': 2}}
+    >>> dotted.remove_multi(d, ['a', 'c'])
+    {'b': 2}
+    >>> dotted.setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    {'a': 1, 'b': 2}
+
+Available multi operations: `get_multi`, `update_multi`, `remove_multi`, `setdefault_multi`,
+`match_multi`, `expand_multi`, `apply_multi`, `build_multi`, `pluck_multi`, `assemble_multi`.
+
 ## Grammar
 
 Dotted notation shares similarities with python. A _dot_ `.` field expects to see a
-dictionary-like object (using `keys` and `__getitem__` internally.  A _bracket_ `[]`
+dictionary-like object (using `keys` and `__getitem__` internally).  A _bracket_ `[]`
 field is biased towards sequences (like lists or strs) but can also act on dicts.  A
 _attr_ `@` field uses `getattr/setattr/delattr`.  Dotted also support slicing notation
 as well as transforms discussed below.
@@ -160,7 +264,7 @@ any object that can be looked up via `__getitem__`.
     >>> dotted.get({'a': ['first', 'second', 'third']}, 'a[0]')
     'first'
     >>> dotted.get({'a': {'b': 'hello'}}, 'a["b"]')
-    'first'
+    'hello'
 
 ### Attr fields
 
@@ -169,7 +273,7 @@ You may wonder why have this when you can just as easily use standard python to 
 Two important reasons: nested expressions and patterns.
 
     >>> import dotted, types
-    >>> ns = types.SimpleNamespace
+    >>> ns = types.SimpleNamespace()
     >>> ns.hello = {'me': 'goodbye'}
     >>> dotted.get(ns, '@hello.me')
     'goodbye'
@@ -217,7 +321,7 @@ Dotted slicing works like python slicing and all that entails.
 
 ### The append `+` operator
 
-Both bracketed fileds and slices support the '+' operator which refers to the end of
+Both bracketed fields and slices support the '+' operator which refers to the end of
 sequence. You may append an item or slice to the end a sequence.
 
     >>> import dotted
@@ -274,7 +378,7 @@ The wildcard pattern is `*`.  It will match anything.
 The regex pattern is enclosed in slashes: `/regex/`. Note that if the field is a non-str,
 the regex pattern will internally match to its str representation.
 
-### The match-first operatoer
+### The match-first operator
 
 You can also postfix any pattern with a `?`.  This will return only
 the first match.
@@ -301,7 +405,49 @@ the `:` operator.
     'number=1'
 
 You may register new transforms via either `register` or the `@transform`
-decorator. Look at transforms.py for preregistered.
+decorator.
+
+### Built-in Transforms
+
+| Transform | Parameters | Description |
+|-----------|------------|-------------|
+| `str` | `fmt`, `raises` | Convert to string. Optional format: `\|str:Hello %s` |
+| `int` | `base`, `raises` | Convert to int. Optional base: `\|int:16` for hex |
+| `float` | `raises` | Convert to float |
+| `decimal` | `raises` | Convert to `Decimal` |
+| `none` | values... | Return `None` if falsy or matches values: `\|none::null:empty` |
+| `strip` | `chars`, `raises` | Strip whitespace or specified chars |
+| `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
+| `lowercase` | `raises` | Convert string to lowercase |
+| `uppercase` | `raises` | Convert string to uppercase |
+| `add` | `rhs` | Add value: `\|add:10` |
+| `list` | `raises` | Convert to list |
+| `tuple` | `raises` | Convert to tuple |
+| `set` | `raises` | Convert to set |
+
+The `raises` parameter causes the transform to raise an exception on failure instead of
+returning the original value:
+
+    >>> import dotted
+    >>> dotted.get({'n': 'hello'}, 'n|int')      # fails silently
+    'hello'
+    >>> dotted.get({'n': 'hello'}, 'n|int::raises')  # raises ValueError
+    Traceback (most recent call last):
+    ...
+    ValueError: invalid literal for int() with base 10: 'hello'
+
+### Custom Transforms
+
+Register custom transforms using `register` or the `@transform` decorator:
+
+    >>> import dotted
+    >>> @dotted.transform('double')
+    ... def double(val):
+    ...     return val * 2
+    >>> dotted.get({'n': 5}, 'n|double')
+    10
+
+View all registered transforms with `dotted.registry()`.
 
 ## Filters
 
@@ -339,7 +485,7 @@ This will return all items in a list that match key-value filter.  For example,
     >>> dotted.get(d, 'a[hello="there"][*].id')
     (1, 2)
     >>> dotted.get(d, '*[hello="there"][*].id')
-    r == (1, 2, 3)
+    (1, 2, 3)
 
 ### Dotted filter keys
 
@@ -365,7 +511,7 @@ You can have it match first by appending a `?` to the end of the filter.
     ...     'b': [{'id': 3, 'hello': 'there'}, {'id': 4, 'hello': 'bye'}],
     ... }
     >>> dotted.get(d, 'a[hello="there"?]')
-    return [{'id': 1, 'hello': 'there'}]
+    [{'id': 1, 'hello': 'there'}]
 
 ### Conjunction vs disjunction
 
@@ -376,5 +522,28 @@ For example, given
 `*&key1=value1,key2=value2&key3=value3`. This will filter
 (`key1=value1` OR `key2=value2`) AND `key3=value3`.
 
-Note that this gives you the abilty to have a key filter multiple values, such as:
+Note that this gives you the ability to have a key filter multiple values, such as:
 `*&key1=value1,key2=value2`.
+
+## Constants and Exceptions
+
+### ANY
+
+The `ANY` constant is used with `remove` and `update` to match any value:
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2}
+    >>> dotted.remove(d, 'a', dotted.ANY)  # remove regardless of value
+    {'b': 2}
+    >>> dotted.update(d, '-b', dotted.ANY)  # inverted update = remove
+    {}
+
+### ParseError
+
+Raised when dotted notation cannot be parsed:
+
+    >>> import dotted
+    >>> dotted.get({}, '[invalid')
+    Traceback (most recent call last):
+    ...
+    dotted.api.ParseError: Expected ']' at pos 8: '[invalid'

@@ -1,6 +1,8 @@
 """
-Dotted notation parser with pattern matching.
+Dotted notation for safe nested data traversal with optional chaining,
+pattern matching, and transforms.
 
+Missing keys and attributes are handled gracefully—no KeyError or AttributeError.
 Use dotted to fetch, update, and remove data from deeply nested structures.
 
     >>> import dotted

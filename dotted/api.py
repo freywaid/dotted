@@ -11,6 +11,7 @@ ANY = el.ANY
 
 
 class ParseError(Exception):
+    """Raised when dotted notation cannot be parsed."""
     pass
 
 
@@ -19,7 +20,7 @@ def _parse(ops):
     try:
         results = grammar.template.parse_string(ops, parse_all=True)
     except el.pp.ParseException as e:
-        raise ParseError(f'{e.msg} at pos {e.loc}: {repr(e.pstr)}')
+        raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
     return el.Dotted(results)
 
 
