@@ -267,3 +267,85 @@ def test_registry():
     assert 'float' in reg
     assert 'double' in reg  # registered above
     assert 'triple' in reg  # registered above
+
+
+# ParseError - malformed dotted notation
+
+def test_parse_error_unclosed_bracket():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'field[')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_unclosed_bracket_with_content():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'field[0')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_bracket_at_start():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, '[invalid')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_double_dot():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'a..b')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_trailing_dot():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'hello.')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_trailing_pipe():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'hello|')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_unclosed_regex():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, '/unclosed')
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_invalid_slice():
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'field[1:2:3:4]')  # too many colons
+    assert 'Invalid dotted notation' in str(exc.value)
+
+
+def test_parse_error_empty_brackets():
+    # Empty brackets are actually valid (creates empty list)
+    # So this should NOT raise
+    result = dotted.build({}, 'items[]')
+    assert result == {'items': []}
+
+
+def test_parse_error_message_format():
+    """Verify error message includes helpful pointer to error location."""
+    with pytest.raises(dotted.api.ParseError) as exc:
+        dotted.get({}, 'a.b.[')
+    error_msg = str(exc.value)
+    assert 'Invalid dotted notation' in error_msg
+    assert "'a.b.['" in error_msg
+    assert '^' in error_msg  # caret pointing to error location
+
+
+def test_parse_error_on_update():
+    with pytest.raises(dotted.api.ParseError):
+        dotted.update({}, 'field[', 'value')
+
+
+def test_parse_error_on_remove():
+    with pytest.raises(dotted.api.ParseError):
+        dotted.remove({}, 'field[')
+
+
+def test_parse_error_on_has():
+    with pytest.raises(dotted.api.ParseError):
+        dotted.has({}, 'field[')
