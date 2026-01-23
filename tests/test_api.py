@@ -349,3 +349,185 @@ def test_parse_error_on_remove():
 def test_parse_error_on_has():
     with pytest.raises(dotted.api.ParseError):
         dotted.has({}, 'field[')
+
+
+# Immutable container operations
+
+def test_tuple_update_index():
+    t = (1, 2, 3)
+    result = dotted.update(t, '[1]', 'X')
+    assert result == (1, 'X', 3)
+    assert t == (1, 2, 3)  # original unchanged
+
+
+def test_tuple_update_first():
+    result = dotted.update((1, 2, 3), '[0]', 'first')
+    assert result == ('first', 2, 3)
+
+
+def test_tuple_update_last():
+    result = dotted.update((1, 2, 3), '[2]', 'last')
+    assert result == (1, 2, 'last')
+
+
+def test_tuple_update_pattern():
+    result = dotted.update((1, 2, 3), '[*]', 0)
+    assert result == (0, 0, 0)
+
+
+def test_tuple_append():
+    result = dotted.update((1, 2, 3), '[+]', 4)
+    assert result == (1, 2, 3, 4)
+
+
+def test_tuple_remove():
+    result = dotted.remove((1, 2, 3), '[1]')
+    assert result == (1, 3)
+
+
+def test_tuple_nested_in_dict():
+    d = {'items': (1, 2, 3)}
+    result = dotted.update(d, 'items[1]', 'X')
+    assert result == {'items': (1, 'X', 3)}
+
+
+def test_string_update_index():
+    result = dotted.update('hello', '[0]', 'H')
+    assert result == 'Hello'
+
+
+def test_string_update_last():
+    result = dotted.update('hello', '[4]', '!')
+    assert result == 'hell!'
+
+
+def test_string_update_pattern():
+    result = dotted.update('aaa', '[*]', 'b')
+    assert result == 'bbb'
+
+
+# namedtuple operations
+
+def test_namedtuple_get_attr():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    assert dotted.get(p, '@x') == 1
+    assert dotted.get(p, '@y') == 2
+
+
+def test_namedtuple_update_attr():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '@x', 10)
+    assert result == Point(10, 2)
+    assert p == Point(1, 2)  # original unchanged
+
+
+def test_namedtuple_update_pattern():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '@*', 0)
+    assert result == Point(0, 0)
+
+
+def test_namedtuple_update_index():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '[0]', 10)
+    assert result == Point(10, 2)
+
+
+def test_namedtuple_update_index_pattern():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '[*]', 0)
+    assert result == Point(0, 0)
+
+
+# frozen dataclass operations
+
+def test_frozen_dataclass_get():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    assert dotted.get(fp, '@x') == 1
+
+
+def test_frozen_dataclass_update():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    result = dotted.update(fp, '@x', 10)
+    assert result == FrozenPoint(10, 2)
+    assert fp == FrozenPoint(1, 2)  # original unchanged
+
+
+def test_frozen_dataclass_update_pattern():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    result = dotted.update(fp, '@*', 0)
+    assert result == FrozenPoint(0, 0)
+
+
+# frozenset operations
+
+def test_frozenset_append():
+    fs = frozenset([1, 2, 3])
+    result = dotted.update(fs, '[+]', 4)
+    assert result == frozenset([1, 2, 3, 4])
+    assert fs == frozenset([1, 2, 3])  # original unchanged
+
+
+def test_frozenset_append_unique():
+    fs = frozenset([1, 2, 3])
+    result = dotted.update(fs, '[+?]', 3)  # already exists
+    assert result == fs
+    result = dotted.update(fs, '[+?]', 4)  # new
+    assert result == frozenset([1, 2, 3, 4])
+
+
+# None handling in nested updates
+
+def test_update_nested_none_to_dict():
+    d = {'a': None}
+    result = dotted.update(d, 'a.b', 1)
+    assert result == {'a': {'b': 1}}
+
+
+def test_update_nested_none_to_list():
+    d = {'a': None}
+    result = dotted.update(d, 'a[0]', 1)
+    assert result == {'a': [1]}
+
+
+def test_update_deeply_nested_none():
+    d = {'a': {'b': None}}
+    result = dotted.update(d, 'a.b.c.d', 1)
+    assert result == {'a': {'b': {'c': {'d': 1}}}}
+
+
+def test_update_none_in_list():
+    d = {'items': [None, None]}
+    result = dotted.update(d, 'items[0].x', 1)
+    assert result == {'items': [{'x': 1}, None]}
+
+
+def test_update_top_level_none_errors():
+    with pytest.raises(TypeError) as exc:
+        dotted.update(None, 'x', 1)
+    assert 'Cannot update None' in str(exc.value)
