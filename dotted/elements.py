@@ -681,14 +681,19 @@ class Slot(Key):
             pass
 
         def _gen():
-            for k in node:
-                if k in update_keys:
+            for i, v in enumerate(node):
+                if i in update_keys:
                     yield val
                 else:
-                    yield node[k]
+                    yield v
 
-        node = type(node)(_gen())
-        node += type(node)(val for _ in append_keys)
+        # str() doesn't accept iterables like tuple/list do
+        if isinstance(node, str):
+            node = ''.join(_gen())
+            node += ''.join(str(val) for _ in append_keys)
+        else:
+            node = type(node)(_gen())
+            node += type(node)(val for _ in append_keys)
         return node
 
     def pop(self, node, key):
@@ -701,7 +706,7 @@ class Slot(Key):
             return node
         except TypeError:
             pass
-        return type(node)(v for i,v in enumerated(node) if i != key)
+        return type(node)(v for i,v in enumerate(node) if i != key)
     def remove(self, node, val):
         if hasattr(node, 'keys'):
             return super().remove(node, val)
@@ -711,7 +716,7 @@ class Slot(Key):
                 for k in reversed(keys):
                     del node[k]
                 return node
-            return node.__class__(v for i, v in enumerated(node) if i not in keys)
+            return node.__class__(v for i, v in enumerate(node) if i not in keys)
         if hasattr(node, 'remove'):
             try:
                 node.remove(val)

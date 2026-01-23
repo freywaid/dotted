@@ -349,3 +349,58 @@ def test_parse_error_on_remove():
 def test_parse_error_on_has():
     with pytest.raises(dotted.api.ParseError):
         dotted.has({}, 'field[')
+
+
+# Immutable container operations
+
+def test_tuple_update_index():
+    t = (1, 2, 3)
+    result = dotted.update(t, '[1]', 'X')
+    assert result == (1, 'X', 3)
+    assert t == (1, 2, 3)  # original unchanged
+
+
+def test_tuple_update_first():
+    result = dotted.update((1, 2, 3), '[0]', 'first')
+    assert result == ('first', 2, 3)
+
+
+def test_tuple_update_last():
+    result = dotted.update((1, 2, 3), '[2]', 'last')
+    assert result == (1, 2, 'last')
+
+
+def test_tuple_update_pattern():
+    result = dotted.update((1, 2, 3), '[*]', 0)
+    assert result == (0, 0, 0)
+
+
+def test_tuple_append():
+    result = dotted.update((1, 2, 3), '[+]', 4)
+    assert result == (1, 2, 3, 4)
+
+
+def test_tuple_remove():
+    result = dotted.remove((1, 2, 3), '[1]')
+    assert result == (1, 3)
+
+
+def test_tuple_nested_in_dict():
+    d = {'items': (1, 2, 3)}
+    result = dotted.update(d, 'items[1]', 'X')
+    assert result == {'items': (1, 'X', 3)}
+
+
+def test_string_update_index():
+    result = dotted.update('hello', '[0]', 'H')
+    assert result == 'Hello'
+
+
+def test_string_update_last():
+    result = dotted.update('hello', '[4]', '!')
+    assert result == 'hell!'
+
+
+def test_string_update_pattern():
+    result = dotted.update('aaa', '[*]', 'b')
+    assert result == 'bbb'
