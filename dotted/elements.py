@@ -568,14 +568,15 @@ class Attr(Key):
         return _items()
 
     def items(self, node):
+        # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
             keys = node.__dict__.keys()
         except AttributeError:
-            keys = ()
+            keys = getattr(node, '_fields', ())
         return self._items(node, self.op.matches(keys))
 
     def default(self):
-        o = types.SimpleNamespae()
+        o = types.SimpleNamespace()
         if self.is_pattern():
             return o
         if not self.filters:
@@ -586,21 +587,44 @@ class Attr(Key):
 
     def update(self, node, key, val):
         val = self.default() if val is ANY else val
-        setattr(node, key, val)
-        return node
+        try:
+            setattr(node, key, val)
+            return node
+        except AttributeError:
+            pass
+        # Try namedtuple _replace
+        if hasattr(node, '_replace'):
+            return node._replace(**{key: val})
+        # Try dataclasses.replace for frozen dataclass
+        import dataclasses
+        if dataclasses.is_dataclass(node):
+            return dataclasses.replace(node, **{key: val})
+        raise AttributeError(f"Cannot set attribute '{key}' on {type(node).__name__}")
     def upsert(self, node, val):
         if not self.is_pattern():
             return self.update(node, self.op.value, val)
         keys = tuple(self.keys(node))
+        # Try mutable update first
         try:
             node_keys = node.__dict__.keys()
         except AttributeError:
-            node_keys = ()
+            node_keys = getattr(node, '_fields', ())
         iterable = ((k, getattr(node, k)) for k in node_keys if k not in keys)
-        items = itertools.chain(iterable, ((k, val) for k in keys))
-        for k, v in items:
-            setattr(node, k, v)
-        return node
+        items = list(itertools.chain(iterable, ((k, val) for k in keys)))
+        try:
+            for k, v in items:
+                setattr(node, k, v)
+            return node
+        except AttributeError:
+            pass
+        # Immutable: build replacement dict
+        updates = {k: val for k in keys}
+        if hasattr(node, '_replace'):
+            return node._replace(**updates)
+        import dataclasses
+        if dataclasses.is_dataclass(node):
+            return dataclasses.replace(node, **updates)
+        raise AttributeError(f"Cannot set attributes on {type(node).__name__}")
 
     def pop(self, node, key):
         try:
@@ -687,10 +711,19 @@ class Slot(Key):
                 else:
                     yield v
 
-        # str() doesn't accept iterables like tuple/list do
+        # Handle different immutable types
         if isinstance(node, str):
+            # str() doesn't accept iterables
             node = ''.join(_gen())
             node += ''.join(str(val) for _ in append_keys)
+        elif hasattr(node, '_make'):
+            # namedtuple - use _make() and ignore appends (fixed structure)
+            node = type(node)._make(_gen())
+        elif isinstance(node, frozenset):
+            # frozenset - use union
+            node = frozenset(_gen())
+            if append_keys:
+                node = node | frozenset([val])
         else:
             node = type(node)(_gen())
             node += type(node)(val for _ in append_keys)
@@ -754,7 +787,15 @@ class SlotSpecial(Slot):
         if not isinstance(key, str):
             return super().update(node, key, val)
         if key == '+' or (key == '+?' and val not in node):
-            node += itemof(node, val)
+            item = itemof(node, val)
+            if isinstance(node, frozenset):
+                node = node | item
+            else:
+                try:
+                    node += item
+                except TypeError:
+                    # Immutable sequence - concatenate
+                    node = node + item
         return node
     def upsert(self, node, val):
         return self.update(node, self.op.value, val)

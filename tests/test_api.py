@@ -404,3 +404,98 @@ def test_string_update_last():
 def test_string_update_pattern():
     result = dotted.update('aaa', '[*]', 'b')
     assert result == 'bbb'
+
+
+# namedtuple operations
+
+def test_namedtuple_get_attr():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    assert dotted.get(p, '@x') == 1
+    assert dotted.get(p, '@y') == 2
+
+
+def test_namedtuple_update_attr():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '@x', 10)
+    assert result == Point(10, 2)
+    assert p == Point(1, 2)  # original unchanged
+
+
+def test_namedtuple_update_pattern():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '@*', 0)
+    assert result == Point(0, 0)
+
+
+def test_namedtuple_update_index():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '[0]', 10)
+    assert result == Point(10, 2)
+
+
+def test_namedtuple_update_index_pattern():
+    from collections import namedtuple
+    Point = namedtuple('Point', ['x', 'y'])
+    p = Point(1, 2)
+    result = dotted.update(p, '[*]', 0)
+    assert result == Point(0, 0)
+
+
+# frozen dataclass operations
+
+def test_frozen_dataclass_get():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    assert dotted.get(fp, '@x') == 1
+
+
+def test_frozen_dataclass_update():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    result = dotted.update(fp, '@x', 10)
+    assert result == FrozenPoint(10, 2)
+    assert fp == FrozenPoint(1, 2)  # original unchanged
+
+
+def test_frozen_dataclass_update_pattern():
+    from dataclasses import dataclass
+    @dataclass(frozen=True)
+    class FrozenPoint:
+        x: int
+        y: int
+    fp = FrozenPoint(1, 2)
+    result = dotted.update(fp, '@*', 0)
+    assert result == FrozenPoint(0, 0)
+
+
+# frozenset operations
+
+def test_frozenset_append():
+    fs = frozenset([1, 2, 3])
+    result = dotted.update(fs, '[+]', 4)
+    assert result == frozenset([1, 2, 3, 4])
+    assert fs == frozenset([1, 2, 3])  # original unchanged
+
+
+def test_frozenset_append_unique():
+    fs = frozenset([1, 2, 3])
+    result = dotted.update(fs, '[+?]', 3)  # already exists
+    assert result == fs
+    result = dotted.update(fs, '[+?]', 4)  # new
+    assert result == frozenset([1, 2, 3, 4])
