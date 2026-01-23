@@ -528,5 +528,6 @@ def test_update_none_in_list():
 
 
 def test_update_top_level_none_errors():
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError) as exc:
         dotted.update(None, 'x', 1)
+    assert 'Cannot update None' in str(exc.value)

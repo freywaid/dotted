@@ -1147,20 +1147,53 @@ def gets(ops, node):
         yield from gets(ops, v)
 
 
-def updates(ops, node, val, has_defaults=False):
+def _is_container(obj):
+    """Check if object can be used as a container for dotted updates."""
+    if obj is None:
+        return False
+    # Dict-like, sequence-like, or has attributes
+    return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or 
+            hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
+
+
+def _format_path(path):
+    """Format a path list into dotted notation for error messages."""
+    if not path:
+        return ''
+    result = []
+    for p in path:
+        if isinstance(p, int):
+            result.append(f'[{p}]')
+        elif result:
+            result.append(f'.{p}')
+        else:
+            result.append(str(p))
+    return ''.join(result)
+
+
+def updates(ops, node, val, has_defaults=False, _path=None):
+    if _path is None:
+        _path = []
+    if not has_defaults and not _is_container(node):
+        path_str = _format_path(_path)
+        location = f" at '{path_str}'" if path_str else ""
+        raise TypeError(
+            f"Cannot update {type(node).__name__}{location} - "
+            "use a dict, list, or other container"
+        )
     cur, *ops = ops
     if isinstance(cur, Invert):
         return removes(ops, node, val)
     if not ops:
         return cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
-        built = updates(ops, build_default(ops), val, True)
+        built = updates(ops, build_default(ops), val, True, _path)
         return cur.upsert(node, built)
     for k, v in cur.items(node):
         # Handle None values by building default structure
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k]))
     return node
 
 
