@@ -36,7 +36,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Transforms/coercion | ✅ | ✅ | ❌ | ✅ |
 | Slicing | ✅ | ❌ | ✅ | ❌ |
 | Filters | ✅ | ❌ | ✅ | ❌ |
-| Filter/path negation | ✅ | ❌ | ❌ | ❌ |
+| Filter AND/OR/NOT | ✅ | ❌ | ✅ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
