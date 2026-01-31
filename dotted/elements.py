@@ -547,17 +547,18 @@ class PathOr(Op):
             # Handle nested groups and conjunctions
             if hasattr(k, 'items') and callable(k.items):
                 yield from k.items(node)
-            else:
-                # Simple key (Const)
-                key_val = k.value if hasattr(k, 'value') else k
-                try:
-                    if hasattr(node, 'keys'):
-                        if key_val in node:
-                            yield (key_val, node[key_val])
-                    elif hasattr(node, '__getitem__') and isinstance(key_val, int):
-                        yield (key_val, node[key_val])
-                except (KeyError, IndexError, TypeError):
-                    pass
+                continue
+
+            # Simple key (Const)
+            key_val = k.value if hasattr(k, 'value') else k
+            try:
+                if hasattr(node, 'keys') and key_val in node:
+                    yield (key_val, node[key_val])
+                    continue
+                if hasattr(node, '__getitem__') and isinstance(key_val, int):
+                    yield (key_val, node[key_val])
+            except (KeyError, IndexError, TypeError):
+                pass
 
     def values(self, node):
         return (v for _, v in self.items(node))
@@ -589,10 +590,11 @@ class PathAnd(Op):
                     if key_val not in node:
                         return  # Fail: key doesn't exist
                     results.append((key_val, node[key_val]))
-                elif hasattr(node, '__getitem__') and isinstance(key_val, int):
+                    continue
+                if hasattr(node, '__getitem__') and isinstance(key_val, int):
                     results.append((key_val, node[key_val]))
-                else:
-                    return  # Fail: can't access
+                    continue
+                return  # Fail: can't access
             except (KeyError, IndexError, TypeError):
                 return  # Fail: key doesn't exist
         yield from results
