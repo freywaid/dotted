@@ -6,7 +6,7 @@ helps you do that.
 ## Safe Traversal (Optional Chaining)
 
 Like JavaScript's optional chaining operator (`?.`), dotted safely handles missing paths.
-If any part of the path doesn't exist, `get` returns `None` (or a specified default) 
+If any part of the path doesn't exist, `get` returns `None` (or a specified default)
 instead of raising an exception:
 
     >>> import dotted
@@ -36,6 +36,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Transforms/coercion | ✅ | ✅ | ❌ | ✅ |
 | Slicing | ✅ | ❌ | ✅ | ❌ |
 | Filters | ✅ | ❌ | ✅ | ❌ |
+| AND/OR/NOT (filters & paths) | ✅ | ❌ | ✅ (filters only) | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -410,6 +411,34 @@ Use `?` for first match only:
     >>> dotted.get(d, '(x,a)?')    # first that exists
     (1,)
 
+#### Path negation
+
+Use `!` to exclude keys from path groups:
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Exclude single key - all except 'a'
+    >>> dotted.get(d, '(!a)')
+    (2, 3)
+
+    # Exclude multiple keys
+    >>> dotted.get(d, '(!(a,b))')
+    (3,)
+
+    # Nested - get user fields except password
+    >>> user = {'name': 'alice', 'email': 'a@x.com', 'password': 'secret'}
+    >>> dotted.get({'user': user}, 'user.(!password)')
+    ('alice', 'a@x.com')
+
+Updates and removes work with path negation:
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.update(d, '(!a)', 99)
+    {'a': 1, 'b': 99, 'c': 99}
+    >>> dotted.remove(d, '(!a)')
+    {'a': 1}
+
 ### Slicing
 
 Dotted slicing works like python slicing and all that entails.
@@ -492,7 +521,7 @@ the first match.
 
 ### Slicing vs Patterns
 
-Slicing a sequence produces a sequence and a filter on a sequence is a special 
+Slicing a sequence produces a sequence and a filter on a sequence is a special
 type of slice operation. Whereas, patterns _iterate_ through items:
 
     >>> import dotted
@@ -697,6 +726,33 @@ Filters support `True`, `False`, and `None` as values:
     [{'name': 'alice', 'active': True, 'score': None}]
     >>> dotted.get(data, '[score=None]')
     [{'name': 'alice', 'active': True, 'score': None}]
+
+### Filter negation
+
+Use `!` to negate filter conditions:
+
+    >>> data = [
+    ...     {'status': 'active', 'role': 'admin'},
+    ...     {'status': 'inactive', 'role': 'user'},
+    ...     {'status': 'active', 'role': 'user'},
+    ... ]
+
+    # Negate simple filter - items where status != "active"
+    >>> dotted.get(data, '[!status="active"]')
+    [{'status': 'inactive', 'role': 'user'}]
+
+    # Negate grouped expression - NOT (active AND admin)
+    >>> dotted.get(data, '[!(status="active"&role="admin")]')
+    [{'status': 'inactive', 'role': 'user'}, {'status': 'active', 'role': 'user'}]
+
+    # Combine negation with AND - active non-admins
+    >>> dotted.get(data, '[status="active"&!role="admin"]')
+    [{'status': 'active', 'role': 'user'}]
+
+Precedence: `!` binds tighter than `&` and `,`:
+
+    [!a=1&b=2]    →  [(!a=1) & b=2]
+    [!(a=1&b=2)]  →  negate the whole group
 
 ## Constants and Exceptions
 

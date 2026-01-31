@@ -30,7 +30,7 @@ none = pp.Literal('None').set_parse_action(el.NoneValue)
 true = pp.Literal('True').set_parse_action(el.Boolean)
 false = pp.Literal('False').set_parse_action(el.Boolean)
 
-reserved = '.[]*:|+?/=,@&()'
+reserved = '.[]*:|+?/=,@&()!'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -75,13 +75,17 @@ filter_expr = pp.Forward()
 # Atom: single comparison or grouped expression
 lparen = pp.Suppress('(')
 rparen = pp.Suppress(')')
+bang = pp.Suppress('!')
 filter_group = (lparen + filter_expr + rparen).set_parse_action(el.FilterGroup)
 filter_atom = filter_group | filter_single
 
-# AND: atoms joined by & (higher precedence)
-filter_and = (filter_atom + OM(amp + filter_atom)).set_parse_action(el.FilterAnd) | filter_atom
+# NOT: ! prefix binds tightest (higher precedence than &)
+filter_not = (bang + filter_atom).set_parse_action(el.FilterNot) | filter_atom
 
-# OR: and-groups joined by , (lower precedence)
+# AND: not-expressions joined by & (higher precedence than ,)
+filter_and = (filter_not + OM(amp + filter_not)).set_parse_action(el.FilterAnd) | filter_not
+
+# OR: and-groups joined by , (lowest precedence)
 filter_or = (filter_and + OM(comma + filter_and)).set_parse_action(el.FilterOr) | filter_and
 
 filter_expr <<= filter_or
@@ -103,11 +107,18 @@ slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotS
 slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
-# Path-level grouping: (a,b) for disjunction, (a&b) for conjunction
+# Path-level grouping: (a,b) for disjunction, (a&b) for conjunction, (!a) for negation
 path_expr = pp.Forward()
 path_group_inner = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
 path_group_item = path_group_inner | key.copy()
-path_group_and = (path_group_item + OM(amp + path_group_item)).set_parse_action(el.PathAnd) | path_group_item
+
+# NOT: ! prefix binds tightest for paths
+path_not = (bang + path_group_item).set_parse_action(el.PathNot) | path_group_item
+
+# AND: path items joined by &
+path_group_and = (path_not + OM(amp + path_not)).set_parse_action(el.PathAnd) | path_not
+
+# OR: and-groups joined by ,
 path_group_or = (path_group_and + OM(comma + path_group_and)).set_parse_action(el.PathOr) | path_group_and
 path_expr <<= path_group_or
 path_group = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
