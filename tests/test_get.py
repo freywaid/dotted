@@ -65,5 +65,85 @@ def test_remove_dot_index():
     assert data['items'] == [1, 3]
 
 
+def test_path_grouping_disjunction():
+    """Test path-level disjunction (a,b) - returns tuple of what exists"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # All exist
+    assert dotted.get(d, '(a,b)') == (1, 2)
+    assert dotted.get(d, '(a,b,c)') == (1, 2, 3)
+
+    # Partial exist
+    assert dotted.get(d, '(a,x)') == (1,)
+    assert dotted.get(d, '(x,b,y)') == (2,)
+
+    # None exist
+    assert dotted.get(d, '(x,y)') == ()
+
+    # Nested access
+    data = {'user': {'name': 'alice', 'email': 'a@x.com'}}
+    assert dotted.get(data, 'user.(name,email)') == ('alice', 'a@x.com')
+    assert dotted.get(data, 'user.(name,missing)') == ('alice',)
+
+
+def test_path_grouping_conjunction():
+    """Test path-level conjunction (a&b) - returns tuple only if ALL exist"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # All exist
+    assert dotted.get(d, '(a&b)') == (1, 2)
+    assert dotted.get(d, '(a&b&c)') == (1, 2, 3)
+
+    # One missing - fail
+    assert dotted.get(d, '(a&x)') == ()
+    assert dotted.get(d, '(a&b&x)') == ()
+
+    # Nested access
+    data = {'user': {'name': 'alice', 'email': 'a@x.com'}}
+    assert dotted.get(data, 'user.(name&email)') == ('alice', 'a@x.com')
+    assert dotted.get(data, 'user.(name&missing)') == ()
+
+
+def test_path_grouping_first():
+    """Test first-match path grouping with ?"""
+    d = {'a': 1, 'b': 2}
+
+    assert dotted.get(d, '(a,b)?') == (1,)
+    assert dotted.get(d, '(x,a)?') == (1,)
+    assert dotted.get(d, '(x,y)?') == ()
+
+
+def test_path_grouping_mixed():
+    """Test mixed conjunction/disjunction with grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # (a AND b) OR c - should return a,b since both exist
+    assert dotted.get(d, '((a&b),c)') == (1, 2, 3)
+
+    # (a AND x) OR c - a&x fails, falls back to c
+    assert dotted.get(d, '((a&x),c)') == (3,)
+
+
+def test_path_grouping_with_patterns():
+    """Test path grouping combined with patterns"""
+    data = {'items': [{'x': 10, 'y': 20}, {'x': 30, 'z': 40}]}
+
+    # Get x and y from each item
+    result = dotted.get(data, 'items[*].(x,y)')
+    assert result == (10, 20, 30)  # y missing from second item
+
+
+def test_path_grouping_on_list():
+    """Test path grouping with numeric indices on lists"""
+    data = {'items': [10, 20, 30, 40]}
+
+    # Get indices 0 and 2
+    assert dotted.get(data, 'items.(0,2)') == (10, 30)
+
+    # Conjunction with indices
+    assert dotted.get(data, 'items.(0&1)') == (10, 20)
+    assert dotted.get(data, 'items.(0&10)') == ()  # 10 out of bounds
+
+
 def test_get_slot():
     r = dotted.get({}, 'hello[*]')

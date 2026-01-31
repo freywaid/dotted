@@ -526,6 +526,158 @@ class FilterKeyValueFirst(FilterOp):
 
 
 #
+# Path-level grouping
+#
+class PathOr(Op):
+    """
+    Disjunction of path keys - returns tuple of values that exist
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.keys = tuple(self.args)
+
+    def __repr__(self):
+        return ','.join(str(k) for k in self.keys)
+
+    def is_pattern(self):
+        return True
+
+    def items(self, node):
+        for k in self.keys:
+            # Handle nested groups and conjunctions
+            if hasattr(k, 'items') and callable(k.items):
+                yield from k.items(node)
+            else:
+                # Simple key (Const)
+                key_val = k.value if hasattr(k, 'value') else k
+                try:
+                    if hasattr(node, 'keys'):
+                        if key_val in node:
+                            yield (key_val, node[key_val])
+                    elif hasattr(node, '__getitem__') and isinstance(key_val, int):
+                        yield (key_val, node[key_val])
+                except (KeyError, IndexError, TypeError):
+                    pass
+
+    def values(self, node):
+        return (v for _, v in self.items(node))
+
+    def keys_iter(self, node):
+        return (k for k, _ in self.items(node))
+
+
+class PathAnd(Op):
+    """
+    Conjunction of path keys - returns tuple only if ALL exist
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.keys = tuple(self.args)
+
+    def __repr__(self):
+        return '&'.join(str(k) for k in self.keys)
+
+    def is_pattern(self):
+        return True
+
+    def items(self, node):
+        results = []
+        for k in self.keys:
+            key_val = k.value if hasattr(k, 'value') else k
+            try:
+                if hasattr(node, 'keys'):
+                    if key_val not in node:
+                        return  # Fail: key doesn't exist
+                    results.append((key_val, node[key_val]))
+                elif hasattr(node, '__getitem__') and isinstance(key_val, int):
+                    results.append((key_val, node[key_val]))
+                else:
+                    return  # Fail: can't access
+            except (KeyError, IndexError, TypeError):
+                return  # Fail: key doesn't exist
+        yield from results
+
+    def values(self, node):
+        return (v for _, v in self.items(node))
+
+    def keys_iter(self, node):
+        return (k for k, _ in self.items(node))
+
+
+class PathGroup(Op):
+    """
+    Parenthesized path group expression - treated as a pattern
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = self.args[0] if self.args else None
+        self.filters = ()
+
+    def __repr__(self):
+        return f'({self.inner})'
+
+    def is_pattern(self):
+        return True
+
+    def items(self, node):
+        if self.inner:
+            yield from self.inner.items(node)
+
+    def values(self, node):
+        return (v for _, v in self.items(node))
+
+    def keys(self, node):
+        return (k for k, _ in self.items(node))
+
+    def default(self):
+        return {}
+
+    @classmethod
+    def concrete(cls, val):
+        return Key.concrete(val)
+
+    def update(self, node, key, val):
+        try:
+            node[key] = val
+            return node
+        except TypeError:
+            pass
+        return node
+
+    def upsert(self, node, val):
+        for k, _ in self.items(node):
+            self.update(node, k, val)
+        return node
+
+    def pop(self, node, key):
+        try:
+            del node[key]
+        except (KeyError, TypeError):
+            pass
+        return node
+
+    def remove(self, node, val):
+        for k, v in list(self.items(node)):
+            if val is ANY or v == val:
+                self.pop(node, k)
+        return node
+
+
+class PathGroupFirst(PathGroup):
+    """
+    First-match path group - returns only first matching value
+    """
+    def __repr__(self):
+        return f'({self.inner})?'
+
+    def items(self, node):
+        if self.inner:
+            for item in self.inner.items(node):
+                yield item
+                break
+
+
+#
 #
 #
 def itemof(node, val):
