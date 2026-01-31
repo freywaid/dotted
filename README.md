@@ -772,6 +772,28 @@ Precedence: `!` binds tighter than `&` and `,`:
     [!a=1&b=2]    →  [(!a=1) & b=2]
     [!(a=1&b=2)]  →  negate the whole group
 
+#### Filtering for missing fields
+
+Use `!field=*` to filter for items where a field is missing entirely (vs exists with
+value `None`):
+
+    >>> data = [
+    ...     {'name': 'alice', 'email': 'alice@example.com'},
+    ...     {'name': 'bob'},  # no email field
+    ...     {'name': 'charlie', 'email': None},  # email exists but is None
+    ... ]
+
+    # Field missing (doesn't exist)
+    >>> dotted.get(data, '[!email=*]')
+    [{'name': 'bob'}]
+
+    # Field exists with value None
+    >>> dotted.get(data, '[email=None]')
+    [{'name': 'charlie', 'email': None}]
+
+This works because `email=*` matches any value when the field exists, so `!email=*`
+only passes when the field is missing.
+
 ## Constants and Exceptions
 
 ### ANY
