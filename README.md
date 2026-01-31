@@ -439,6 +439,24 @@ Updates and removes work with path negation:
     >>> dotted.remove(d, '(!a)')
     {'a': 1}
 
+**Note on De Morgan's Law**: While De Morgan's law (`(a&b) == !(!a,!b)`) holds for
+*filter* expressions (boolean predicates on items), it does **not** hold for *path*
+expressions. Paths operate on set exclusion/union of keys, not boolean predicates:
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.get(d, '(a&b)')        # conjunction: yield a and b
+    (1, 2)
+    >>> dotted.get(d, '(!(!a,!b))')   # !a={b,c}, !b={a,c}, union=all, negated=nothing
+    ()
+
+For filters, De Morgan works as expected:
+
+    >>> data = [{'x': True, 'y': True}, {'x': True, 'y': False}]
+    >>> dotted.get(data, '[x=True&y=True]')      # AND
+    [{'x': True, 'y': True}]
+    >>> dotted.get(data, '[!(!x=True,!y=True)]') # De Morgan equivalent
+    [{'x': True, 'y': True}]
+
 ### Slicing
 
 Dotted slicing works like python slicing and all that entails.
