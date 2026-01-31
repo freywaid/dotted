@@ -21,6 +21,29 @@ instead of raising an exception:
 This makes dotted ideal for safely navigating deeply nested or uncertain data structures
 without defensive coding or try/except blocks.
 
+## Why Dotted?
+
+Several Python libraries handle nested data access. Here's how dotted compares:
+
+| Feature | dotted | glom | jmespath | pydash |
+|---------|--------|------|----------|--------|
+| Safe traversal (no exceptions) | ✅ | ✅ | ✅ | ✅ |
+| Familiar dot notation | ✅ | ❌ (custom spec) | ❌ (JSON syntax) | ✅ |
+| Pattern matching (wildcards) | ✅ | ❌ | ✅ | ❌ |
+| Regex patterns | ✅ | ❌ | ❌ | ❌ |
+| In-place mutation | ✅ | ✅ | ❌ (read-only) | ✅ |
+| Attribute access (`@attr`) | ✅ | ✅ | ❌ | ❌ |
+| Transforms/coercion | ✅ | ✅ | ❌ | ✅ |
+| Slicing | ✅ | ❌ | ✅ | ❌ |
+| Filters | ✅ | ❌ | ✅ | ❌ |
+| Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
+
+**Choose dotted if you want:**
+- Intuitive `a.b[0].c` syntax that looks like Python
+- Pattern matching with wildcards (`*`) and regex (`/pattern/`)
+- Both read and write operations on nested structures
+- Transforms to coerce types inline (`path|int`, `path|str:fmt`)
+
 ## Breaking Changes
 
 ### v0.13.0
