@@ -550,7 +550,7 @@ class PathOr(Op):
                 continue
 
             # Simple key (Const)
-            key_val = k.value if hasattr(k, 'value') else k
+            key_val = getattr(k, 'value', k)
             try:
                 if hasattr(node, 'keys') and key_val in node:
                     yield (key_val, node[key_val])
@@ -584,7 +584,7 @@ class PathAnd(Op):
     def items(self, node):
         results = []
         for k in self.keys:
-            key_val = k.value if hasattr(k, 'value') else k
+            key_val = getattr(k, 'value', k)
             try:
                 if hasattr(node, 'keys'):
                     if key_val not in node:
