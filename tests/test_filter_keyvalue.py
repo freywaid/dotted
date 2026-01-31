@@ -249,6 +249,25 @@ def test_pluck_filter_keyvalue():
     assert r == (('a', {'id': 1, 'val': 'x'}),)
 
 
+def test_pluck_slicefilter():
+    """Test pluck/expand with SliceFilter (issue #24)"""
+    data = [
+        {'id': 1, 'name': 'alice'},
+        {'id': 2, 'name': 'bob'},
+    ]
+    # pluck with filter returns index
+    r = dotted.pluck(data, '[id=1]')
+    assert r == ('[0]', {'id': 1, 'name': 'alice'})
+
+    # expand with filter returns index
+    r = dotted.expand(data, '[id=1]')
+    assert r == ('[0]',)
+
+    # multiple matches
+    r = dotted.expand(data, '[id=1,id=2]')
+    assert r == ('[0]', '[1]')
+
+
 def test_setdefault_filter_keyvalue():
     d = {
         'a': {'id': 1},
