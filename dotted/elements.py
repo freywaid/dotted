@@ -756,8 +756,9 @@ class PathNot(Op):
         if hasattr(self.inner, 'matches') and callable(self.inner.matches):
             if hasattr(node, 'keys'):
                 return set(self.inner.matches(node.keys()))
-            elif hasattr(node, '__iter__'):
+            if hasattr(node, '__iter__'):
                 return set(self.inner.matches(range(len(node))))
+            return set()
         # Simple key (Const)
         key_val = getattr(self.inner, 'value', self.inner)
         if hasattr(node, 'keys') and key_val in node:
