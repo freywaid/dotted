@@ -525,6 +525,50 @@ class FilterKeyValueFirst(FilterOp):
         return None
 
 
+class FilterNot(FilterOp):
+    """
+    Negation of a filter expression - matches items that DON'T pass the inner filter.
+
+    Examples:
+        [!status="active"]           - items where status != "active"
+        [!(a=1&b=2)]                 - items that don't match both conditions
+        [status="active"&!role="admin"]  - active non-admins
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = self.args[0] if self.args else None
+
+    def __hash__(self):
+        return hash(('not', self.inner))
+
+    def __repr__(self):
+        return f'!{self.inner}'
+
+    def is_filtered(self, node):
+        if self.inner is None:
+            return False
+        return not self.inner.is_filtered(node)
+
+    def filtered(self, items):
+        if self.inner is None:
+            return
+        for item in items:
+            if not self.inner.is_filtered(item):
+                yield item
+
+    def matchable(self, op):
+        if not isinstance(op, FilterNot):
+            return False
+        if self.inner is None or op.inner is None:
+            return False
+        return self.inner.matchable(op.inner)
+
+    def match(self, op):
+        if not self.matchable(op):
+            return None
+        return self.inner.match(op.inner)
+
+
 #
 # Path-level grouping
 #
@@ -677,6 +721,95 @@ class PathGroupFirst(PathGroup):
             for item in self.inner.items(node):
                 yield item
                 break
+
+
+class PathNot(Op):
+    """
+    Negation for path keys - returns all keys EXCEPT those matching the inner expression.
+
+    Examples:
+        (!a)      - all keys except 'a'
+        (!(a,b))  - all keys except 'a' and 'b'
+        (!*)      - no keys (negating wildcard)
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = self.args[0] if self.args else None
+        self.filters = ()
+
+    def __repr__(self):
+        return f'!{self.inner}'
+
+    def is_pattern(self):
+        return True
+
+    def _excluded_keys(self, node):
+        """Get set of keys to exclude based on inner expression."""
+        if self.inner is None:
+            return set()
+        if hasattr(self.inner, 'items') and callable(self.inner.items):
+            return set(k for k, _ in self.inner.items(node))
+        # Simple key (Const)
+        key_val = getattr(self.inner, 'value', self.inner)
+        if hasattr(node, 'keys') and key_val in node:
+            return {key_val}
+        if hasattr(node, '__getitem__') and isinstance(key_val, int):
+            try:
+                node[key_val]  # Check if index exists
+                return {key_val}
+            except (IndexError, TypeError):
+                pass
+        return set()
+
+    def items(self, node):
+        excluded = self._excluded_keys(node)
+        if hasattr(node, 'keys'):
+            for k in node.keys():
+                if k not in excluded:
+                    yield (k, node[k])
+        elif hasattr(node, '__iter__') and hasattr(node, '__getitem__'):
+            for i, v in enumerate(node):
+                if i not in excluded:
+                    yield (i, v)
+
+    def values(self, node):
+        return (v for _, v in self.items(node))
+
+    def keys_iter(self, node):
+        return (k for k, _ in self.items(node))
+
+    def default(self):
+        return {}
+
+    @classmethod
+    def concrete(cls, val):
+        return Key.concrete(val)
+
+    def update(self, node, key, val):
+        try:
+            node[key] = val
+            return node
+        except TypeError:
+            pass
+        return node
+
+    def upsert(self, node, val):
+        for k, _ in self.items(node):
+            self.update(node, k, val)
+        return node
+
+    def pop(self, node, key):
+        try:
+            del node[key]
+        except (KeyError, TypeError):
+            pass
+        return node
+
+    def remove(self, node, val):
+        for k, v in list(self.items(node)):
+            if val is ANY or v == val:
+                self.pop(node, k)
+        return node
 
 
 #
@@ -1496,7 +1629,7 @@ def _is_container(obj):
     if obj is None:
         return False
     # Dict-like, sequence-like, or has attributes
-    return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or 
+    return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or
             hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
 
 
