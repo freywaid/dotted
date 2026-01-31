@@ -339,6 +339,73 @@ def test_regex_filter_key():
     assert r == [{'name': 'bar', 'count': 200}]
 
 
+def test_filter_grouping():
+    """Test parentheses for grouping filter expressions"""
+    data = [
+        {'id': 1, 'type': 'a', 'active': True},
+        {'id': 2, 'type': 'b', 'active': True},
+        {'id': 3, 'type': 'a', 'active': False},
+        {'id': 4, 'type': 'b', 'active': False},
+    ]
+
+    # Basic AND
+    r = dotted.get(data, '[id=1&active=True]')
+    assert len(r) == 1
+    assert r[0]['id'] == 1
+
+    # Basic OR
+    r = dotted.get(data, '[id=1,id=2]')
+    assert len(r) == 2
+
+    # Grouped OR with AND: (id=1 OR id=2) AND active=True
+    r = dotted.get(data, '[(id=1,id=2)&active=True]')
+    assert len(r) == 2
+    assert all(item['active'] for item in r)
+    assert set(item['id'] for item in r) == {1, 2}
+
+    # Mixed: id=1 OR (id=3 AND active=False)
+    r = dotted.get(data, '[id=1,(id=3&active=False)]')
+    assert len(r) == 2
+    assert set(item['id'] for item in r) == {1, 3}
+
+    # Nested groups: ((id=1 OR id=2) AND type='a') OR id=4
+    r = dotted.get(data, '[((id=1,id=2)&type="a"),id=4]')
+    assert len(r) == 2
+    assert set(item['id'] for item in r) == {1, 4}
+
+    # Complex: (type='a' AND active=True) OR (type='b' AND active=False)
+    r = dotted.get(data, '[(type="a"&active=True),(type="b"&active=False)]')
+    assert len(r) == 2
+    assert set(item['id'] for item in r) == {1, 4}
+
+
+def test_filter_grouping_with_patterns():
+    """Test grouping with wildcard patterns"""
+    d = {
+        'a': {'status': 'active', 'priority': 1},
+        'b': {'status': 'inactive', 'priority': 2},
+        'c': {'status': 'active', 'priority': 3},
+    }
+
+    # Pattern with grouped filter
+    r = dotted.get(d, '*&(status="active"&priority=1)')
+    assert len(r) == 1
+    assert r[0]['priority'] == 1
+
+    # Pattern with OR group
+    r = dotted.get(d, '*&(priority=1,priority=3)')
+    assert len(r) == 2
+
+
+def test_literal_parens_in_keys():
+    """Test that quoted parens work as literal key characters"""
+    d = {'(key)': 'value', 'normal': 'other'}
+    assert dotted.get(d, '"(key)"') == 'value'
+
+    d = {'a': {'(nested)': 123}}
+    assert dotted.get(d, 'a."(nested)"') == 123
+
+
 def test_boolean_none_filter_values():
     """Test filters with True, False, and None values"""
     data = [
