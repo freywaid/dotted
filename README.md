@@ -364,6 +364,43 @@ This will coerce to a numeric type (e.g. float).
     >>> dotted.get(d, 'a.#"1.2"')
     'hello'
 
+### Path grouping
+
+Use parentheses to access multiple keys at once, with disjunction (`,`) or
+conjunction (`&`):
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Disjunction: get all that exist
+    >>> dotted.get(d, '(a,b)')
+    (1, 2)
+    >>> dotted.get(d, '(a,x)')     # x missing
+    (1,)
+
+    # Conjunction: all must exist
+    >>> dotted.get(d, '(a&b)')
+    (1, 2)
+    >>> dotted.get(d, '(a&x)')     # x missing, fails
+    ()
+
+Path groups are treated as patterns, so they return tuples and chain correctly:
+
+    >>> data = {'user': {'name': 'alice', 'email': 'a@x.com'}}
+    >>> dotted.get(data, 'user.(name,email)')
+    ('alice', 'a@x.com')
+
+Updates apply to all matching keys:
+
+    >>> d = {'a': 1, 'b': 2}
+    >>> dotted.update(d, '(a,b)', 99)
+    {'a': 99, 'b': 99}
+
+Use `?` for first match only:
+
+    >>> dotted.get(d, '(x,a)?')    # first that exists
+    (1,)
+
 ### Slicing
 
 Dotted slicing works like python slicing and all that entails.
