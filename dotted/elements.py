@@ -744,11 +744,20 @@ class PathNot(Op):
         return True
 
     def _excluded_keys(self, node):
-        """Get set of keys to exclude based on inner expression."""
+        """
+        Get set of keys to exclude based on inner expression.
+        """
         if self.inner is None:
             return set()
+        # Handle complex expressions (PathOr, PathAnd, PathGroup, etc.)
         if hasattr(self.inner, 'items') and callable(self.inner.items):
             return set(k for k, _ in self.inner.items(node))
+        # Handle patterns (Wildcard, Regex) via matches()
+        if hasattr(self.inner, 'matches') and callable(self.inner.matches):
+            if hasattr(node, 'keys'):
+                return set(self.inner.matches(node.keys()))
+            elif hasattr(node, '__iter__'):
+                return set(self.inner.matches(range(len(node))))
         # Simple key (Const)
         key_val = getattr(self.inner, 'value', self.inner)
         if hasattr(node, 'keys') and key_val in node:

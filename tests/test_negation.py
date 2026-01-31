@@ -326,6 +326,30 @@ def test_negate_missing_key():
     assert set(r) == {1, 2}
 
 
+def test_negate_wildcard():
+    """
+    Negating wildcard excludes all keys - returns nothing.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    r = dotted.get(d, '(!*)')
+    assert r == ()
+
+    r = dotted.get([1, 2, 3], '(!*)')
+    assert r == ()
+
+
+def test_negate_regex_pattern():
+    """
+    Negating regex pattern excludes matching keys.
+    """
+    d = {'apple': 1, 'apricot': 2, 'banana': 3}
+
+    # Exclude keys starting with 'a'
+    r = dotted.get(d, '(!/^a.*/)')
+    assert r == (3,)
+
+
 def test_update_with_path_negation():
     """
     Update all keys except excluded ones.
