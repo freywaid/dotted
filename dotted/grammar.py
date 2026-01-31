@@ -103,11 +103,22 @@ slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotS
 slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
+# Path-level grouping: (a,b) for disjunction, (a&b) for conjunction
+path_expr = pp.Forward()
+path_group_inner = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
+path_group_item = path_group_inner | key.copy()
+path_group_and = (path_group_item + OM(amp + path_group_item)).set_parse_action(el.PathAnd) | path_group_item
+path_group_or = (path_group_and + OM(comma + path_group_and)).set_parse_action(el.PathOr) | path_group_and
+path_expr <<= path_group_or
+path_group = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
+path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el.PathGroupFirst)
+path_grouped = path_group_first | path_group
+
 empty = pp.Empty().set_parse_action(el.Empty)
 
-multi = OM((dot + keycmd) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd)
+multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd)
 invert = Opt(L('-').set_parse_action(el.Invert))
-dotted_top = keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
+dotted_top = path_grouped | keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
