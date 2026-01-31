@@ -388,6 +388,36 @@ the first match.
     >>> dotted.get(d, '*?.there[2]')
     (3,)
 
+### Slicing vs Patterns
+
+Slicing a sequence produces a sequence and a filter on a sequence is a special 
+type of slice operation. Whereas, patterns _iterate_ through items:
+
+    >>> import dotted
+    >>> data = [{'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[1:3]')
+    [{'name': 'bob'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[name="alice"]')
+    [{'name': 'alice'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[*]')
+    ({'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'})
+
+Chaining after a slice accesses the result itself, not the items within it:
+
+    >>> dotted.get(data, '[1:3].name')           # accessing .name on the list
+    None
+    >>> dotted.get(data, '[name="alice"].name')  # also accessing .name on the list
+    None
+    >>> dotted.get(data, '[].name')              # .name on a raw list
+    None
+
+To chain through the items, use a pattern instead:
+
+    >>> dotted.get(data, '[*].name')
+    ('alice', 'bob', 'alice')
+    >>> dotted.get(data, '[*&name="alice"]')
+    ({'name': 'alice'}, {'name': 'alice'})
+
 ## Transforms
 
 You can optionally add transforms to the end of dotted notation. These will
