@@ -552,9 +552,7 @@ class FilterNot(FilterOp):
     def filtered(self, items):
         if self.inner is None:
             return
-        for item in items:
-            if not self.inner.is_filtered(item):
-                yield item
+        yield from (item for item in items if not self.inner.is_filtered(item))
 
     def matchable(self, op):
         if not isinstance(op, FilterNot):
@@ -626,22 +624,23 @@ class PathAnd(Op):
         return True
 
     def items(self, node):
-        results = []
-        for k in self.keys:
-            key_val = getattr(k, 'value', k)
-            try:
-                if hasattr(node, 'keys'):
-                    if key_val not in node:
-                        return  # Fail: key doesn't exist
-                    results.append((key_val, node[key_val]))
-                    continue
-                if hasattr(node, '__getitem__') and isinstance(key_val, int):
-                    results.append((key_val, node[key_val]))
-                    continue
-                return  # Fail: can't access
-            except (KeyError, IndexError, TypeError):
-                return  # Fail: key doesn't exist
-        yield from results
+        is_dict = hasattr(node, 'keys')
+        is_seq = hasattr(node, '__getitem__')
+
+        def _get(key_val):
+            if is_dict and key_val in node:
+                return (key_val, node[key_val])
+            if is_seq and isinstance(key_val, int):
+                try:
+                    return (key_val, node[key_val])
+                except (IndexError, TypeError):
+                    pass
+            return None
+
+        items = tuple(_get(getattr(k, 'value', k)) for k in self.keys)
+        if None in items:
+            return
+        yield from items
 
     def values(self, node):
         return (v for _, v in self.items(node))
@@ -774,13 +773,14 @@ class PathNot(Op):
     def items(self, node):
         excluded = self._excluded_keys(node)
         if hasattr(node, 'keys'):
-            for k in node.keys():
-                if k not in excluded:
-                    yield (k, node[k])
+            iterable = ((k, node[k]) for k in node.keys())
         elif hasattr(node, '__iter__') and hasattr(node, '__getitem__'):
-            for i, v in enumerate(node):
-                if i not in excluded:
-                    yield (i, v)
+            iterable = enumerate(node)
+        else:
+            raise NotImplementedError
+
+        iterable = ((k, v) for k, v in iterable if k not in excluded)
+        yield from iterable
 
     def values(self, node):
         return (v for _, v in self.items(node))
