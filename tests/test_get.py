@@ -145,5 +145,65 @@ def test_path_grouping_on_list():
     assert dotted.get(data, 'items.(0&10)') == ()  # 10 out of bounds
 
 
+def test_path_grouping_update_disjunction():
+    """Test update with path disjunction - updates all that exist"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+    result = dotted.update(d, '(a,b)', 99)
+    assert result == {'a': 99, 'b': 99, 'c': 3}
+
+    # Partial - only updates what exists
+    d2 = {'a': 1, 'c': 3}
+    result = dotted.update(d2, '(a,b)', 99)
+    assert result == {'a': 99, 'c': 3}
+
+    # None exist - no change
+    d3 = {'c': 3}
+    result = dotted.update(d3, '(a,b)', 99)
+    assert result == {'c': 3}
+
+
+def test_path_grouping_update_conjunction():
+    """Test update with path conjunction - all or nothing"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+    result = dotted.update(d, '(a&b)', 99)
+    assert result == {'a': 99, 'b': 99, 'c': 3}
+
+    # One missing - no update
+    d2 = {'a': 1, 'c': 3}
+    result = dotted.update(d2, '(a&b)', 99)
+    assert result == {'a': 1, 'c': 3}
+
+
+def test_path_grouping_remove_disjunction():
+    """Test remove with path disjunction - removes all that exist"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+    result = dotted.remove(d, '(a,b)')
+    assert result == {'c': 3}
+
+    # Partial
+    d2 = {'a': 1, 'c': 3}
+    result = dotted.remove(d2, '(a,b)')
+    assert result == {'c': 3}
+
+
+def test_path_grouping_remove_conjunction():
+    """Test remove with path conjunction - all or nothing"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+    result = dotted.remove(d, '(a&b)')
+    assert result == {'c': 3}
+
+    # One missing - no removal
+    d2 = {'a': 1, 'c': 3}
+    result = dotted.remove(d2, '(a&b)')
+    assert result == {'a': 1, 'c': 3}
+
+
+def test_path_grouping_nested_update():
+    """Test update with nested path grouping"""
+    data = {'user': {'name': 'alice', 'email': 'a@x.com', 'age': 30}}
+    result = dotted.update(data, 'user.(name,email)', 'redacted')
+    assert result == {'user': {'name': 'redacted', 'email': 'redacted', 'age': 30}}
+
+
 def test_get_slot():
     r = dotted.get({}, 'hello[*]')
