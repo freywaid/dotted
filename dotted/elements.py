@@ -101,7 +101,9 @@ class String(Const):
 
 
 class Boolean(Const):
-    """Wrapper for True/False in filter values"""
+    """
+    Wrapper for True/False in filter values
+    """
     @property
     def value(self):
         return self.args[0] == 'True'
@@ -110,7 +112,9 @@ class Boolean(Const):
 
 
 class NoneValue(Const):
-    """Wrapper for None in filter values"""
+    """
+    Wrapper for None in filter values
+    """
     @property
     def value(self):
         return None
@@ -226,7 +230,9 @@ class FilterOp(Op):
 
 
 class FilterKey(Op):
-    """Represents a dotted path in a filter key, e.g. user.id or config.db.host"""
+    """
+    Represents a dotted path in a filter key, e.g. user.id or config.db.host
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # args comes as a single list from pyparsing Group, flatten it
@@ -281,19 +287,25 @@ class FilterKey(Op):
         yield current, True
 
     def get_value(self, node):
-        """Get first matching value from node (backwards compat)"""
+        """
+        Get first matching value from node (backwards compat)
+        """
         for val, found in self.get_values(node):
             return val, found
         return None, False
 
     def matches(self, keys):
-        """For simple keys, delegate to the inner part's matches"""
+        """
+        For simple keys, delegate to the inner part's matches
+        """
         if not self.is_dotted():
             return self.parts[0].matches(keys)
         return ()
 
     def matchable(self, op):
-        """Check if this filter key can match another"""
+        """
+        Check if this filter key can match another
+        """
         if not isinstance(op, FilterKey):
             return False
         if len(self.parts) != len(op.parts):
@@ -304,7 +316,9 @@ class FilterKey(Op):
         return True
 
     def match(self, op):
-        """Match against another filter key"""
+        """
+        Match against another filter key
+        """
         if not self.matchable(op):
             return None
         result = []
@@ -317,7 +331,9 @@ class FilterKey(Op):
 
 
 class FilterKeyValue(FilterOp):
-    """Single key=value filter comparison"""
+    """
+    Single key=value filter comparison
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # args is a single group containing [key, value]
@@ -377,7 +393,9 @@ class FilterKeyValue(FilterOp):
 
 
 class FilterGroup(FilterOp):
-    """Parenthesized group of filter expressions"""
+    """
+    Parenthesized group of filter expressions
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
@@ -404,7 +422,9 @@ class FilterGroup(FilterOp):
 
 
 class FilterAnd(FilterOp):
-    """Conjunction of filter expressions (all must match)"""
+    """
+    Conjunction of filter expressions (all must match)
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = tuple(self.args)
@@ -443,7 +463,9 @@ class FilterAnd(FilterOp):
 
 
 class FilterOr(FilterOp):
-    """Disjunction of filter expressions (any must match)"""
+    """
+    Disjunction of filter expressions (any must match)
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = tuple(self.args)
@@ -470,7 +492,9 @@ class FilterOr(FilterOp):
 
 
 class FilterKeyValueFirst(FilterOp):
-    """First-match wrapper for any filter expression"""
+    """
+    First-match wrapper for any filter expression
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
@@ -1296,7 +1320,9 @@ def gets(ops, node):
 
 
 def _is_container(obj):
-    """Check if object can be used as a container for dotted updates."""
+    """
+    Check if object can be used as a container for dotted updates.
+    """
     if obj is None:
         return False
     # Dict-like, sequence-like, or has attributes
@@ -1305,7 +1331,9 @@ def _is_container(obj):
 
 
 def _format_path(path):
-    """Format a path list into dotted notation for error messages."""
+    """
+    Format a path list into dotted notation for error messages.
+    """
     if not path:
         return ''
     result = []
