@@ -26,9 +26,9 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', esc_char='\\') | pp.QuotedString("'", esc_char='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').set_parse_action(pp.token_map(lambda a: None))
-true = pp.Literal('True').set_parse_action(pp.token_map(lambda a: True))
-false = pp.Literal('False').set_parse_action(pp.token_map(lambda a: False))
+none = pp.Literal('None').set_parse_action(el.NoneValue)
+true = pp.Literal('True').set_parse_action(el.Boolean)
+false = pp.Literal('False').set_parse_action(el.Boolean)
 
 reserved = '.[]*:|+?/=,@&'
 breserved = ''.join('\\' + i for i in reserved)
@@ -58,7 +58,7 @@ slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
 
 _common_pats = wildcard_first | wildcard | regex_first | regex
 _commons = string | _common_pats | numeric_quoted
-value = string | wildcard | regex | numeric_quoted | numeric_key
+value = string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
 key = _commons | non_integer | numeric_key | word
 
 # filter_key allows dotted paths like user.id or config.db.host

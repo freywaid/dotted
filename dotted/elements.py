@@ -100,6 +100,26 @@ class String(Const):
         return f'{repr(self.value)}'
 
 
+class Boolean(Const):
+    """Wrapper for True/False in filter values"""
+    @property
+    def value(self):
+        return self.args[0] == 'True'
+    def __repr__(self):
+        return str(self.value)
+
+
+class NoneValue(Const):
+    """Wrapper for None in filter values"""
+    @property
+    def value(self):
+        return None
+    def matches(self, vals):
+        return (v for v in vals if v is None)
+    def __repr__(self):
+        return 'None'
+
+
 class Pattern(Op):
     def __repr__(self):
         return str(self.value)

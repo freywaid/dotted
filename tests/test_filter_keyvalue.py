@@ -337,3 +337,47 @@ def test_regex_filter_key():
     # Regex key - match keys ending with 'ount'
     r = dotted.get(d, 'items[/.*ount/=200]')
     assert r == [{'name': 'bar', 'count': 200}]
+
+
+def test_boolean_none_filter_values():
+    """Test filters with True, False, and None values"""
+    data = [
+        {'name': 'alice', 'active': True, 'score': None},
+        {'name': 'bob', 'active': False, 'score': 100},
+        {'name': 'carol', 'active': True, 'score': 50},
+    ]
+
+    # Filter by True
+    r = dotted.get(data, '[active=True]')
+    assert len(r) == 2
+    assert r[0]['name'] == 'alice'
+    assert r[1]['name'] == 'carol'
+
+    # Filter by False
+    r = dotted.get(data, '[active=False]')
+    assert len(r) == 1
+    assert r[0]['name'] == 'bob'
+
+    # Filter by None
+    r = dotted.get(data, '[score=None]')
+    assert len(r) == 1
+    assert r[0]['name'] == 'alice'
+
+    # Combined with pattern
+    r = dotted.get(data, '[*&active=True]')
+    assert len(r) == 2
+
+    # With dict pattern
+    d = {
+        'a': {'enabled': True, 'val': 1},
+        'b': {'enabled': False, 'val': 2},
+        'c': {'enabled': None, 'val': 3},
+    }
+    r = dotted.get(d, '*&enabled=True')
+    assert r == ({'enabled': True, 'val': 1},)
+
+    r = dotted.get(d, '*&enabled=False')
+    assert r == ({'enabled': False, 'val': 2},)
+
+    r = dotted.get(d, '*&enabled=None')
+    assert r == ({'enabled': None, 'val': 3},)
