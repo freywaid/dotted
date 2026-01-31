@@ -310,6 +310,39 @@ will interpret the `1` part numerically.
     >>> dotted.get({'7': 'me', 7: 'you'}, '7')
     'you'
 
+### Dot notation for sequence indexing
+
+Numeric keys work as indices when accessing sequences (lists, tuples, strings):
+
+    >>> import dotted
+    >>> data = {'items': [10, 20, 30]}
+    >>> dotted.get(data, 'items.0')
+    10
+    >>> dotted.get(data, 'items.-1')  # negative index
+    30
+
+This is equivalent to bracket notation for existing sequences:
+
+    >>> dotted.get(data, 'items[0]')  # same result
+    10
+
+Chaining works naturally:
+
+    >>> data = {'users': [{'name': 'alice'}, {'name': 'bob'}]}
+    >>> dotted.get(data, 'users.0.name')
+    'alice'
+
+Updates and removes also work:
+
+    >>> dotted.update(data, 'users.0.name', 'ALICE')
+    >>> dotted.get(data, 'users.0.name')
+    'ALICE'
+
+**Note**: When _creating_ structures, use bracket notation for lists:
+
+    >>> dotted.build({}, 'items.0')    # creates dict: {'items': {0: None}}
+    >>> dotted.build({}, 'items[0]')   # creates list: {'items': [None]}
+
 ### Quoting
 
 Sometimes you need to quote a field which you can do by just putting the field in quotes.

@@ -630,9 +630,23 @@ class Key(CmdOp):
         return _items()
 
     def items(self, node):
-        if not hasattr(node, 'keys'):
+        # Dict-like: use key matching
+        if hasattr(node, 'keys'):
+            return self._items(node, self.op.matches(node.keys()))
+        # Not indexable or not a concrete key
+        if not hasattr(node, '__getitem__'):
             return ()
-        return self._items(node, self.op.matches(node.keys()))
+        if not isinstance(self.op, Const):
+            return ()
+        # Only numeric keys work as indices
+        key = self.op.value
+        if not isinstance(key, int):
+            return ()
+        # Treat as sequence index
+        try:
+            return iter([(key, node[key])])
+        except (IndexError, TypeError):
+            return ()
 
     def keys(self, node):
         return (k for k, _ in self.items(node))
