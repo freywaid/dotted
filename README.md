@@ -390,11 +390,20 @@ Path groups are treated as patterns, so they return tuples and chain correctly:
     >>> dotted.get(data, 'user.(name,email)')
     ('alice', 'a@x.com')
 
-Updates apply to all matching keys:
+Updates apply to all matching keys. Disjunction updates whatever exists:
 
     >>> d = {'a': 1, 'b': 2}
     >>> dotted.update(d, '(a,b)', 99)
     {'a': 99, 'b': 99}
+    >>> dotted.update({'a': 1}, '(a,x)', 99)    # x missing, a still updated
+    {'a': 99}
+
+Conjunction is all-or-nothing—updates only if all keys exist:
+
+    >>> dotted.update({'a': 1, 'b': 2}, '(a&b)', 99)
+    {'a': 99, 'b': 99}
+    >>> dotted.update({'a': 1}, '(a&b)', 99)    # b missing, no update
+    {'a': 1}
 
 Use `?` for first match only:
 
