@@ -1153,6 +1153,10 @@ class SliceFilter(CmdOp):
         super().__init__(*args, **kwargs)
         self.filters = self.args
 
+    @classmethod
+    def concrete(cls, val):
+        return Slot.concrete(val)
+
     def is_pattern(self):
         return False
 
@@ -1169,18 +1173,16 @@ class SliceFilter(CmdOp):
     def items(self, node):
         return ((None, self.values(node)),)
     def keys(self, node):
-        return (k for k, _ in self.items(node))
+        # Return actual indices for expand/pluck
+        return (k for k, _ in self._items(node))
 
     def _items(self, node):
-        curidx = None
-        def _items():
-            nonlocal curidx
-            for idx, item in enumerate(node):
-                curidx = idx
-                yield item
-
-        for v in self.filtered(_items()):
-            yield (curidx, v)
+        # Filter while preserving indices
+        indexed = list(enumerate(node))
+        for idx, v in indexed:
+            # Check if this item passes all filters
+            if tuple(self.filtered((v,))):
+                yield (idx, v)
 
     def upsert(self, node, val):
         return self.update(node, None, val)
