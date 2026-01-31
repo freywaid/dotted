@@ -30,7 +30,7 @@ none = pp.Literal('None').set_parse_action(el.NoneValue)
 true = pp.Literal('True').set_parse_action(el.Boolean)
 false = pp.Literal('False').set_parse_action(el.Boolean)
 
-reserved = '.[]*:|+?/=,@&'
+reserved = '.[]*:|+?/=,@&()'
 breserved = ''.join('\\' + i for i in reserved)
 
 # atomic ops
@@ -66,13 +66,30 @@ key = _commons | non_integer | numeric_key | word
 _filter_key_part = string | _common_pats | non_integer | numeric_key | word
 filter_key = pp.Group(_filter_key_part + ZM(dot + _filter_key_part)).set_parse_action(el.FilterKey)
 
-__filter_keyvalue = pp.Group(filter_key + equal + value)
-_filter_keyvalue = __filter_keyvalue + ZM(comma + __filter_keyvalue)
+# Single key=value comparison
+filter_single = pp.Group(filter_key + equal + value).set_parse_action(el.FilterKeyValue)
 
-filter_keyvalue = _filter_keyvalue.copy().set_parse_action(el.FilterKeyValue)
-filter_keyvalue_first = (_filter_keyvalue + S('?')).set_parse_action(el.FilterKeyValueFirst)
+# Recursive filter expression with grouping
+filter_expr = pp.Forward()
 
-filters = filter_keyvalue_first | filter_keyvalue
+# Atom: single comparison or grouped expression
+lparen = pp.Suppress('(')
+rparen = pp.Suppress(')')
+filter_group = (lparen + filter_expr + rparen).set_parse_action(el.FilterGroup)
+filter_atom = filter_group | filter_single
+
+# AND: atoms joined by & (higher precedence)
+filter_and = (filter_atom + OM(amp + filter_atom)).set_parse_action(el.FilterAnd) | filter_atom
+
+# OR: and-groups joined by , (lower precedence)
+filter_or = (filter_and + OM(comma + filter_and)).set_parse_action(el.FilterOr) | filter_and
+
+filter_expr <<= filter_or
+
+# Optional ? suffix for first-match
+filter_keyvalue_first = (filter_expr + S('?')).set_parse_action(el.FilterKeyValueFirst)
+
+filters = filter_keyvalue_first | filter_expr
 
 keycmd = (key + ZM(amp + filters)).set_parse_action(el.Key)
 

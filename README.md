@@ -578,6 +578,47 @@ For example, given
 Note that this gives you the ability to have a key filter multiple values, such as:
 `*&key1=value1,key2=value2`.
 
+### Grouping with parentheses
+
+Use parentheses to control precedence in complex filter expressions:
+
+    >>> data = [
+    ...     {'id': 1, 'type': 'a', 'active': True},
+    ...     {'id': 2, 'type': 'b', 'active': True},
+    ...     {'id': 3, 'type': 'a', 'active': False},
+    ... ]
+
+    # (id=1 OR id=2) AND active=True
+    >>> dotted.get(data, '[(id=1,id=2)&active=True]')
+    [{'id': 1, 'type': 'a', 'active': True}, {'id': 2, 'type': 'b', 'active': True}]
+
+    # id=1 OR (id=3 AND active=False)
+    >>> dotted.get(data, '[id=1,(id=3&active=False)]')
+    [{'id': 1, 'type': 'a', 'active': True}, {'id': 3, 'type': 'a', 'active': False}]
+
+Groups can be nested for complex logic:
+
+    # ((id=1 OR id=2) AND type='a') OR id=4
+    >>> dotted.get(data, '[((id=1,id=2)&type="a"),id=4]')
+
+Precedence: `&` (AND) binds tighter than `,` (OR). Use parentheses when you need
+OR groups inside AND expressions.
+
+To use literal parentheses in keys, quote them: `"(key)"`.
+
+### Boolean and None filter values
+
+Filters support `True`, `False`, and `None` as values:
+
+    >>> data = [
+    ...     {'name': 'alice', 'active': True, 'score': None},
+    ...     {'name': 'bob', 'active': False, 'score': 100},
+    ... ]
+    >>> dotted.get(data, '[active=True]')
+    [{'name': 'alice', 'active': True, 'score': None}]
+    >>> dotted.get(data, '[score=None]')
+    [{'name': 'alice', 'active': True, 'score': None}]
+
 ## Constants and Exceptions
 
 ### ANY

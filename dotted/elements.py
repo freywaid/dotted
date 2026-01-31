@@ -101,7 +101,9 @@ class String(Const):
 
 
 class Boolean(Const):
-    """Wrapper for True/False in filter values"""
+    """
+    Wrapper for True/False in filter values
+    """
     @property
     def value(self):
         return self.args[0] == 'True'
@@ -110,7 +112,9 @@ class Boolean(Const):
 
 
 class NoneValue(Const):
-    """Wrapper for None in filter values"""
+    """
+    Wrapper for None in filter values
+    """
     @property
     def value(self):
         return None
@@ -226,7 +230,9 @@ class FilterOp(Op):
 
 
 class FilterKey(Op):
-    """Represents a dotted path in a filter key, e.g. user.id or config.db.host"""
+    """
+    Represents a dotted path in a filter key, e.g. user.id or config.db.host
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # args comes as a single list from pyparsing Group, flatten it
@@ -281,19 +287,25 @@ class FilterKey(Op):
         yield current, True
 
     def get_value(self, node):
-        """Get first matching value from node (backwards compat)"""
+        """
+        Get first matching value from node (backwards compat)
+        """
         for val, found in self.get_values(node):
             return val, found
         return None, False
 
     def matches(self, keys):
-        """For simple keys, delegate to the inner part's matches"""
+        """
+        For simple keys, delegate to the inner part's matches
+        """
         if not self.is_dotted():
             return self.parts[0].matches(keys)
         return ()
 
     def matchable(self, op):
-        """Check if this filter key can match another"""
+        """
+        Check if this filter key can match another
+        """
         if not isinstance(op, FilterKey):
             return False
         if len(self.parts) != len(op.parts):
@@ -304,7 +316,9 @@ class FilterKey(Op):
         return True
 
     def match(self, op):
-        """Match against another filter key"""
+        """
+        Match against another filter key
+        """
         if not self.matchable(op):
             return None
         result = []
@@ -317,60 +331,198 @@ class FilterKey(Op):
 
 
 class FilterKeyValue(FilterOp):
+    """
+    Single key=value filter comparison
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.kv = tuple((k, v) for k, v in self.args)
+        # args is a single group containing [key, value]
+        if len(self.args) == 1 and hasattr(self.args[0], '__iter__') and not isinstance(self.args[0], (str, bytes)):
+            # New format: single (key, value) pair from grammar
+            items = list(self.args[0])
+            self.key = items[0]
+            self.val = items[1]
+        else:
+            # Legacy format: direct key, value args
+            self.key = self.args[0]
+            self.val = self.args[1]
+
     def __hash__(self):
-        return hash(self.kv)
+        return hash((self.key, self.val))
+
     def __repr__(self):
-        return ','.join(f'{k}={v}' for k, v in self.kv)
+        return f'{self.key}={self.val}'
 
     def is_filtered(self, node):
         if not hasattr(node, 'keys'):
             return False
-        # disjunctive evaluation
-        for k, v in self.kv:
-            for val, found in k.get_values(node):
-                if found:
-                    for vm in v.matches((val,)):
-                        return True
+        for val, found in self.key.get_values(node):
+            if found:
+                for vm in self.val.matches((val,)):
+                    return True
         return False
 
     def filtered(self, items):
         return (item for item in items if self.is_filtered(item))
 
     def matchable(self, op):
-        return isinstance(op, FilterKeyValue)
+        if isinstance(op, FilterKeyValue):
+            return True
+        # A single comparison can match against an OR if any child matches
+        if isinstance(op, FilterOr):
+            return any(self.matchable(f) for f in op.filters)
+        return False
+
+    def match(self, op):
+        if isinstance(op, FilterOr):
+            # Match against any of the OR's filters
+            for f in op.filters:
+                m = self.match(f)
+                if m is not None:
+                    return m
+            return None
+        if not isinstance(op, FilterKeyValue):
+            return None
+        if not self.key.matchable(op.key) or not self.val.matchable(op.val):
+            return None
+        mk = next(self.key.matches((op.key.value,)), _marker)
+        mv = next(self.val.matches((op.val.value,)), _marker)
+        if _marker in (mk, mv):
+            return None
+        return type(op)(op.key, op.val)
+
+
+class FilterGroup(FilterOp):
+    """
+    Parenthesized group of filter expressions
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = self.args[0] if self.args else None
+
+    def __hash__(self):
+        return hash(self.inner)
+
+    def __repr__(self):
+        return f'({self.inner})'
+
+    def is_filtered(self, node):
+        return self.inner.is_filtered(node) if self.inner else True
+
+    def filtered(self, items):
+        return self.inner.filtered(items) if self.inner else items
+
+    def matchable(self, op):
+        return isinstance(op, FilterGroup) and self.inner.matchable(op.inner)
 
     def match(self, op):
         if not self.matchable(op):
             return None
-        r = ()
-        for k, v in self.kv:
-            found = False
-            for ik, iv in op.kv:
-                if not k.matchable(ik) or not v.matchable(iv):
-                    continue
-                mk = next(k.matches((ik.value,)), _marker)
-                mv = next(v.matches((iv.value,)), _marker)
-                if _marker in (mk, mv):
-                    continue
-                if (mk, mv) not in r:
-                    r += ((mk, mv),)
-                found = True
-            if not found:
+        return self.inner.match(op.inner)
+
+
+class FilterAnd(FilterOp):
+    """
+    Conjunction of filter expressions (all must match)
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = tuple(self.args)
+
+    def __hash__(self):
+        return hash(self.filters)
+
+    def __repr__(self):
+        return '&'.join(str(f) for f in self.filters)
+
+    def is_filtered(self, node):
+        return all(f.is_filtered(node) for f in self.filters)
+
+    def filtered(self, items):
+        for f in self.filters:
+            items = f.filtered(items)
+        return items
+
+    def matchable(self, op):
+        if not isinstance(op, FilterAnd):
+            return False
+        return len(self.filters) == len(op.filters)
+
+    def match(self, op):
+        if not self.matchable(op):
+            return None
+        results = []
+        for sf, of in zip(self.filters, op.filters):
+            if not sf.matchable(of):
                 return None
-        return type(op)(*r)
+            m = sf.match(of)
+            if m is None:
+                return None
+            results.append(m)
+        return FilterAnd(*results)
 
 
-class FilterKeyValueFirst(FilterKeyValue):
+class FilterOr(FilterOp):
+    """
+    Disjunction of filter expressions (any must match)
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = tuple(self.args)
+
+    def __hash__(self):
+        return hash(self.filters)
+
+    def __repr__(self):
+        return ','.join(str(f) for f in self.filters)
+
+    def is_filtered(self, node):
+        return any(f.is_filtered(node) for f in self.filters)
+
+    def filtered(self, items):
+        # For OR, we need to collect all items that match any filter
+        items = list(items)  # Need to iterate multiple times
+        seen = set()
+        for f in self.filters:
+            for item in f.filtered(items):
+                item_id = id(item)
+                if item_id not in seen:
+                    seen.add(item_id)
+                    yield item
+
+
+class FilterKeyValueFirst(FilterOp):
+    """
+    First-match wrapper for any filter expression
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = self.args[0] if self.args else None
+
+    def __hash__(self):
+        return hash(self.inner)
+
+    def __repr__(self):
+        return f'{self.inner}?'
+
+    def is_filtered(self, node):
+        return self.inner.is_filtered(node) if self.inner else True
+
+    def filtered(self, items):
+        if self.inner:
+            for item in self.inner.filtered(items):
+                yield item
+                break
+
     def matchable(self, op):
         return isinstance(op, FilterKeyValueFirst)
 
-    def filtered(self, items):
-        for item in super().filtered(items):
-            yield item
-            break
+    def match(self, op):
+        if not self.matchable(op):
+            return None
+        if self.inner and op.inner:
+            return self.inner.match(op.inner)
+        return None
 
 
 #
@@ -1168,7 +1320,9 @@ def gets(ops, node):
 
 
 def _is_container(obj):
-    """Check if object can be used as a container for dotted updates."""
+    """
+    Check if object can be used as a container for dotted updates.
+    """
     if obj is None:
         return False
     # Dict-like, sequence-like, or has attributes
@@ -1177,7 +1331,9 @@ def _is_container(obj):
 
 
 def _format_path(path):
-    """Format a path list into dotted notation for error messages."""
+    """
+    Format a path list into dotted notation for error messages.
+    """
     if not path:
         return ''
     result = []
