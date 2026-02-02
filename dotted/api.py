@@ -127,9 +127,9 @@ def mutable(obj, key):
 
     Returns False if:
     - The path is empty (root replacement, not mutation)
-    - The object or any intermediate container in the path is immutable
+    - All containers along the path are immutable
 
-    Returns True if the update would mutate the original object.
+    Returns True if any mutable container along the path would be mutated.
 
     >>> mutable({'a': 1}, 'a')
     True
@@ -140,9 +140,13 @@ def mutable(obj, key):
     >>> mutable([1, 2], '[0]')
     True
     >>> mutable({'a': (1, 2)}, 'a[0]')
-    False
+    True
     >>> mutable({'a': {'b': 1}}, 'a.b')
     True
+    >>> mutable(({'a': 1},), '[0].a')
+    True
+    >>> mutable(((1, 2),), '[0][0]')
+    False
     """
     ops = parse(key)
 
@@ -150,31 +154,23 @@ def mutable(obj, key):
     if len(ops) == 1 and isinstance(ops[0], el.Empty):
         return False
 
-    # Check root mutability
-    if not _is_mutable_container(obj):
-        return False
-
-    # Walk the path, checking mutability at each level
-    # We only need to check up to the second-to-last op
-    # (the last op is what we're updating, parent must be mutable)
+    # Walk the path - if we find any mutable container, mutation will occur
     current = obj
-    for i, op in enumerate(ops[:-1]):
+    for op in ops:
         if isinstance(op, el.Invert):
             continue
 
-        # Get the value(s) at this level
-        vals = list(op.values(current))
-        if not vals:
-            # Path doesn't exist yet - will be created in mutable parent
+        if _is_mutable_container(current):
             return True
 
-        # Check if the next container is mutable
-        # For patterns, check first match
-        current = vals[0]
-        if not _is_mutable_container(current):
+        # Traverse to next level
+        vals = list(op.values(current))
+        if not vals:
+            # Path doesn't exist - would be created, but parent is immutable
             return False
+        current = vals[0]
 
-    return True
+    return False
 
 
 # Alias for use inside functions where 'mutable' parameter shadows the function

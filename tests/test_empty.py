@@ -118,8 +118,8 @@ def test_mutable_list():
 
 
 def test_mutable_nested_immutable():
-    # Dict contains tuple - can't mutate the tuple
-    assert dotted.mutable({'a': (1, 2)}, 'a[0]') is False
+    # Dict contains tuple - dict is still mutable (tuple replaced, not mutated)
+    assert dotted.mutable({'a': (1, 2)}, 'a[0]') is True
 
 
 def test_mutable_nested_mutable():
@@ -151,6 +151,16 @@ def test_mutable_namedtuple():
     Point = namedtuple('Point', ['x', 'y'])
     p = Point(1, 2)
     assert dotted.mutable(p, 'x') is False
+
+
+def test_mutable_tuple_containing_dict():
+    # Tuple contains a dict - dict IS mutable
+    assert dotted.mutable(({'a': 1},), '[0].a') is True
+
+
+def test_mutable_nested_tuples():
+    # All tuples - nothing is mutable
+    assert dotted.mutable(((1, 2),), '[0][0]') is False
 
 
 # mutable=False parameter tests
