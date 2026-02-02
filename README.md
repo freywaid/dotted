@@ -101,6 +101,31 @@ You can update all fields that match pattern given by either a wildcard OR regex
     >>> dotted.update(d, '*', 'me')
     {'a': 'me', 'b': 'me'}
 
+#### Immutable updates
+
+Use `mutable=False` to prevent mutation of the original object:
+
+    >>> import dotted
+    >>> data = {'a': 1, 'b': 2}
+    >>> result = dotted.update(data, 'a', 99, mutable=False)
+    >>> data
+    {'a': 1, 'b': 2}
+    >>> result
+    {'a': 99, 'b': 2}
+
+This works for `remove` as well:
+
+    >>> data = {'a': 1, 'b': 2}
+    >>> result = dotted.remove(data, 'a', mutable=False)
+    >>> data
+    {'a': 1, 'b': 2}
+    >>> result
+    {'b': 2}
+
+When `mutable=False` is specified and the operation would mutate, `copy.deepcopy()`
+is called on the object first. If the object is already immutable (e.g., a tuple),
+no copy is made.
+
 ### Remove
 
 You can remove a field or do so only if it matches value.  For example,
@@ -163,6 +188,30 @@ Check if a key or pattern exists in an object.
     False
     >>> dotted.has(d, 'a.*')
     True
+
+### Mutable
+
+Check if `update(obj, key, val)` would mutate `obj` in place. Returns `False` for
+empty paths (root replacement) or when the object or any container in the path
+is immutable.
+
+    >>> import dotted
+    >>> dotted.mutable({'a': 1}, 'a')
+    True
+    >>> dotted.mutable({'a': 1}, '')           # empty path
+    False
+    >>> dotted.mutable((1, 2), '[0]')          # tuple is immutable
+    False
+    >>> dotted.mutable({'a': (1, 2)}, 'a[0]')  # nested tuple
+    False
+
+This is useful when you need to know whether to use the return value:
+
+    >>> data = {'a': 1}
+    >>> if dotted.mutable(data, 'a'):
+    ...     dotted.update(data, 'a', 2)  # mutates in place
+    ... else:
+    ...     data = dotted.update(data, 'a', 2)  # use return value
 
 ### Setdefault
 
@@ -262,6 +311,43 @@ dictionary-like object (using `keys` and `__getitem__` internally).  A _bracket_
 field is biased towards sequences (like lists or strs) but can also act on dicts.  A
 _attr_ `@` field uses `getattr/setattr/delattr`.  Dotted also support slicing notation
 as well as transforms discussed below.
+
+### Empty path (root access)
+
+An empty string `''` refers to the root of the data structure itself:
+
+    >>> import dotted
+    >>> data = {'a': 1, 'b': 2}
+    >>> dotted.get(data, '')
+    {'a': 1, 'b': 2}
+
+Unlike normal paths which mutate in place, `update` with an empty path is non-mutating
+since Python cannot rebind the caller's variable:
+
+    >>> data = {'a': 1, 'b': 2}
+    >>> result = dotted.update(data, '', {'replaced': True})
+    >>> result
+    {'replaced': True}
+    >>> data
+    {'a': 1, 'b': 2}
+
+Compare with a normal path which mutates:
+
+    >>> data = {'a': 1, 'b': 2}
+    >>> dotted.update(data, 'a', 99)
+    {'a': 99, 'b': 2}
+    >>> data
+    {'a': 99, 'b': 2}
+
+Other empty path operations:
+
+    >>> data = {'a': 1, 'b': 2}
+    >>> dotted.remove(data, '')
+    None
+    >>> dotted.expand(data, '')
+    ('',)
+    >>> dotted.pluck(data, '')
+    ('', {'a': 1, 'b': 2})
 
 ### Key fields
 

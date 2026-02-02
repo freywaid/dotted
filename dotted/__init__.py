@@ -17,6 +17,7 @@ update(obj, key, val)   Update value at dotted key
 remove(obj, key)        Remove value at dotted key
 has(obj, key)           Check if key exists
 setdefault(obj, k, v)   Set value only if key missing
+mutable(obj, key)       Check if update would mutate in place
 
 Pattern Matching
 ----------------
@@ -37,9 +38,13 @@ Append transforms with |: 'field|int', 'field|str:fmt'
 
 register(name, fn)      Register custom transform
 transform(name)         Decorator for custom transforms
+
+For full documentation including all options and flags:
+    $ pydoc dotted.api
+    or see README.md
 """
 from .api import \
-    parse, is_pattern, is_inverted, quote, ANY, \
+    parse, is_pattern, is_inverted, mutable, quote, ANY, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -64,7 +69,7 @@ __all__ = [
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility
-    'parse', 'assemble', 'assemble_multi', 'quote', 'is_pattern', 'is_inverted',
+    'parse', 'assemble', 'assemble_multi', 'quote', 'is_pattern', 'is_inverted', 'mutable',
     # Constants
     'ANY',
 ]
