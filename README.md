@@ -666,6 +666,40 @@ This will return all items in a list that match key-value filter.  For example,
     >>> dotted.get(d, '*[hello="there"][*].id')
     (1, 2, 3)
 
+### Filtering primitive sequences
+
+For lists of primitive values (not dicts), use `[*=value]` to filter by value:
+
+    >>> data = [None, 1, 2, 3]
+    >>> dotted.get(data, '[*=None]')
+    [None]
+    >>> dotted.get(data, '[*=1]')
+    [1]
+
+This works with booleans, strings, and regex patterns:
+
+    >>> data = [True, False, True, None]
+    >>> dotted.get(data, '[*=True]')
+    [True, True]
+    >>> dotted.get(data, '[*=False]')
+    [False]
+
+    >>> words = ['hello', 'world', 'help', 'foo']
+    >>> dotted.get(words, '[*="hello"]')
+    ['hello']
+    >>> dotted.get(words, '[*=/hel.*/]')  # regex value
+    ['hello', 'help']
+
+Negation works too:
+
+    >>> dotted.get(data, '[!*=None]')  # everything except None
+    [True, False, True]
+
+**Note**: Python equality applies, so `1 == True` and `0 == False`:
+
+    >>> dotted.get([True, 1, False, 0], '[*=True]')
+    [True, 1]
+
 ### Dotted filter keys
 
 Filter keys can contain dotted paths to filter on nested fields:

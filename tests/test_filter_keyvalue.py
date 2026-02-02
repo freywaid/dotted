@@ -467,3 +467,102 @@ def test_boolean_none_filter_values():
 
     r = dotted.get(d, '*&enabled=None')
     assert r == ({'enabled': None, 'val': 3},)
+
+
+def test_filter_primitives_with_wildcard():
+    """
+    Test filtering primitive lists with wildcard key.
+    The wildcard matches the value itself for primitives.
+    """
+    # Filter None in primitive list
+    data = [None, 1, 2]
+    r = dotted.get(data, '[*=None]')
+    assert r == [None]
+
+    r = dotted.get(data, '[*=1]')
+    assert r == [1]
+
+    r = dotted.get(data, '[*=2]')
+    assert r == [2]
+
+
+def test_filter_primitives_booleans():
+    """
+    Test filtering primitive lists with boolean values.
+    Note: Python equality means 1==True and 0==False.
+    """
+    data = [True, False, True, None, 1, 0]
+
+    # True matches True and 1
+    r = dotted.get(data, '[*=True]')
+    assert True in r and 1 in r
+    assert len(r) == 3  # True, True, 1
+
+    # False matches False and 0
+    r = dotted.get(data, '[*=False]')
+    assert False in r and 0 in r
+    assert len(r) == 2  # False, 0
+
+    # None only matches None
+    r = dotted.get(data, '[*=None]')
+    assert r == [None]
+
+
+def test_filter_primitives_strings():
+    """
+    Test filtering primitive lists with string values.
+    """
+    data = ['hello', 'world', 'hello', 'foo']
+
+    r = dotted.get(data, '[*="hello"]')
+    assert r == ['hello', 'hello']
+
+    r = dotted.get(data, '[*="world"]')
+    assert r == ['world']
+
+    r = dotted.get(data, '[*="bar"]')
+    assert r == []
+
+
+def test_filter_primitives_with_negation():
+    """
+    Test negation filter on primitive lists.
+    """
+    data = [True, False, None, 1, 2]
+
+    # NOT True (excludes True and 1 due to Python equality)
+    r = dotted.get(data, '[!*=True]')
+    assert True not in r
+    assert 1 not in r
+    assert False in r
+    assert None in r
+    assert 2 in r
+
+    # NOT None
+    r = dotted.get(data, '[!*=None]')
+    assert None not in r
+    assert len(r) == 4
+
+
+def test_filter_primitives_mixed_with_dicts():
+    """
+    Test that primitive filtering doesn't break dict filtering.
+    """
+    # Dicts still work as before
+    data = [{'val': None}, {'val': 1}, {'val': 2}]
+    r = dotted.get(data, '[val=None]')
+    assert r == [{'val': None}]
+
+    r = dotted.get(data, '[val=1]')
+    assert r == [{'val': 1}]
+
+    # Mixed list with primitives and dicts - only dicts match keyed filters
+    mixed = [None, {'val': None}, 1, {'val': 1}]
+    r = dotted.get(mixed, '[val=None]')
+    assert r == [{'val': None}]
+
+    # Wildcard on mixed list - primitives match by value
+    r = dotted.get(mixed, '[*=None]')
+    # None primitive matches, and {'val': None} has a key with value None
+    assert None in r
+    assert {'val': None} in r

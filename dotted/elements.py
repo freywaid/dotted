@@ -355,6 +355,10 @@ class FilterKeyValue(FilterOp):
 
     def is_filtered(self, node):
         if not hasattr(node, 'keys'):
+            # For primitives with wildcard key, match the value itself
+            if len(self.key.parts) == 1 and isinstance(self.key.parts[0], (Wildcard, WildcardFirst)):
+                for _ in self.val.matches((node,)):
+                    return True
             return False
         for val, found in self.key.get_values(node):
             if found:
