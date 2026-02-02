@@ -210,3 +210,19 @@ def test_update_mutable_false_on_immutable_no_copy_needed():
     result = dotted.update(data, '[0]', 99, mutable=False)
     assert data == (1, 2, 3)  # Original unchanged (it's immutable anyway)
     assert result == (99, 2, 3)
+
+
+def test_update_mutable_false_with_nested_immutable():
+    # Dict contains tuple - mutable=False should still prevent dict mutation
+    data = {'a': (1, 2, 3)}
+    result = dotted.update(data, 'a[0]', 99, mutable=False)
+    assert data == {'a': (1, 2, 3)}  # Original dict unchanged
+    assert result == {'a': (99, 2, 3)}  # Result has new tuple
+
+
+def test_remove_mutable_false_with_nested_immutable():
+    # Dict contains tuple - mutable=False should still prevent dict mutation
+    data = {'a': (1, 2, 3), 'b': 2}
+    result = dotted.remove(data, 'b', mutable=False)
+    assert data == {'a': (1, 2, 3), 'b': 2}  # Original unchanged
+    assert result == {'a': (1, 2, 3)}

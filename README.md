@@ -122,9 +122,9 @@ This works for `remove` as well:
     >>> result
     {'b': 2}
 
-When `mutable=False` is specified and the operation would mutate, `copy.deepcopy()`
-is called on the object first. If the object is already immutable (e.g., a tuple),
-no copy is made.
+When `mutable=False` is specified and the root object is mutable, `copy.deepcopy()`
+is called first. This ensures no mutation occurs even when updating through nested
+immutable containers (e.g., a tuple inside a dict).
 
 ### Remove
 

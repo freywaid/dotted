@@ -308,7 +308,7 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
     >>> result
     {'a': 2}
     """
-    if not mutable and _mutable(obj, key):
+    if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
     ops = parse(key)
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
@@ -322,7 +322,7 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
     >>> update_multi({}, {'stuff.more.stuff': 'mine'})
     {'stuff': {'more': {'stuff': 'mine'}}}
     """
-    if not mutable and _mutable(obj, ''):
+    if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True  # Already copied, allow mutation on the copy
     for k,v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
@@ -354,7 +354,7 @@ def remove(obj, key, val=ANY, mutable=True):
     >>> result
     {'b': 2}
     """
-    if not mutable and _mutable(obj, key):
+    if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
     return el.removes(parse(key), obj, val)
 
@@ -365,7 +365,7 @@ def remove_multi(obj, iterable, keys_only=True, mutable=True):
     >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
     {'my': {}}
     """
-    if not mutable and _mutable(obj, ''):
+    if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True  # Already copied, allow mutation on the copy
     if keys_only:
