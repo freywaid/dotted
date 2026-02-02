@@ -1,6 +1,7 @@
 """
 Main api
 """
+import copy
 import functools
 import itertools
 from . import grammar
@@ -86,6 +87,98 @@ def is_inverted(key):
     """
     ops = parse(key)
     return isinstance(ops[0], el.Invert)
+
+
+def _is_mutable_container(obj):
+    """
+    Check if obj is a mutable container type.
+    """
+    # Common immutable types
+    if isinstance(obj, (str, bytes, tuple, frozenset)):
+        return False
+    # Namedtuples
+    if hasattr(obj, '_fields') and hasattr(obj, '_replace'):
+        return False
+    # Frozen dataclasses
+    import dataclasses
+    if dataclasses.is_dataclass(obj) and obj.__dataclass_fields__:
+        # Check if frozen
+        try:
+            # Try to detect frozen - frozen dataclasses raise FrozenInstanceError
+            if hasattr(obj, '__dataclass_params__') and obj.__dataclass_params__.frozen:
+                return False
+        except (AttributeError, TypeError):
+            pass
+    # Check for common mutable types
+    if isinstance(obj, (dict, list, set)):
+        return True
+    # Check if it has mutable dict
+    if hasattr(obj, '__dict__'):
+        return True
+    # Has __setitem__ suggests mutability
+    if hasattr(obj, '__setitem__'):
+        return True
+    return False
+
+
+def mutable(obj, key):
+    """
+    Check if update(obj, key, val) would mutate obj in place.
+
+    Returns False if:
+    - The path is empty (root replacement, not mutation)
+    - The object or any intermediate container in the path is immutable
+
+    Returns True if the update would mutate the original object.
+
+    >>> mutable({'a': 1}, 'a')
+    True
+    >>> mutable({'a': 1}, '')
+    False
+    >>> mutable((1, 2), '[0]')
+    False
+    >>> mutable([1, 2], '[0]')
+    True
+    >>> mutable({'a': (1, 2)}, 'a[0]')
+    False
+    >>> mutable({'a': {'b': 1}}, 'a.b')
+    True
+    """
+    ops = parse(key)
+
+    # Empty path can never mutate (can't rebind caller's variable)
+    if len(ops) == 1 and isinstance(ops[0], el.Empty):
+        return False
+
+    # Check root mutability
+    if not _is_mutable_container(obj):
+        return False
+
+    # Walk the path, checking mutability at each level
+    # We only need to check up to the second-to-last op
+    # (the last op is what we're updating, parent must be mutable)
+    current = obj
+    for i, op in enumerate(ops[:-1]):
+        if isinstance(op, el.Invert):
+            continue
+
+        # Get the value(s) at this level
+        vals = list(op.values(current))
+        if not vals:
+            # Path doesn't exist yet - will be created in mutable parent
+            return True
+
+        # Check if the next container is mutable
+        # For patterns, check first match
+        current = vals[0]
+        if not _is_mutable_container(current):
+            return False
+
+    return True
+
+
+# Alias for use inside functions where 'mutable' parameter shadows the function
+_mutable = mutable
 
 
 def build_multi(obj, keys):
@@ -185,7 +278,7 @@ def setdefault_multi(obj, keyvalues, apply_transforms=True):
     return obj
 
 
-def update(obj, key, val, apply_transforms=True):
+def update(obj, key, val, mutable=True, apply_transforms=True):
     """
     Update obj with all matches to dotted key with val
     >>> d = {'hello': {'there': {'stuff': 1}}}
@@ -206,25 +299,38 @@ def update(obj, key, val, apply_transforms=True):
     {'hello': {7.0: {'me': 'bye'}}}
     >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)    # invert
     {'hello': {}}
+
+    Use mutable=False to prevent mutation of the original object:
+    >>> d = {'a': 1}
+    >>> result = update(d, 'a', 2, mutable=False)
+    >>> d
+    {'a': 1}
+    >>> result
+    {'a': 2}
     """
+    if not mutable and _mutable(obj, key):
+        obj = copy.deepcopy(obj)
     ops = parse(key)
     return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
-def update_multi(obj, keyvalues, apply_transforms=True):
+def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
     """
-    Update obj with all keyvalus
+    Update obj with all keyvalues
     >>> update_multi({}, [('hello.there', 7), ('my.my', 9)])
     {'hello': {'there': 7}, 'my': {'my': 9}}
     >>> update_multi({}, {'stuff.more.stuff': 'mine'})
     {'stuff': {'more': {'stuff': 'mine'}}}
     """
+    if not mutable and _mutable(obj, ''):
+        obj = copy.deepcopy(obj)
+        mutable = True  # Already copied, allow mutation on the copy
     for k,v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        obj = update(obj, k, v, apply_transforms=apply_transforms)
+        obj = update(obj, k, v, mutable=mutable, apply_transforms=apply_transforms)
     return obj
 
 
-def remove(obj, key, val=ANY):
+def remove(obj, key, val=ANY, mutable=True):
     """
     To remove all matches to `key`
         remove(obj, key) or remove(obj, key, ANY)
@@ -239,22 +345,35 @@ def remove(obj, key, val=ANY):
     {'hello': {}}
     >>> remove({}, '-hello.there', [2])
     {'hello': {'there': [2]}}
+
+    Use mutable=False to prevent mutation of the original object:
+    >>> d = {'a': 1, 'b': 2}
+    >>> result = remove(d, 'a', mutable=False)
+    >>> d
+    {'a': 1, 'b': 2}
+    >>> result
+    {'b': 2}
     """
+    if not mutable and _mutable(obj, key):
+        obj = copy.deepcopy(obj)
     return el.removes(parse(key), obj, val)
 
 
-def remove_multi(obj, iterable, keys_only=True):
+def remove_multi(obj, iterable, keys_only=True, mutable=True):
     """
     Remove by keys or key-values
     >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
     {'my': {}}
     """
+    if not mutable and _mutable(obj, ''):
+        obj = copy.deepcopy(obj)
+        mutable = True  # Already copied, allow mutation on the copy
     if keys_only:
         iterable = ((k,ANY) for k in iterable)
     elif hasattr(iterable, 'items') and callable(iterable.items):
         iterable = iterable.items()
     for k,v in iterable:
-        obj = remove(obj, k, v)
+        obj = remove(obj, k, v, mutable=mutable)
     return obj
 
 

@@ -857,6 +857,14 @@ class CmdOp(Op):
 
 
 class Empty(CmdOp):
+    """
+    Represents an empty path - the root of the data structure.
+
+    Examples:
+        get(data, '')      → returns data itself
+        update(data, '', v) → replaces root with v
+        remove(data, '')   → returns None (root removed)
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = self.args
@@ -867,16 +875,66 @@ class Empty(CmdOp):
     def is_pattern(self):
         return False
 
+    def is_empty(self, node):
+        return False
+
     def operator(self, top=False):
         return self.__repr__()
+
+    def items(self, node):
+        """
+        Yield the root as a single item with empty key.
+        """
+        for v in self.filtered((node,)):
+            yield ('', v)
+
+    def keys(self, node):
+        """
+        Yield empty string as the 'key' for root.
+        """
+        return (k for k, _ in self.items(node))
 
     def values(self, node):
         return self.filtered((node,))
 
     def default(self):
-        return ''
+        return None
 
-    def match(self, op):
+    def update(self, node, key, val):
+        """
+        Replace root with val.
+        """
+        return val
+
+    def upsert(self, node, val):
+        """
+        Replace root with val.
+        """
+        return val
+
+    def pop(self, node, key):
+        """
+        Remove root - return None.
+        """
+        return None
+
+    def remove(self, node, val):
+        """
+        Remove root if it matches val.
+        """
+        if val is ANY or node == val:
+            return None
+        return node
+
+    @classmethod
+    def concrete(cls, val):
+        """
+        Return a concrete Empty op for the given key value.
+        For empty path, the key is always ''.
+        """
+        return cls()
+
+    def match(self, op, specials=False):
         if not isinstance(op, Empty):
             return None
         m = super().match(op)
