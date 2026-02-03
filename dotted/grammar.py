@@ -127,7 +127,28 @@ path_grouped = path_group_first | path_group
 
 empty = pp.Empty().set_parse_action(el.Empty)
 
-multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd)
+# Operation grouping: (.b,[]) for grouping operation sequences
+# An op_seq is a sequence of operations like .key, [slot], @attr
+op_seq_item = (dot + keycmd) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd
+op_seq = pp.Group(OM(op_seq_item))
+
+# OpGroup with AND/OR/NOT semantics:
+# (.b,.c)  - disjunction: get both a.b and a.c
+# (.b&.c)  - conjunction: get both only if both exist
+# (!.b)    - negation: get all except b
+op_group_and_inner = op_seq + OM(amp + op_seq)
+op_group_and = (lparen + op_group_and_inner + rparen).set_parse_action(el.OpGroupAnd)
+
+op_group_or_inner = op_seq + ZM(comma + op_seq)
+op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(el.OpGroup)
+op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(el.OpGroupFirst)
+
+# Negation: (!.b) or (!(expr))
+op_group_not = (lparen + bang + op_seq + rparen).set_parse_action(el.OpGroupNot)
+
+op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
+
+multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
 invert = Opt(L('-').set_parse_action(el.Invert))
 dotted_top = path_grouped | keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)

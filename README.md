@@ -37,6 +37,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Slicing | ✅ | ❌ | ✅ | ❌ |
 | Filters | ✅ | ❌ | ✅ | ❌ |
 | AND/OR/NOT (filters & paths) | ✅ | ❌ | ✅ (filters only) | ❌ |
+| Operation grouping | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -44,6 +45,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Pattern matching with wildcards (`*`) and regex (`/pattern/`)
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
+- Operation grouping to access multiple paths at once (`a(.b,.c)`)
 
 ## Breaking Changes
 
@@ -451,73 +453,106 @@ This will coerce to a numeric type (e.g. float).
     >>> dotted.get(d, 'a.#"1.2"')
     'hello'
 
-### Path grouping
+### Operation grouping
 
-Use parentheses to access multiple keys at once, with disjunction (`,`) or
-conjunction (`&`):
+Use parentheses to group **operation sequences** that diverge from a common point.
+This enables accessing multiple paths in a single expression:
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'c': 3}
 
-    # Disjunction: get all that exist
+    # Group key accesses (shorthand)
     >>> dotted.get(d, '(a,b)')
     (1, 2)
-    >>> dotted.get(d, '(a,x)')     # x missing
+
+    # Equivalent with explicit dot notation
+    >>> dotted.get(d, '(.a,.b)')
+    (1, 2)
+
+    # Mix different operation types
+    >>> d = {'items': [10, 20, 30]}
+    >>> dotted.get(d, 'items(.0,[])')
+    (10, [10, 20, 30])
+
+    # Nested paths in branches
+    >>> d = {'x': {'a': {'i': 1}, 'b': {'k': 3}}}
+    >>> dotted.get(d, 'x(.a.i,.b.k)')
+    (1, 3)
+
+Operation groups support three operators:
+
+| Syntax | Meaning | Behavior |
+|--------|---------|----------|
+| `(a,b)` or `(.a,.b)` | Disjunction (OR) | Returns all values that exist |
+| `(a&b)` or `(.a&.b)` | Conjunction (AND) | Returns values only if ALL branches exist |
+| `(!a)` or `(!.a)` | Negation (NOT) | Returns values for keys NOT matching |
+
+#### Disjunction (OR)
+
+Comma separates branches. Returns all matches that exist:
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.get(d, '(a,b)')
+    (1, 2)
+    >>> dotted.get(d, '(a,x)')     # x missing, a still returned
     (1,)
 
-    # Conjunction: all must exist
-    >>> dotted.get(d, '(a&b)')
-    (1, 2)
-    >>> dotted.get(d, '(a&x)')     # x missing, fails
-    ()
-
-Path groups are treated as patterns, so they return tuples and chain correctly:
-
-    >>> data = {'user': {'name': 'alice', 'email': 'a@x.com'}}
-    >>> dotted.get(data, 'user.(name,email)')
-    ('alice', 'a@x.com')
-
-Updates apply to all matching keys. Disjunction updates whatever exists:
+Updates apply to all matching branches:
 
     >>> d = {'a': 1, 'b': 2}
     >>> dotted.update(d, '(a,b)', 99)
     {'a': 99, 'b': 99}
-    >>> dotted.update({'a': 1}, '(a,x)', 99)    # x missing, a still updated
-    {'a': 99}
 
-Conjunction is all-or-nothing—updates only if all keys exist:
+#### Conjunction (AND)
+
+Use `&` for all-or-nothing behavior. Returns values only if ALL branches exist:
+
+    >>> d = {'a': 1, 'b': 2}
+    >>> dotted.get(d, '(a&b)')
+    (1, 2)
+    >>> dotted.get(d, '(a&x)')     # x missing, fails entirely
+    ()
+
+Updates only happen if all branches exist:
 
     >>> dotted.update({'a': 1, 'b': 2}, '(a&b)', 99)
     {'a': 99, 'b': 99}
     >>> dotted.update({'a': 1}, '(a&b)', 99)    # b missing, no update
     {'a': 1}
 
-Use `?` for first match only:
+#### First match
 
-    >>> dotted.get(d, '(x,a)?')    # first that exists
+Use `?` suffix to return only the first match:
+
+    >>> d = {'a': 1, 'b': 2}
+    >>> dotted.get(d, '(x,a,b)?')    # first that exists
     (1,)
 
-#### Path negation
+#### Negation (NOT)
 
-Use `!` to exclude keys from path groups:
+Use `!` prefix to exclude keys matching a pattern:
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'c': 3}
 
     # Exclude single key - all except 'a'
-    >>> dotted.get(d, '(!a)')
-    (2, 3)
+    >>> sorted(dotted.get(d, '(!a)'))
+    [2, 3]
 
     # Exclude multiple keys
     >>> dotted.get(d, '(!(a,b))')
     (3,)
 
     # Nested - get user fields except password
-    >>> user = {'name': 'alice', 'email': 'a@x.com', 'password': 'secret'}
-    >>> dotted.get({'user': user}, 'user.(!password)')
-    ('alice', 'a@x.com')
+    >>> user = {'email': 'a@x.com', 'name': 'alice', 'password': 'secret'}
+    >>> sorted(dotted.get({'user': user}, 'user(!.password)'))
+    ['a@x.com', 'alice']
 
-Updates and removes work with path negation:
+    # Works with lists too
+    >>> dotted.get({'items': [10, 20, 30]}, 'items(![0])')
+    (20, 30)
+
+Updates and removes apply to all non-matching keys:
 
     >>> d = {'a': 1, 'b': 2, 'c': 3}
     >>> dotted.update(d, '(!a)', 99)
@@ -525,23 +560,7 @@ Updates and removes work with path negation:
     >>> dotted.remove(d, '(!a)')
     {'a': 1}
 
-**Note on De Morgan's Law**: While De Morgan's law (`(a&b) == !(!a,!b)`) holds for
-*filter* expressions (boolean predicates on items), it does **not** hold for *path*
-expressions. Paths operate on set exclusion/union of keys, not boolean predicates:
-
-    >>> d = {'a': 1, 'b': 2, 'c': 3}
-    >>> dotted.get(d, '(a&b)')        # conjunction: yield a and b
-    (1, 2)
-    >>> dotted.get(d, '(!(!a,!b))')   # !a={b,c}, !b={a,c}, union=all, negated=nothing
-    ()
-
-For filters, De Morgan works as expected:
-
-    >>> data = [{'x': True, 'y': True}, {'x': True, 'y': False}]
-    >>> dotted.get(data, '[x=True&y=True]')      # AND
-    [{'x': True, 'y': True}]
-    >>> dotted.get(data, '[!(!x=True,!y=True)]') # De Morgan equivalent
-    [{'x': True, 'y': True}]
+**Note**: For De Morgan's law with filter expressions, see the Filters section below.
 
 ### Slicing
 

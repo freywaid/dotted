@@ -1,0 +1,476 @@
+"""
+Tests for OpGroup - operation sequence grouping.
+
+OpGroup enables syntax like:
+    a(.b,[])     - from a, get both a.b and a[]
+    a(.b.c,.d)   - from a, get both a.b.c and a.d
+    x(.a,.b,.c)  - from x, get x.a, x.b, and x.c
+"""
+import pytest
+import dotted
+
+
+def test_parse_opgroup_basic():
+    """
+    Test parsing of basic OpGroup syntax.
+    """
+    ops = dotted.parse('a(.b,.c)')
+    assert len(ops.ops) == 2  # 'a' and the OpGroup
+
+
+def test_parse_opgroup_with_slot():
+    """
+    Test parsing OpGroup with slot operations.
+    """
+    ops = dotted.parse('a(.b,[])')
+    assert len(ops.ops) == 2
+
+
+def test_parse_opgroup_nested_path():
+    """
+    Test parsing OpGroup with nested paths in branches.
+    """
+    ops = dotted.parse('x(.a.b,.c.d)')
+    assert len(ops.ops) == 2
+
+
+def test_get_opgroup_basic():
+    """
+    Test get with basic OpGroup - returns tuple of values from all branches.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.get(d, 'a(.b,.c)')
+    assert r == (1, 2)
+
+
+def test_get_opgroup_with_slot():
+    """
+    Test get with OpGroup containing slot operations.
+    """
+    d = {'items': [1, 2, 3]}
+    r = dotted.get(d, 'items(.0,[1:])')
+    assert r == (1, [2, 3])
+
+
+def test_get_opgroup_mixed_key_slot():
+    """
+    Test get with OpGroup mixing key and slot access.
+    """
+    d = {'a': {'x': 10}, 'items': [1, 2, 3]}
+    r = dotted.get(d, '(.a.x,.items[0])')
+    assert r == (10, 1)
+
+
+def test_get_opgroup_nested_paths():
+    """
+    Test get with OpGroup containing nested paths.
+    """
+    d = {'x': {'a': {'i': 1, 'j': 2}, 'b': {'k': 3}}}
+    r = dotted.get(d, 'x(.a.i,.b.k)')
+    assert r == (1, 3)
+
+
+def test_get_opgroup_partial_match():
+    """
+    Test get with OpGroup where some branches don't match.
+    """
+    d = {'a': {'b': 1}}  # 'c' doesn't exist
+    r = dotted.get(d, 'a(.b,.c)')
+    # Only b matches, c is missing
+    assert r == (1,)
+
+
+def test_get_opgroup_no_match():
+    """
+    Test get with OpGroup where no branches match.
+    """
+    d = {'a': {}}
+    r = dotted.get(d, 'a(.x,.y)')
+    assert r == ()
+
+
+def test_get_opgroup_three_branches():
+    """
+    Test get with OpGroup with more than two branches.
+    """
+    d = {'x': {'a': 1, 'b': 2, 'c': 3}}
+    r = dotted.get(d, 'x(.a,.b,.c)')
+    assert r == (1, 2, 3)
+
+
+def test_expand_opgroup():
+    """
+    Test expand with OpGroup.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.expand(d, 'a(.b,.c)')
+    assert set(r) == {'a.b', 'a.c'}
+
+
+def test_expand_opgroup_with_slot():
+    """
+    Test expand with OpGroup containing slots.
+    """
+    d = {'items': [10, 20, 30]}
+    r = dotted.expand(d, 'items(.0,[2])')
+    assert set(r) == {'items.0', 'items[2]'}
+
+
+def test_update_opgroup():
+    """
+    Test update with OpGroup - updates all matching branches.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.update(d, 'a(.b,.c)', 99)
+    assert r == {'a': {'b': 99, 'c': 99}}
+
+
+def test_update_opgroup_partial():
+    """
+    Test update with OpGroup where some branches don't exist.
+
+    Note: Like regular dotted updates, OpGroup creates missing keys.
+    """
+    d = {'a': {'b': 1}}  # 'c' doesn't exist
+    r = dotted.update(d, 'a(.b,.c)', 99)
+    # Both get updated/created (consistent with regular update behavior)
+    assert r == {'a': {'b': 99, 'c': 99}}
+
+
+def test_update_opgroup_nested():
+    """
+    Test update with OpGroup containing nested paths.
+    """
+    d = {'x': {'a': {'i': 1}, 'b': {'k': 3}}}
+    r = dotted.update(d, 'x(.a.i,.b.k)', 99)
+    assert r == {'x': {'a': {'i': 99}, 'b': {'k': 99}}}
+
+
+def test_remove_opgroup():
+    """
+    Test remove with OpGroup - removes all matching branches.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.remove(d, 'a(.b,.c)')
+    assert r == {'a': {'d': 3}}
+
+
+def test_remove_opgroup_partial():
+    """
+    Test remove with OpGroup where some branches don't exist.
+    """
+    d = {'a': {'b': 1, 'd': 3}}  # 'c' doesn't exist
+    r = dotted.remove(d, 'a(.b,.c)')
+    assert r == {'a': {'d': 3}}
+
+
+def test_pluck_opgroup():
+    """
+    Test pluck with OpGroup.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.pluck(d, 'a(.b,.c)')
+    assert set(r) == {('a.b', 1), ('a.c', 2)}
+
+
+def test_has_opgroup():
+    """
+    Test has with OpGroup - true if any branch exists.
+    """
+    d = {'a': {'b': 1}}
+    assert dotted.has(d, 'a(.b,.c)') is True
+    assert dotted.has(d, 'a(.x,.y)') is False
+
+
+def test_opgroup_with_wildcard():
+    """
+    Test OpGroup where one branch uses a wildcard.
+    """
+    d = {'x': {'a': 1, 'b': 2, 'c': 3}}
+    r = dotted.get(d, 'x(.a,[*])')
+    # .a returns 1, [*] would return all values as pattern
+    assert 1 in r
+
+
+def test_opgroup_with_filter():
+    """
+    Test OpGroup with filtered access.
+    """
+    d = {'items': [{'id': 1, 'v': 10}, {'id': 2, 'v': 20}], 'other': 'x'}
+    r = dotted.get(d, '(.items[id=1][0].v,.other)')
+    assert r == (10, 'x')
+
+
+def test_opgroup_first():
+    """
+    Test OpGroupFirst with ? suffix - returns first matching branch.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.get(d, 'a(.b,.c)?')
+    assert r == (1,)
+
+
+def test_opgroup_at_root():
+    """
+    Test OpGroup at the root level (no prefix).
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.get(d, '(.a,.b)')
+    assert r == (1, 2)
+
+
+def test_opgroup_multiple_levels():
+    """
+    Test multiple OpGroups at different levels.
+    """
+    d = {'x': {'a': {'i': 1, 'j': 2}, 'b': {'k': 3, 'l': 4}}}
+    # First from x.a, then .i and .j
+    r = dotted.get(d, 'x.a(.i,.j)')
+    assert r == (1, 2)
+    # From x, get both a.i and b.k
+    r = dotted.get(d, 'x(.a.i,.b.k)')
+    assert r == (1, 3)
+
+
+def test_opgroup_repr():
+    """
+    Test OpGroup string representation.
+    """
+    ops = dotted.parse('a(.b,.c)')
+    assert '(.b,.c)' in str(ops) or '(b,c)' in str(ops)
+
+
+# =============================================================================
+# OpGroupAnd (Conjunction) Tests
+# =============================================================================
+
+def test_parse_opgroup_and():
+    """
+    Test parsing of OpGroupAnd (conjunction) syntax.
+    """
+    ops = dotted.parse('a(.b&.c)')
+    assert len(ops.ops) == 2
+
+
+def test_get_opgroup_and_both_exist():
+    """
+    Test get with OpGroupAnd - returns values only if ALL branches exist.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.get(d, 'a(.b&.c)')
+    assert r == (1, 2)
+
+
+def test_get_opgroup_and_one_missing():
+    """
+    Test get with OpGroupAnd where one branch is missing - returns empty.
+    """
+    d = {'a': {'b': 1}}  # c missing
+    r = dotted.get(d, 'a(.b&.c)')
+    assert r == ()
+
+
+def test_get_opgroup_and_all_missing():
+    """
+    Test get with OpGroupAnd where all branches are missing.
+    """
+    d = {'a': {}}
+    r = dotted.get(d, 'a(.x&.y)')
+    assert r == ()
+
+
+def test_expand_opgroup_and():
+    """
+    Test expand with OpGroupAnd.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.expand(d, 'a(.b&.c)')
+    assert set(r) == {'a.b', 'a.c'}
+
+
+def test_expand_opgroup_and_missing():
+    """
+    Test expand with OpGroupAnd where one branch is missing.
+    """
+    d = {'a': {'b': 1}}
+    r = dotted.expand(d, 'a(.b&.c)')
+    assert r == ()
+
+
+def test_update_opgroup_and_both_exist():
+    """
+    Test update with OpGroupAnd - updates only if ALL branches exist.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.update(d, 'a(.b&.c)', 99)
+    assert r == {'a': {'b': 99, 'c': 99}}
+
+
+def test_update_opgroup_and_one_missing():
+    """
+    Test update with OpGroupAnd where one branch is missing - no update.
+    """
+    d = {'a': {'b': 1, 'd': 3}}  # c missing
+    r = dotted.update(d, 'a(.b&.c)', 99)
+    assert r == {'a': {'b': 1, 'd': 3}}  # unchanged
+
+
+def test_remove_opgroup_and_both_exist():
+    """
+    Test remove with OpGroupAnd - removes only if ALL branches exist.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.remove(d, 'a(.b&.c)')
+    assert r == {'a': {'d': 3}}
+
+
+def test_remove_opgroup_and_one_missing():
+    """
+    Test remove with OpGroupAnd where one branch is missing - no remove.
+    """
+    d = {'a': {'b': 1, 'd': 3}}  # c missing
+    r = dotted.remove(d, 'a(.b&.c)')
+    assert r == {'a': {'b': 1, 'd': 3}}  # unchanged
+
+
+def test_has_opgroup_and():
+    """
+    Test has with OpGroupAnd - true only if ALL branches exist.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    assert dotted.has(d, 'a(.b&.c)') is True
+
+    d2 = {'a': {'b': 1}}  # c missing
+    assert dotted.has(d2, 'a(.b&.c)') is False
+
+
+def test_opgroup_and_three_branches():
+    """
+    Test OpGroupAnd with more than two branches.
+    """
+    d = {'x': {'a': 1, 'b': 2, 'c': 3}}
+    r = dotted.get(d, 'x(.a&.b&.c)')
+    assert r == (1, 2, 3)
+
+    # One missing
+    d2 = {'x': {'a': 1, 'c': 3}}  # b missing
+    r = dotted.get(d2, 'x(.a&.b&.c)')
+    assert r == ()
+
+
+def test_opgroup_and_nested_paths():
+    """
+    Test OpGroupAnd with nested paths in branches.
+    """
+    d = {'x': {'a': {'i': 1}, 'b': {'k': 3}}}
+    r = dotted.get(d, 'x(.a.i&.b.k)')
+    assert r == (1, 3)
+
+    # One path missing
+    d2 = {'x': {'a': {'i': 1}}}  # b missing
+    r = dotted.get(d2, 'x(.a.i&.b.k)')
+    assert r == ()
+
+
+def test_opgroup_and_repr():
+    """
+    Test OpGroupAnd string representation.
+    """
+    ops = dotted.parse('a(.b&.c)')
+    assert '&' in str(ops)
+
+
+# =============================================================================
+# OpGroupNot (Negation) Tests
+# =============================================================================
+
+def test_parse_opgroup_not():
+    """
+    Test parsing of OpGroupNot (negation) syntax.
+    """
+    ops = dotted.parse('a(!.b)')
+    assert len(ops.ops) == 2
+
+
+def test_get_opgroup_not():
+    """
+    Test get with OpGroupNot - returns values for keys NOT matching.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.get(d, 'a(!.b)')
+    assert set(r) == {2, 3}
+
+
+def test_get_opgroup_not_on_list():
+    """
+    Test get with OpGroupNot on a list.
+    """
+    d = {'items': [10, 20, 30, 40]}
+    r = dotted.get(d, 'items(![0])')
+    assert set(r) == {20, 30, 40}
+
+
+def test_get_opgroup_not_missing_key():
+    """
+    Test get with OpGroupNot where the negated key doesn't exist.
+    """
+    d = {'a': {'c': 2, 'd': 3}}  # b doesn't exist
+    r = dotted.get(d, 'a(!.b)')
+    # Negating non-existent key returns all
+    assert set(r) == {2, 3}
+
+
+def test_expand_opgroup_not():
+    """
+    Test expand with OpGroupNot.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.expand(d, 'a(!.b)')
+    assert set(r) == {'a.c', 'a.d'}
+
+
+def test_update_opgroup_not():
+    """
+    Test update with OpGroupNot - updates keys NOT matching.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.update(d, 'a(!.b)', 99)
+    assert r == {'a': {'b': 1, 'c': 99, 'd': 99}}
+
+
+def test_remove_opgroup_not():
+    """
+    Test remove with OpGroupNot - removes keys NOT matching.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.remove(d, 'a(!.b)')
+    assert r == {'a': {'b': 1}}
+
+
+def test_has_opgroup_not():
+    """
+    Test has with OpGroupNot - true if any non-matching key exists.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    assert dotted.has(d, 'a(!.b)') is True
+
+    d2 = {'a': {'b': 1}}  # only b exists
+    assert dotted.has(d2, 'a(!.b)') is False
+
+
+def test_opgroup_not_with_pattern():
+    """
+    Test OpGroupNot with wildcard pattern.
+    """
+    d = {'a': {'x': 1, 'y': 2, 'z': 3}}
+    # Negate wildcard = nothing
+    r = dotted.get(d, 'a(!.*)')
+    assert r == ()
+
+
+def test_opgroup_not_repr():
+    """
+    Test OpGroupNot string representation.
+    """
+    ops = dotted.parse('a(!.b)')
+    assert '!' in str(ops)
