@@ -726,6 +726,92 @@ class PathGroupFirst(PathGroup):
                 break
 
 
+class OpGroup(Op):
+    """
+    Groups multiple operation sequences that branch from a common point (disjunction).
+
+    This enables syntax like:
+        a(.b,[])     - from a, get both a.b and a[]
+        a(.b.c,.d)   - from a, get both a.b.c and a.d
+        x(.a,.b,.c)  - from x, get x.a, x.b, and x.c
+
+    Each branch is a tuple of Op objects representing a path suffix.
+    When traversing, all branches are followed and their results combined.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Each arg is a tuple of ops representing one branch
+        # Convert lists to tuples for hashability
+        self.branches = tuple(
+            tuple(branch) if isinstance(branch, list) else
+            (branch,) if not isinstance(branch, tuple) else branch
+            for branch in self.args
+        )
+        # Override args with hashable branches
+        self.args = self.branches
+
+    def __repr__(self):
+        branch_strs = []
+        for branch in self.branches:
+            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
+        return '(' + ','.join(branch_strs) + ')'
+
+    def __hash__(self):
+        return hash(self.branches)
+
+    def is_pattern(self):
+        return True
+
+
+class OpGroupFirst(OpGroup):
+    """
+    First-match operation group - returns only first matching value across all branches.
+    """
+    def __repr__(self):
+        branch_strs = []
+        for branch in self.branches:
+            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
+        return '(' + ','.join(branch_strs) + ')?'
+
+
+class OpGroupAnd(OpGroup):
+    """
+    Conjunction of operation sequences - returns values only if ALL branches match.
+
+    This enables syntax like:
+        a(.b&.c)     - from a, get a.b and a.c only if both exist
+        x(.a.i&.b.k) - from x, get both only if both paths exist
+
+    If any branch fails to match, returns nothing.
+    """
+    def __repr__(self):
+        branch_strs = []
+        for branch in self.branches:
+            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
+        return '(' + '&'.join(branch_strs) + ')'
+
+
+class OpGroupNot(OpGroup):
+    """
+    Negation of operation sequences - returns values from paths NOT matching the inner pattern.
+
+    This enables syntax like:
+        a(!.b)       - from a, get all keys except b
+        a(!(.b,.c))  - from a, get all keys except b and c
+
+    Works by getting all keys at the current level, then excluding those that match
+    the negated pattern.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # For negation, we have a single inner expression to negate
+        self.inner = self.branches[0] if self.branches else ()
+
+    def __repr__(self):
+        inner_str = ''.join(op.operator(top=(i == 0)) for i, op in enumerate(self.inner))
+        return f'(!{inner_str})'
+
+
 class PathNot(Op):
     """
     Negation for path keys - returns all keys EXCEPT those matching the inner expression.
@@ -1681,10 +1767,98 @@ def build(ops, node, deepcopy=True):
     return built or build_default([cur]+ops)
 
 
+def _get_all_keys(node):
+    """
+    Get all keys from a node (dict keys or sequence indices).
+    """
+    if hasattr(node, 'keys'):
+        return set(node.keys())
+    if hasattr(node, '__iter__') and hasattr(node, '__getitem__'):
+        return set(range(len(node)))
+    return None
+
+
+def _gets_opgroup_first(cur, ops, node):
+    """
+    OpGroupFirst: yield at most one result from all branches.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        for val in gets(branch_ops, node):
+            yield val
+            return
+
+
+def _gets_opgroup_and(cur, ops, node):
+    """
+    OpGroupAnd: yield all results only if ALL branches have results.
+    """
+    all_results = []
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        branch_results = list(gets(branch_ops, node))
+        if not branch_results:
+            return
+        all_results.extend(branch_results)
+    yield from all_results
+
+
+def _gets_opgroup_not(cur, ops, node):
+    """
+    OpGroupNot: yield values for keys NOT matching the inner pattern.
+    """
+    inner = cur.inner
+    if not inner:
+        return
+    all_keys = _get_all_keys(node)
+    if all_keys is None:
+        return
+    first_op = inner[0]
+    excluded_keys = set(first_op.keys(node))
+    remaining_ops = list(inner[1:]) + list(ops)
+    for k in all_keys:
+        if k in excluded_keys:
+            continue
+        try:
+            val = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
+        except (KeyError, IndexError, AttributeError):
+            continue
+        if remaining_ops:
+            yield from gets(remaining_ops, val)
+        else:
+            yield val
+
+
+def _gets_opgroup(cur, ops, node):
+    """
+    OpGroup (disjunction): yield all results from all branches.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            yield from gets(branch_ops, node)
+
+
 def gets(ops, node):
     cur, *ops = ops
     if isinstance(cur, Invert):
         yield from gets(ops, node)
+        return
+    if isinstance(cur, OpGroupFirst):
+        yield from _gets_opgroup_first(cur, ops, node)
+        return
+    if isinstance(cur, OpGroupAnd):
+        yield from _gets_opgroup_and(cur, ops, node)
+        return
+    if isinstance(cur, OpGroupNot):
+        yield from _gets_opgroup_not(cur, ops, node)
+        return
+    if isinstance(cur, OpGroup):
+        yield from _gets_opgroup(cur, ops, node)
         return
     values = cur.values(node)
     if not ops:
@@ -1722,6 +1896,61 @@ def _format_path(path):
     return ''.join(result)
 
 
+def _updates_opgroup_and(cur, ops, node, val, has_defaults, _path):
+    """
+    OpGroupAnd: update only if ALL branches would match.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        if not list(gets(branch_ops, node)):
+            return node
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            node = updates(branch_ops, node, val, has_defaults, _path)
+    return node
+
+
+def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path):
+    """
+    OpGroupNot: update keys NOT matching the inner pattern.
+    """
+    inner = cur.inner
+    if not inner:
+        return node
+    all_keys = _get_all_keys(node)
+    if all_keys is None:
+        return node
+    first_op = inner[0]
+    excluded_keys = set(first_op.keys(node))
+    remaining_ops = list(inner[1:]) + list(ops)
+    for k in all_keys:
+        if k in excluded_keys:
+            continue
+        try:
+            v = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
+        except (KeyError, IndexError, AttributeError):
+            continue
+        if remaining_ops:
+            node = first_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [k]))
+        else:
+            node = first_op.update(node, k, val)
+    return node
+
+
+def _updates_opgroup(cur, ops, node, val, has_defaults, _path):
+    """
+    OpGroup (disjunction): update each branch.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            node = updates(branch_ops, node, val, has_defaults, _path)
+    return node
+
+
 def updates(ops, node, val, has_defaults=False, _path=None):
     if _path is None:
         _path = []
@@ -1735,16 +1964,75 @@ def updates(ops, node, val, has_defaults=False, _path=None):
     cur, *ops = ops
     if isinstance(cur, Invert):
         return removes(ops, node, val)
+    if isinstance(cur, OpGroupAnd):
+        return _updates_opgroup_and(cur, ops, node, val, has_defaults, _path)
+    if isinstance(cur, OpGroupNot):
+        return _updates_opgroup_not(cur, ops, node, val, has_defaults, _path)
+    if isinstance(cur, OpGroup):
+        return _updates_opgroup(cur, ops, node, val, has_defaults, _path)
     if not ops:
         return cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
         built = updates(ops, build_default(ops), val, True, _path)
         return cur.upsert(node, built)
     for k, v in cur.items(node):
-        # Handle None values by building default structure
         if v is None and ops:
             v = build_default(ops)
         node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k]))
+    return node
+
+
+def _removes_opgroup_and(cur, ops, node, val):
+    """
+    OpGroupAnd: remove only if ALL branches would match.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        if not list(gets(branch_ops, node)):
+            return node
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            node = removes(branch_ops, node, val)
+    return node
+
+
+def _removes_opgroup_not(cur, ops, node, val):
+    """
+    OpGroupNot: remove keys NOT matching the inner pattern.
+    """
+    inner = cur.inner
+    if not inner:
+        return node
+    all_keys = _get_all_keys(node)
+    if all_keys is None:
+        return node
+    first_op = inner[0]
+    excluded_keys = set(first_op.keys(node))
+    remaining_ops = list(inner[1:]) + list(ops)
+    keys_to_remove = [k for k in all_keys if k not in excluded_keys]
+    for k in reversed(keys_to_remove):
+        if remaining_ops:
+            try:
+                v = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
+                node = first_op.update(node, k, removes(remaining_ops, v, val))
+            except (KeyError, IndexError, AttributeError):
+                pass
+        else:
+            node = first_op.pop(node, k)
+    return node
+
+
+def _removes_opgroup(cur, ops, node, val):
+    """
+    OpGroup (disjunction): remove from each branch.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            node = removes(branch_ops, node, val)
     return node
 
 
@@ -1753,24 +2041,81 @@ def removes(ops, node, val=ANY):
     if isinstance(cur, Invert):
         assert val is not ANY, 'Value required'
         return updates(ops, node, val)
+    if isinstance(cur, OpGroupAnd):
+        return _removes_opgroup_and(cur, ops, node, val)
+    if isinstance(cur, OpGroupNot):
+        return _removes_opgroup_not(cur, ops, node, val)
+    if isinstance(cur, OpGroup):
+        return _removes_opgroup(cur, ops, node, val)
     if not ops:
         return cur.remove(node, val)
-    for k,v in cur.items(node):
+    for k, v in cur.items(node):
         node = cur.update(node, k, removes(ops, v, val))
     return node
 
 
 def expands(ops, node):
+    def _expands_opgroup_and(cur, ops, node):
+        all_results = []
+        for branch in cur.branches:
+            branch_ops = list(branch) + list(ops)
+            if not branch_ops:
+                continue
+            branch_results = list(_expands(branch_ops, node))
+            if not branch_results:
+                return
+            all_results.extend(branch_results)
+        yield from all_results
+
+    def _expands_opgroup_not(cur, ops, node):
+        inner = cur.inner
+        if not inner:
+            return
+        all_keys = _get_all_keys(node)
+        if all_keys is None:
+            return
+        first_op = inner[0]
+        excluded_keys = set(first_op.keys(node))
+        remaining_ops = list(inner[1:]) + list(ops)
+        for k in all_keys:
+            if k in excluded_keys:
+                continue
+            try:
+                val = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
+            except (KeyError, IndexError, AttributeError):
+                continue
+            concrete = first_op.concrete(k)
+            if remaining_ops:
+                for m in _expands(remaining_ops, val):
+                    yield (concrete,) + m
+            else:
+                yield (concrete,)
+
+    def _expands_opgroup(cur, ops, node):
+        for branch in cur.branches:
+            branch_ops = list(branch) + list(ops)
+            if branch_ops:
+                yield from _expands(branch_ops, node)
+
     def _expands(ops, node):
         cur, *ops = ops
-        if not ops:
-            yield from ( (cur.concrete(k),) for k in cur.keys(node) )
+        if isinstance(cur, OpGroupAnd):
+            yield from _expands_opgroup_and(cur, ops, node)
             return
-        for k,v in cur.items(node):
+        if isinstance(cur, OpGroupNot):
+            yield from _expands_opgroup_not(cur, ops, node)
+            return
+        if isinstance(cur, OpGroup):
+            yield from _expands_opgroup(cur, ops, node)
+            return
+        if not ops:
+            yield from ((cur.concrete(k),) for k in cur.keys(node))
+            return
+        for k, v in cur.items(node):
             for m in _expands(ops, v):
                 yield (cur.concrete(k),) + m
-    return ( Dotted({'ops': r, 'transforms': ops.transforms}) for r \
-            in _expands(ops, node) )
+
+    return (Dotted({'ops': r, 'transforms': ops.transforms}) for r in _expands(ops, node))
 
 # default transforms
 from . import transforms
