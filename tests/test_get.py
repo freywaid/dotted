@@ -205,5 +205,192 @@ def test_path_grouping_nested_update():
     assert result == {'user': {'name': 'redacted', 'email': 'redacted', 'age': 30}}
 
 
+def test_path_grouping_equivalence():
+    """Verify (a,b) path grouping behaves same as (.a,.b) op grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # get - should return same results
+    assert dotted.get(d, '(a,b)') == dotted.get(d, '(.a,.b)')
+    assert dotted.get(d, '(a,x)') == dotted.get(d, '(.a,.x)')
+
+    # Nested
+    data = {'user': {'name': 'alice', 'age': 30}}
+    assert dotted.get(data, 'user.(name,age)') == dotted.get(data, 'user(.name,.age)')
+
+    # update
+    d1 = {'a': 1, 'b': 2, 'c': 3}
+    d2 = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.update(d1, '(a,b)', 99) == dotted.update(d2, '(.a,.b)', 99)
+
+    # remove
+    d1 = {'a': 1, 'b': 2, 'c': 3}
+    d2 = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.remove(d1, '(a,b)') == dotted.remove(d2, '(.a,.b)')
+
+    # has
+    assert dotted.has(d, '(a,b)') == dotted.has(d, '(.a,.b)')
+    assert dotted.has(d, '(a,x)') == dotted.has(d, '(.a,.x)')
+
+    # expand - paths differ in format but same keys matched
+    path_expand = set(dotted.expand(d, '(a,b)'))
+    op_expand = set(dotted.expand(d, '(.a,.b)'))
+    assert path_expand == {'a', 'b'}
+    assert op_expand == {'.a', '.b'}
+    # Both expand to 2 paths
+    assert len(path_expand) == len(op_expand)
+
+    # pluck - values should match (paths differ in format)
+    path_pluck = list(dotted.pluck(d, '(a,b)'))
+    op_pluck = list(dotted.pluck(d, '(.a,.b)'))
+    assert [v for _, v in path_pluck] == [v for _, v in op_pluck]
+
+
+def test_path_grouping_equivalence_conjunction():
+    """Verify (a&b) path grouping behaves same as (.a&.b) op grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # get - all exist
+    assert dotted.get(d, '(a&b)') == dotted.get(d, '(.a&.b)')
+
+    # get - one missing
+    assert dotted.get(d, '(a&x)') == dotted.get(d, '(.a&.x)')
+
+    # update - all exist
+    d1 = {'a': 1, 'b': 2, 'c': 3}
+    d2 = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.update(d1, '(a&b)', 99) == dotted.update(d2, '(.a&.b)', 99)
+
+    # update - one missing (no change)
+    d1 = {'a': 1, 'c': 3}
+    d2 = {'a': 1, 'c': 3}
+    assert dotted.update(d1, '(a&b)', 99) == dotted.update(d2, '(.a&.b)', 99)
+
+    # has
+    assert dotted.has(d, '(a&b)') == dotted.has(d, '(.a&.b)')
+    assert dotted.has(d, '(a&x)') == dotted.has(d, '(.a&.x)')
+
+
+def test_path_grouping_equivalence_negation():
+    """Verify (!a) path grouping behaves same as (!.a) op grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # get - negate single key (same values)
+    assert set(dotted.get(d, '(!a)')) == set(dotted.get(d, '(!.a)'))
+
+    # get - negate multiple keys (both syntaxes now work)
+    assert set(dotted.get(d, '(!(a,b))')) == set(dotted.get(d, '(!(.a,.b))'))
+    assert set(dotted.get(d, '(!(a,b))')) == {3}  # only c remains
+
+    # Nested negation works with both syntaxes
+    data = {'user': {'a': 1, 'b': 2, 'c': 3}}
+    assert set(dotted.get(data, 'user.(!a)')) == set(dotted.get(data, 'user(!.a)'))
+    assert set(dotted.get(data, 'user.(!(a,b))')) == set(dotted.get(data, 'user(!(.a,.b))'))
+
+    # has
+    assert dotted.has(d, '(!a)') == dotted.has(d, '(!.a)')
+
+    # expand - same number of paths matched
+    path_expand = set(dotted.expand(d, '(!a)'))
+    op_expand = set(dotted.expand(d, '(!.a)'))
+    assert len(path_expand) == len(op_expand) == 2  # b and c
+
+
+def test_path_grouping_with_slice():
+    """Test path grouping with numeric keys on lists"""
+    data = {'items': [10, 20, 30, 40]}
+
+    # Numeric keys work in path grouping (treated as indices for lists)
+    result = dotted.get(data, 'items.(0,2)')
+    assert result == (10, 30)
+
+    # Multiple indices
+    assert dotted.get(data, 'items.(0,1,2)') == (10, 20, 30)
+
+    # TODO: Slice syntax [0] in path grouping not yet supported
+    # This would be needed for: **-2:(.*,[])
+
+
+def test_path_grouping_mixed_ops():
+    """Test path grouping with mixed op types (key vs slice)"""
+    # This is the key use case for recursive wildcard terminal handling
+    data = {'a': [1, 2], 'b': {'x': 10}}
+
+    # Get 'a' (list) or 'b' (dict)
+    result = dotted.get(data, '(a,b)')
+    assert result == ([1, 2], {'x': 10})
+
+    # Wildcard combined with key
+    d = {'x': 1, 'y': 2}
+    result = dotted.get(d, '(*,x)')  # * matches all, x adds x again
+    assert set(result) == {1, 2}  # x may appear twice, but values dedupe
+
+
+def test_path_grouping_with_wildcard():
+    """Test path grouping with wildcard patterns"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Wildcard in grouping
+    result = dotted.get(d, '(*)')
+    assert set(result) == {1, 2, 3}
+
+    # Wildcard with specific key
+    result = dotted.get(d, '(a,*)')
+    # 'a' matched, then * matches all including a again
+    assert 1 in result and 2 in result and 3 in result
+
+
+def test_path_grouping_with_regex():
+    """Test path grouping with regex patterns"""
+    d = {'foo': 1, 'bar': 2, 'baz': 3}
+
+    # Direct regex in path grouping
+    result = dotted.get(d, '(/^ba./)')
+    assert set(result) == {2, 3}
+
+    # Regex combined with key
+    result = dotted.get(d, '(foo,/^ba./)')
+    assert set(result) == {1, 2, 3}
+
+    # Also works with op grouping syntax
+    result = dotted.get(d, '(./^ba./)')
+    assert set(result) == {2, 3}
+
+
+def test_path_grouping_has():
+    """Test has() with path grouping"""
+    d = {'a': 1, 'b': 2}
+
+    # Disjunction - true if any exist
+    assert dotted.has(d, '(a,b)') is True
+    assert dotted.has(d, '(a,x)') is True
+    assert dotted.has(d, '(x,y)') is False
+
+    # Conjunction - true only if all exist
+    assert dotted.has(d, '(a&b)') is True
+    assert dotted.has(d, '(a&x)') is False
+
+
+def test_path_grouping_pluck():
+    """Test pluck() with path grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Pluck returns (path, value) pairs
+    result = list(dotted.pluck(d, '(a,b)'))
+    assert ('a', 1) in result
+    assert ('b', 2) in result
+    assert len(result) == 2
+
+
+def test_path_grouping_expand():
+    """Test expand() with path grouping"""
+    d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Expand returns paths
+    result = list(dotted.expand(d, '(a,b)'))
+    assert 'a' in result
+    assert 'b' in result
+    assert len(result) == 2
+
+
 def test_get_slot():
     r = dotted.get({}, 'hello[*]')

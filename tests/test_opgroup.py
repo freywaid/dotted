@@ -129,12 +129,13 @@ def test_update_opgroup_partial():
     """
     Test update with OpGroup where some branches don't exist.
 
-    Note: Like regular dotted updates, OpGroup creates missing keys.
+    Note: OpGroup only updates existing keys (disjunction = update what exists).
+    Use OpGroupFirst with [+] for create-if-missing behavior.
     """
     d = {'a': {'b': 1}}  # 'c' doesn't exist
     r = dotted.update(d, 'a(.b,.c)', 99)
-    # Both get updated/created (consistent with regular update behavior)
-    assert r == {'a': {'b': 99, 'c': 99}}
+    # Only existing keys are updated
+    assert r == {'a': {'b': 99}}
 
 
 def test_update_opgroup_nested():
@@ -474,6 +475,32 @@ def test_opgroup_not_repr():
     """
     ops = dotted.parse('a(!.b)')
     assert '!' in str(ops)
+
+
+def test_opgroup_not_multiple_keys():
+    """
+    Test OpGroupNot with multiple keys: (!(.a,.b))
+    """
+    d = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+
+    # Negate multiple keys at root
+    r = dotted.get(d, '(!(.a,.b))')
+    assert set(r) == {3, 4}
+
+    # Negate multiple keys nested
+    data = {'user': {'a': 1, 'b': 2, 'c': 3}}
+    r = dotted.get(data, 'user(!(.a,.b))')
+    assert r == (3,)
+
+    # Update with multi-key negation
+    d2 = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.update(d2, '(!(.a,.b))', 99)
+    assert r == {'a': 1, 'b': 2, 'c': 99}
+
+    # Remove with multi-key negation
+    d3 = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.remove(d3, '(!(.a,.b))')
+    assert r == {'a': 1, 'b': 2}
 
 
 # =============================================================================

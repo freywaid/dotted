@@ -109,7 +109,7 @@ slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceF
 
 # Path-level grouping: (a,b) for disjunction, (a&b) for conjunction, (!a) for negation
 path_expr = pp.Forward()
-path_group_inner = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
+path_group_inner = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
 path_group_item = path_group_inner | key.copy()
 
 # NOT: ! prefix binds tightest for paths
@@ -121,8 +121,8 @@ path_group_and = (path_not + OM(amp + path_not)).set_parse_action(el.PathAnd) | 
 # OR: and-groups joined by ,
 path_group_or = (path_group_and + OM(comma + path_group_and)).set_parse_action(el.PathOr) | path_group_and
 path_expr <<= path_group_or
-path_group = (lparen + path_expr + rparen).set_parse_action(el.PathGroup)
-path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el.PathGroupFirst)
+path_group = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
+path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el._path_to_opgroup_first)
 path_grouped = path_group_first | path_group
 
 empty = pp.Empty().set_parse_action(el.Empty)
@@ -143,8 +143,8 @@ op_group_or_inner = op_seq + ZM(comma + op_seq)
 op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(el.OpGroup)
 op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(el.OpGroupFirst)
 
-# Negation: (!.b) or (!(expr))
-op_group_not = (lparen + bang + op_seq + rparen).set_parse_action(el.OpGroupNot)
+# Negation: (!.b) or (!(.a,.b))
+op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_action(el.OpGroupNot)
 
 op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 
