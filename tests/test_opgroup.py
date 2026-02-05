@@ -474,3 +474,154 @@ def test_opgroup_not_repr():
     """
     ops = dotted.parse('a(!.b)')
     assert '!' in str(ops)
+
+
+# =============================================================================
+# OpGroupFirst Update/Remove Tests
+# =============================================================================
+
+def test_update_opgroup_first_matches():
+    """
+    Test update with OpGroupFirst - updates only the first matching branch.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.update(d, 'a(.b,.c)?', 99)
+    # Only first match (b) should be updated
+    assert r == {'a': {'b': 99, 'c': 2}}
+
+
+def test_update_opgroup_first_no_first_match():
+    """
+    Test update with OpGroupFirst where first branch doesn't exist.
+    """
+    d = {'a': {'c': 2}}  # b doesn't exist
+    r = dotted.update(d, 'a(.b,.c)?', 99)
+    # Falls through to second branch (c)
+    assert r == {'a': {'c': 99}}
+
+
+def test_update_opgroup_first_no_match_creates():
+    """
+    Test update with OpGroupFirst where no branch exists - creates first.
+    """
+    d = {'a': {}}
+    r = dotted.update(d, 'a(.b,.c)?', 99)
+    # Creates first branch
+    assert r == {'a': {'b': 99}}
+
+
+def test_remove_opgroup_first_matches():
+    """
+    Test remove with OpGroupFirst - removes only the first matching branch.
+    """
+    d = {'a': {'b': 1, 'c': 2, 'd': 3}}
+    r = dotted.remove(d, 'a(.b,.c)?')
+    # Only first match (b) should be removed
+    assert r == {'a': {'c': 2, 'd': 3}}
+
+
+def test_remove_opgroup_first_no_first_match():
+    """
+    Test remove with OpGroupFirst where first branch doesn't exist.
+    """
+    d = {'a': {'c': 2, 'd': 3}}  # b doesn't exist
+    r = dotted.remove(d, 'a(.b,.c)?')
+    # Falls through to second branch (c)
+    assert r == {'a': {'d': 3}}
+
+
+def test_remove_opgroup_first_no_match():
+    """
+    Test remove with OpGroupFirst where no branch exists - no change.
+    """
+    d = {'a': {'x': 1}}
+    r = dotted.remove(d, 'a(.b,.c)?')
+    assert r == {'a': {'x': 1}}
+
+
+# =============================================================================
+# Upsert Pattern Tests: ([filter],[+])?
+# =============================================================================
+
+def test_upsert_pattern_empty_list():
+    """
+    Test upsert pattern on empty list - should append.
+    """
+    data = []
+    result = dotted.update(data, '([*&name="b"],[+])?', {'name': 'b', 'val': 1})
+    assert result == [{'name': 'b', 'val': 1}]
+
+
+def test_upsert_pattern_no_match():
+    """
+    Test upsert pattern with no filter match - should append.
+    """
+    data = [{'name': 'a', 'val': 7}]
+    result = dotted.update(data, '([*&name="b"],[+])?', {'name': 'b', 'val': 1})
+    assert result == [{'name': 'a', 'val': 7}, {'name': 'b', 'val': 1}]
+
+
+def test_upsert_pattern_has_match():
+    """
+    Test upsert pattern with filter match - should update matched item.
+    """
+    data = [{'name': 'a', 'val': 7}, {'name': 'b', 'val': 8}]
+    result = dotted.update(data, '([*&name="b"],[+])?', {'name': 'b', 'val': 99})
+    assert result == [{'name': 'a', 'val': 7}, {'name': 'b', 'val': 99}]
+
+
+def test_upsert_pattern_multiple_matches():
+    """
+    Test upsert pattern with multiple filter matches - updates first only.
+    """
+    data = [{'name': 'b', 'val': 1}, {'name': 'b', 'val': 2}]
+    result = dotted.update(data, '([*&name="b"?],[+])?', {'name': 'b', 'val': 99})
+    # With [*&name="b"?] (first match filter), only first is updated
+    assert result == [{'name': 'b', 'val': 99}, {'name': 'b', 'val': 2}]
+
+
+def test_upsert_pattern_update_nested_field():
+    """
+    Test upsert pattern updating a specific field in matched item.
+    """
+    data = [{'name': 'a', 'val': 7}, {'name': 'b', 'val': 8}]
+    result = dotted.update(data, '([*&name="b"],[+])?.val', 99)
+    assert result == [{'name': 'a', 'val': 7}, {'name': 'b', 'val': 99}]
+
+
+def test_upsert_pattern_append_with_nested_field():
+    """
+    Test upsert pattern appending when updating nested field.
+    """
+    data = [{'name': 'a', 'val': 7}]
+    result = dotted.update(data, '([*&name="b"],[+])?.val', 99)
+    # Appends new item with just the val field
+    assert result == [{'name': 'a', 'val': 7}, {'val': 99}]
+
+
+def test_upsert_pattern_empty_list_with_nested_field():
+    """
+    Test upsert pattern on empty list updating nested field.
+    """
+    data = []
+    result = dotted.update(data, '([*&name="b"],[+])?.val', 99)
+    assert result == [{'val': 99}]
+
+
+def test_slot_special_items_empty_list():
+    """
+    Test that SlotSpecial.items handles empty list without error.
+    """
+    data = []
+    # This should not raise IndexError
+    result = dotted.get(data, '[+]')
+    assert result is None
+
+
+def test_slot_special_get_non_empty():
+    """
+    Test that [+] on get returns last element.
+    """
+    data = [1, 2, 3]
+    result = dotted.get(data, '[+]')
+    assert result == 3

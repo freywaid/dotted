@@ -1963,13 +1963,26 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
         if list(gets(branch_ops, node)):
             return updates(branch_ops, node, val, has_defaults, _path)
     # No branch matched - try each branch until one makes a change (for append/create)
+    # We need to detect changes even for mutable containers updated in-place
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        result = updates(branch_ops, node, val, has_defaults, _path)
-        if result is not node:
-            return result
+        # Snapshot state for mutable containers
+        if isinstance(node, dict):
+            before = set(node.keys())
+            result = updates(branch_ops, node, val, has_defaults, _path)
+            if set(node.keys()) != before:
+                return result
+        elif isinstance(node, list):
+            before_len = len(node)
+            result = updates(branch_ops, node, val, has_defaults, _path)
+            if len(node) != before_len:
+                return result
+        else:
+            result = updates(branch_ops, node, val, has_defaults, _path)
+            if result is not node:
+                return result
     return node
 
 
