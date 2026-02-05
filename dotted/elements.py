@@ -921,6 +921,24 @@ def _path_to_opgroup_first(parsed_result):
     return OpGroupFirst(*opgroup.branches)
 
 
+def _slot_to_opgroup(parsed_result):
+    """
+    Convert slot grouping [(*&filter, +)] to OpGroup.
+    Each slot item (Slot or SlotSpecial) becomes a branch.
+    """
+    branches = []
+    for item in parsed_result:
+        if isinstance(item, (Slot, SlotSpecial)):
+            branches.append((item,))
+    return OpGroup(*branches)
+
+
+def _slot_to_opgroup_first(parsed_result):
+    """Convert slot grouping [(*&filter, +)?] to OpGroupFirst."""
+    opgroup = _slot_to_opgroup(parsed_result)
+    return OpGroupFirst(*opgroup.branches)
+
+
 class PathNot(Op):
     """
     Negation for path keys - returns all keys EXCEPT those matching the inner expression.

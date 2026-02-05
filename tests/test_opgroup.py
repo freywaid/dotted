@@ -652,3 +652,70 @@ def test_slot_special_get_non_empty():
     data = [1, 2, 3]
     result = dotted.get(data, '[+]')
     assert result == 3
+
+
+# =============================================================================
+# Slot Grouping Tests
+# =============================================================================
+
+def test_slot_grouping_parse():
+    """
+    Test parsing of slot grouping syntax [(*,+)].
+    """
+    ops = dotted.parse('items[(*,+)]')
+    assert len(ops.ops) == 2
+
+    ops = dotted.parse('items[(*&email="hello",+)]')
+    assert len(ops.ops) == 2
+
+
+def test_slot_grouping_get():
+    """
+    Test get with slot grouping.
+    """
+    data = {'items': [1, 2, 3]}
+    result = dotted.get(data, 'items[(*,+)]')
+    # * matches all, + returns last
+    assert 1 in result and 2 in result and 3 in result
+
+
+def test_slot_grouping_upsert_exists():
+    """
+    Test upsert pattern [(*&filter,+)?] when item exists.
+    """
+    data = {'emails': [{'email': 'hello', 'verified': False}]}
+    result = dotted.update(data, 'emails[(*&email="hello",+)?]',
+                          {'email': 'hello', 'verified': True})
+    assert result == {'emails': [{'email': 'hello', 'verified': True}]}
+
+
+def test_slot_grouping_upsert_missing():
+    """
+    Test upsert pattern [(*&filter,+)?] when item missing - appends.
+    """
+    data = {'emails': [{'email': 'other', 'verified': False}]}
+    result = dotted.update(data, 'emails[(*&email="hello",+)?]',
+                          {'email': 'hello', 'verified': True})
+    assert result == {'emails': [
+        {'email': 'other', 'verified': False},
+        {'email': 'hello', 'verified': True}
+    ]}
+
+
+def test_slot_grouping_first():
+    """
+    Test slot grouping with first-match [(*,+)?].
+    """
+    data = {'items': [1, 2, 3]}
+    # First match returns only first matching branch
+    result = dotted.get(data, 'items[(*,+)?]')
+    assert result == (1,)  # * matches first
+
+
+def test_slot_grouping_remove():
+    """
+    Test remove with slot grouping.
+    """
+    data = {'items': [1, 2, 3]}
+    result = dotted.remove(data, 'items[(*)]')
+    assert result == {'items': []}

@@ -107,6 +107,12 @@ slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotS
 slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
+# Slot grouping: [(*&filter, +)] for disjunction inside slots
+_slot_item = _slotguts.copy().set_parse_action(el.Slot) | (appender_unique | appender).copy().set_parse_action(el.SlotSpecial)
+_slot_group_inner = _slot_item + ZM(comma + _slot_item)
+slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
+slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(el._slot_to_opgroup_first)
+
 # Path-level grouping: (a,b) for disjunction, (a&b) for conjunction, (!a) for negation
 path_expr = pp.Forward()
 path_group_inner = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
@@ -129,7 +135,7 @@ empty = pp.Empty().set_parse_action(el.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
 # An op_seq is a sequence of operations like .key, [slot], @attr
-op_seq_item = (dot + keycmd) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd
+op_seq_item = (dot + keycmd) | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd
 op_seq = pp.Group(OM(op_seq_item))
 
 # OpGroup with AND/OR/NOT semantics:
@@ -148,9 +154,9 @@ op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_actio
 
 op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 
-multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
+multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
 invert = Opt(L('-').set_parse_action(el.Invert))
-dotted_top = path_grouped | keycmd | attrcmd | slotcmd | slotspecial | slicefilter | slicecmd | empty
+dotted_top = path_grouped | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
