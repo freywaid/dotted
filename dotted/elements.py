@@ -1408,7 +1408,7 @@ class SlotSpecial(Slot):
     def items(self, node):
         try:
             yield -1, node[-1]
-        except TypeError:
+        except (TypeError, IndexError):
             pass
 
     def is_empty(self, node):
@@ -1962,11 +1962,14 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
         # Check if this branch would match anything
         if list(gets(branch_ops, node)):
             return updates(branch_ops, node, val, has_defaults, _path)
-    # No branch matched - try to update the first branch anyway (for append/create)
+    # No branch matched - try each branch until one makes a change (for append/create)
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
-        if branch_ops:
-            return updates(branch_ops, node, val, has_defaults, _path)
+        if not branch_ops:
+            continue
+        result = updates(branch_ops, node, val, has_defaults, _path)
+        if result is not node:
+            return result
     return node
 
 
