@@ -1951,6 +1951,25 @@ def _updates_opgroup(cur, ops, node, val, has_defaults, _path):
     return node
 
 
+def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
+    """
+    OpGroupFirst: update only the first branch that matches.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        # Check if this branch would match anything
+        if list(gets(branch_ops, node)):
+            return updates(branch_ops, node, val, has_defaults, _path)
+    # No branch matched - try to update the first branch anyway (for append/create)
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if branch_ops:
+            return updates(branch_ops, node, val, has_defaults, _path)
+    return node
+
+
 def updates(ops, node, val, has_defaults=False, _path=None):
     if _path is None:
         _path = []
@@ -1964,6 +1983,8 @@ def updates(ops, node, val, has_defaults=False, _path=None):
     cur, *ops = ops
     if isinstance(cur, Invert):
         return removes(ops, node, val)
+    if isinstance(cur, OpGroupFirst):
+        return _updates_opgroup_first(cur, ops, node, val, has_defaults, _path)
     if isinstance(cur, OpGroupAnd):
         return _updates_opgroup_and(cur, ops, node, val, has_defaults, _path)
     if isinstance(cur, OpGroupNot):
@@ -2036,11 +2057,26 @@ def _removes_opgroup(cur, ops, node, val):
     return node
 
 
+def _removes_opgroup_first(cur, ops, node, val):
+    """
+    OpGroupFirst: remove only the first branch that matches.
+    """
+    for branch in cur.branches:
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        if list(gets(branch_ops, node)):
+            return removes(branch_ops, node, val)
+    return node
+
+
 def removes(ops, node, val=ANY):
     cur, *ops = ops
     if isinstance(cur, Invert):
         assert val is not ANY, 'Value required'
         return updates(ops, node, val)
+    if isinstance(cur, OpGroupFirst):
+        return _removes_opgroup_first(cur, ops, node, val)
     if isinstance(cur, OpGroupAnd):
         return _removes_opgroup_and(cur, ops, node, val)
     if isinstance(cur, OpGroupNot):
