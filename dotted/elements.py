@@ -762,6 +762,9 @@ class OpGroup(Op):
     def is_pattern(self):
         return True
 
+    def operator(self, top=False):
+        return self.__repr__()
+
 
 class OpGroupFirst(OpGroup):
     """
@@ -1784,6 +1787,70 @@ class Invert(CmdOp):
         yield node
 
 
+class NopWrap(Op):
+    """
+    Wraps a path segment so that update/remove matches but does not mutate.
+    Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
+    """
+    def __init__(self, inner, *args, **kwargs):
+        super().__init__(inner, *args, **kwargs)
+        self.inner = inner
+
+    def __repr__(self):
+        return f'~{self.inner!r}'
+
+    def __hash__(self):
+        return hash(('nop', self.inner))
+
+    def __eq__(self, other):
+        return isinstance(other, NopWrap) and self.inner == other.inner
+
+    def operator(self, top=False):
+        s = self.inner.operator(top)
+        # Empty slice: canonical ~[]
+        if s == '[]':
+            return '~[]'
+        # Slots: always [~stuff] (tilde inside brackets)
+        if s.startswith('['):
+            return '[~' + s[1:]
+        if top:
+            return '~' + s
+        if s.startswith('.'):
+            return '.~' + s[1:]
+        if s.startswith('@'):
+            return '@~' + s[1:]
+        return '~' + s
+
+    def is_pattern(self):
+        return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
+
+    def default(self):
+        return self.inner.default() if hasattr(self.inner, 'default') else {}
+
+    def upsert(self, node, val):
+        return self.inner.upsert(node, val) if hasattr(self.inner, 'upsert') else val
+
+    def items(self, node):
+        return self.inner.items(node) if hasattr(self.inner, 'items') else iter(())
+
+    def values(self, node):
+        return self.inner.values(node) if hasattr(self.inner, 'values') else iter(())
+
+    def is_empty(self, node):
+        return self.inner.is_empty(node) if hasattr(self.inner, 'is_empty') else True
+
+    def update(self, node, key, val):
+        return self.inner.update(node, key, val) if hasattr(self.inner, 'update') else node
+
+    def match(self, op, specials=False):
+        if not hasattr(self.inner, 'match'):
+            return None
+        try:
+            return self.inner.match(op, specials=specials)
+        except TypeError:
+            return self.inner.match(op)
+
+
 #
 #
 #
@@ -1996,6 +2063,8 @@ def _gets_opgroup(cur, ops, node):
 
 def gets(ops, node):
     cur, *ops = ops
+    if isinstance(cur, NopWrap):
+        cur = cur.inner
     if isinstance(cur, Invert):
         yield from gets(ops, node)
         return
@@ -2047,7 +2116,7 @@ def _format_path(path):
     return ''.join(result)
 
 
-def _updates_opgroup_and(cur, ops, node, val, has_defaults, _path):
+def _updates_opgroup_and(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroupAnd: update only if ALL branches would match.
     """
@@ -2060,11 +2129,11 @@ def _updates_opgroup_and(cur, ops, node, val, has_defaults, _path):
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
         if branch_ops:
-            node = updates(branch_ops, node, val, has_defaults, _path)
+            node = updates(branch_ops, node, val, has_defaults, _path, nop)
     return node
 
 
-def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path):
+def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroupNot: update keys NOT matching the inner pattern.
     """
@@ -2095,13 +2164,13 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path):
         except (KeyError, IndexError, AttributeError):
             continue
         if remaining_ops:
-            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [k]))
+            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [k], nop))
         else:
             node = update_op.update(node, k, val)
     return node
 
 
-def _updates_opgroup(cur, ops, node, val, has_defaults, _path):
+def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroup (disjunction): update each branch that exists.
     For path grouping (a,b), only update keys that exist.
@@ -2112,11 +2181,11 @@ def _updates_opgroup(cur, ops, node, val, has_defaults, _path):
             continue
         # Only update if this branch matches (key exists)
         if list(gets(branch_ops, node)):
-            node = updates(branch_ops, node, val, has_defaults, _path)
+            node = updates(branch_ops, node, val, has_defaults, _path, nop)
     return node
 
 
-def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
+def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroupFirst: update only the first branch that matches.
     """
@@ -2126,7 +2195,7 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
             continue
         # Check if this branch would match anything
         if list(gets(branch_ops, node)):
-            return updates(branch_ops, node, val, has_defaults, _path)
+            return updates(branch_ops, node, val, has_defaults, _path, nop)
     # No branch matched - try each branch until one makes a change (for append/create)
     # We need to detect changes even for mutable containers updated in-place
     for branch in cur.branches:
@@ -2136,22 +2205,22 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path):
         # Snapshot state for mutable containers
         if isinstance(node, dict):
             before = set(node.keys())
-            result = updates(branch_ops, node, val, has_defaults, _path)
+            result = updates(branch_ops, node, val, has_defaults, _path, nop)
             if set(node.keys()) != before:
                 return result
         elif isinstance(node, list):
             before_len = len(node)
-            result = updates(branch_ops, node, val, has_defaults, _path)
+            result = updates(branch_ops, node, val, has_defaults, _path, nop)
             if len(node) != before_len:
                 return result
         else:
-            result = updates(branch_ops, node, val, has_defaults, _path)
+            result = updates(branch_ops, node, val, has_defaults, _path, nop)
             if result is not node:
                 return result
     return node
 
 
-def updates(ops, node, val, has_defaults=False, _path=None):
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -2162,25 +2231,31 @@ def updates(ops, node, val, has_defaults=False, _path=None):
             "use a dict, list, or other container"
         )
     cur, *ops = ops
+    if isinstance(cur, NopWrap):
+        cur = cur.inner
+        nop = True
     if isinstance(cur, Invert):
         return removes(ops, node, val)
     if isinstance(cur, OpGroupFirst):
-        return _updates_opgroup_first(cur, ops, node, val, has_defaults, _path)
+        return _updates_opgroup_first(cur, ops, node, val, has_defaults, _path, nop)
     if isinstance(cur, OpGroupAnd):
-        return _updates_opgroup_and(cur, ops, node, val, has_defaults, _path)
+        return _updates_opgroup_and(cur, ops, node, val, has_defaults, _path, nop)
     if isinstance(cur, OpGroupNot):
-        return _updates_opgroup_not(cur, ops, node, val, has_defaults, _path)
+        return _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop)
     if isinstance(cur, OpGroup):
-        return _updates_opgroup(cur, ops, node, val, has_defaults, _path)
+        return _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop)
     if not ops:
-        return cur.upsert(node, val)
+        return node if nop else cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
-        built = updates(ops, build_default(ops), val, True, _path)
+        if nop or isinstance(ops[0], NopWrap):
+            return node  # NOP: path doesn't exist, don't create
+        built = updates(ops, build_default(ops), val, True, _path, nop)
         return cur.upsert(node, built)
+    # nop applies only at this segment's leaf; do not propagate to children
     for k, v in cur.items(node):
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k]))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k], False))
     return node
 
 
@@ -2261,8 +2336,11 @@ def _removes_opgroup_first(cur, ops, node, val):
     return node
 
 
-def removes(ops, node, val=ANY):
+def removes(ops, node, val=ANY, nop=False):
     cur, *ops = ops
+    if isinstance(cur, NopWrap):
+        cur = cur.inner
+        nop = True
     if isinstance(cur, Invert):
         assert val is not ANY, 'Value required'
         return updates(ops, node, val)
@@ -2275,9 +2353,9 @@ def removes(ops, node, val=ANY):
     if isinstance(cur, OpGroup):
         return _removes_opgroup(cur, ops, node, val)
     if not ops:
-        return cur.remove(node, val)
+        return node if nop else cur.remove(node, val)
     for k, v in cur.items(node):
-        node = cur.update(node, k, removes(ops, v, val))
+        node = cur.update(node, k, removes(ops, v, val, nop=False))
     return node
 
 
@@ -2335,6 +2413,8 @@ def expands(ops, node):
 
     def _expands(ops, node):
         cur, *ops = ops
+        if isinstance(cur, NopWrap):
+            cur = cur.inner
         if isinstance(cur, OpGroupAnd):
             yield from _expands_opgroup_and(cur, ops, node)
             return

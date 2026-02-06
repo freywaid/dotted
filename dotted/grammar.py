@@ -30,8 +30,9 @@ none = pp.Literal('None').set_parse_action(el.NoneValue)
 true = pp.Literal('True').set_parse_action(el.Boolean)
 false = pp.Literal('False').set_parse_action(el.Boolean)
 
-reserved = '.[]*:|+?/=,@&()!'
+reserved = '.[]*:|+?/=,@&()!~'
 breserved = ''.join('\\' + i for i in reserved)
+tilde = L('~')
 
 # atomic ops
 appender = pp.Literal('+').set_parse_action(el.Appender)
@@ -98,13 +99,19 @@ filters = filter_keyvalue_first | filter_expr
 keycmd = (key + ZM(amp + filters)).set_parse_action(el.Key)
 
 _slotguts = (_commons | numeric_slot) + ZM(amp + filters)
-slotcmd = (lb + _slotguts + rb).set_parse_action(el.Slot)
+slotcmd = (lb + Opt(L('~')) + _slotguts + rb).set_parse_action(
+    lambda t: el.NopWrap(el.Slot(*t[1:])) if t[0] == '~' else el.Slot(*t))
 
-attrcmd = (at + (nameop | _common_pats) + ZM(amp + filters)).set_parse_action(el.Attr)
+# @~ and ~@ both produce NopWrap (canonical form @~)
+_attr_nop = ((at + tilde) | (tilde + at)) + (nameop | _common_pats) + ZM(amp + filters)
+_attr_nop = _attr_nop.set_parse_action(lambda t: el.NopWrap(el.Attr(*t[1:])))  # t=[~,nameop,...] or [nameop,...]
+_attr_plain = (at + (nameop | _common_pats) + ZM(amp + filters)).set_parse_action(lambda t: el.Attr(*t))
+attrcmd = _attr_nop | _attr_plain
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
 
-slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
+slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
+    lambda t: el.NopWrap(el.Slice(*t[1:])) if t and t[0] == '~' else el.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots
@@ -135,7 +142,10 @@ empty = pp.Empty().set_parse_action(el.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
 # An op_seq is a sequence of operations like .key, [slot], @attr
-op_seq_item = (dot + keycmd) | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd
+_dot_keycmd = (dot + Opt(L('~')) + keycmd).set_parse_action(
+    lambda t: el.NopWrap(t[1]) if len(t) == 2 else t[0])
+# op_seq_item uses _nop_wrap (defined later); Forward for circular ref
+op_seq_item = pp.Forward()
 op_seq = pp.Group(OM(op_seq_item))
 
 # OpGroup with AND/OR/NOT semantics:
@@ -154,9 +164,20 @@ op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_actio
 
 op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 
-multi = OM((dot + (path_grouped | keycmd)) | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
+# NOP (~): match but don't update. At top assemble to ~@/~.; else .~/@~
+dotted_top_inner = path_grouped | op_grouped | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | empty
+_nop_wrap = (tilde + dotted_top_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
+dotted_top = _nop_wrap | dotted_top_inner
+# Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses
+op_seq_item << (_nop_wrap | keycmd | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd)
+
+# ~. and .~ both produce NopWrap (canonical form .~)
+_dot_nop = ((dot + tilde) | (tilde + dot)) + (path_grouped | keycmd)
+_dot_nop = _dot_nop.set_parse_action(lambda t: el.NopWrap(t[-1]))
+_dot_plain = (dot + (path_grouped | keycmd)).set_parse_action(lambda t: t[0])
+_dot_segment = _dot_nop | _dot_plain
+multi = OM(_dot_segment | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
 invert = Opt(L('-').set_parse_action(el.Invert))
-dotted_top = path_grouped | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | empty
 dotted = invert + dotted_top + ZM(multi)
 
 targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')

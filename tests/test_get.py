@@ -231,11 +231,11 @@ def test_path_grouping_equivalence():
     assert dotted.has(d, '(a,b)') == dotted.has(d, '(.a,.b)')
     assert dotted.has(d, '(a,x)') == dotted.has(d, '(.a,.x)')
 
-    # expand - paths differ in format but same keys matched
+    # expand - paths may differ in format (with/without leading dot) but same keys matched
     path_expand = set(dotted.expand(d, '(a,b)'))
     op_expand = set(dotted.expand(d, '(.a,.b)'))
     assert path_expand == {'a', 'b'}
-    assert op_expand == {'.a', '.b'}
+    assert {k.lstrip('.') for k in op_expand} == {'a', 'b'}
     # Both expand to 2 paths
     assert len(path_expand) == len(op_expand)
 

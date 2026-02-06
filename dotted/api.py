@@ -296,6 +296,12 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
     >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)    # invert
     {'hello': {}}
 
+    NOP (~) with first-match: update only if key missing
+    >>> update({'name': {'first': 'alice'}}, '(name.~first, name.first)?', 'bob')
+    {'name': {'first': 'alice'}}
+    >>> update({'name': {}}, '(name.~first, name.first)?', 'bob')
+    {'name': {'first': 'bob'}}
+
     Use mutable=False to prevent mutation of the original object:
     >>> d = {'a': 1}
     >>> result = update(d, 'a', 2, mutable=False)
