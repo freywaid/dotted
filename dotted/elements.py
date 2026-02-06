@@ -2116,15 +2116,59 @@ def _format_path(path):
     return ''.join(result)
 
 
+def _is_concrete_path(branch_ops):
+    """
+    Return True if branch_ops represents a concrete path (no wildcards/patterns).
+    Concrete paths can be created when missing; wildcard paths cannot.
+    """
+    for op in branch_ops:
+        cur = op.inner if isinstance(op, NopWrap) else op
+        if getattr(cur, 'is_pattern', lambda: False)():
+            return False
+    return True
+
+
+def _can_update_conjunctive_branch(branch_ops, node):
+    """
+    Return True if we can update this conjunctive branch (for OpGroupAnd).
+    We can update if: path exists (gets yields something), OR it's a plain
+    concrete path we can create. We cannot update if: filter doesn't match
+    or path is a wildcard.
+    """
+    if list(gets(branch_ops, node)):
+        return True
+    if not _is_concrete_path(branch_ops):
+        return False
+    first_op = branch_ops[0]
+    cur = first_op.inner if isinstance(first_op, NopWrap) else first_op
+    if isinstance(cur, Key) and getattr(cur, 'filters', ()):
+        return False
+    return True
+
+
+def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop):
+    """
+    When nothing matches in disjunction: update first concrete path (last to first).
+    """
+    for branch in reversed(cur.branches):
+        branch_ops = list(branch) + list(ops)
+        if not branch_ops:
+            continue
+        if _is_concrete_path(branch_ops):
+            return updates(branch_ops, node, val, has_defaults, _path, nop)
+    return node
+
+
 def _updates_opgroup_and(cur, ops, node, val, has_defaults, _path, nop=False):
     """
-    OpGroupAnd: update only if ALL branches would match.
+    OpGroupAnd: update all branches such that conjunction eval as true.
+    Create missing paths when possible. If filters prevent any branch, do nothing.
     """
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        if not list(gets(branch_ops, node)):
+        if not _can_update_conjunctive_branch(branch_ops, node):
             return node
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
@@ -2172,52 +2216,34 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
 
 def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
     """
-    OpGroup (disjunction): update each branch that exists.
-    For path grouping (a,b), only update keys that exist.
+    OpGroup (disjunction): update each branch that matches.
+    When nothing matches: update first concrete path (last to first).
     """
+    matched_any = False
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        # Only update if this branch matches (key exists)
         if list(gets(branch_ops, node)):
+            matched_any = True
             node = updates(branch_ops, node, val, has_defaults, _path, nop)
+    if not matched_any:
+        return _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop)
     return node
 
 
 def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroupFirst: update only the first branch that matches.
+    When nothing matches: update first concrete path (last to first).
     """
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        # Check if this branch would match anything
         if list(gets(branch_ops, node)):
             return updates(branch_ops, node, val, has_defaults, _path, nop)
-    # No branch matched - try each branch until one makes a change (for append/create)
-    # We need to detect changes even for mutable containers updated in-place
-    for branch in cur.branches:
-        branch_ops = list(branch) + list(ops)
-        if not branch_ops:
-            continue
-        # Snapshot state for mutable containers
-        if isinstance(node, dict):
-            before = set(node.keys())
-            result = updates(branch_ops, node, val, has_defaults, _path, nop)
-            if set(node.keys()) != before:
-                return result
-        elif isinstance(node, list):
-            before_len = len(node)
-            result = updates(branch_ops, node, val, has_defaults, _path, nop)
-            if len(node) != before_len:
-                return result
-        else:
-            result = updates(branch_ops, node, val, has_defaults, _path, nop)
-            if result is not node:
-                return result
-    return node
+    return _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop)
 
 
 def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
@@ -2231,9 +2257,11 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
             "use a dict, list, or other container"
         )
     cur, *ops = ops
+    nop_from_unwrap = False
     if isinstance(cur, NopWrap):
         cur = cur.inner
         nop = True
+        nop_from_unwrap = True
     if isinstance(cur, Invert):
         return removes(ops, node, val)
     if isinstance(cur, OpGroupFirst):
@@ -2251,11 +2279,12 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
             return node  # NOP: path doesn't exist, don't create
         built = updates(ops, build_default(ops), val, True, _path, nop)
         return cur.upsert(node, built)
-    # nop applies only at this segment's leaf; do not propagate to children
+    # nop propagates when from parent (e.g. NopWrap(OpGroup)); not when from unwrap at this level (~a.b)
+    pass_nop = nop and not nop_from_unwrap
     for k, v in cur.items(node):
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k], False))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k], pass_nop))
     return node
 
 

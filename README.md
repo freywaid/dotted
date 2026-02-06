@@ -537,7 +537,9 @@ Operation groups support the same operators as path groups:
 
 #### Disjunction (OR)
 
-Comma separates branches. Returns all matches that exist:
+Comma separates branches. Returns all matches that exist. Disjunction doesn't
+short-circuit—when updating, all matching branches get the update. Using the
+match-first operator (`?`) is probably what you want when updating.
 
     >>> d = {'a': {'x': 1, 'y': 2}}
     >>> dotted.get(d, 'a(.x,.y)')
@@ -545,11 +547,14 @@ Comma separates branches. Returns all matches that exist:
     >>> dotted.get(d, 'a(.x,.z)')     # z missing, x still returned
     (1,)
 
-Updates apply to all matching branches:
+Updates apply to all matching branches. When nothing matches, the first
+concrete path (scanning last to first) is created:
 
     >>> d = {'a': {'x': 1, 'y': 2}}
     >>> dotted.update(d, 'a(.x,.y)', 99)
     {'a': {'x': 99, 'y': 99}}
+    >>> dotted.update({'a': {}}, 'a(.x,.y)', 99)   # nothing matches → creates last (.y)
+    {'a': {'y': 99}}
 
 #### Conjunction (AND)
 
@@ -561,20 +566,24 @@ Use `&` for all-or-nothing behavior. Returns values only if ALL branches exist:
     >>> dotted.get(d, 'a(.x&.z)')     # z missing, fails entirely
     ()
 
-Updates only happen if all branches exist:
+Updates all branches so the conjunction eval as true—creates missing paths.
+If a filter or NOP prevents a branch, no update:
 
     >>> dotted.update({'a': {'x': 1, 'y': 2}}, 'a(.x&.y)', 99)
     {'a': {'x': 99, 'y': 99}}
-    >>> dotted.update({'a': {'x': 1}}, 'a(.x&.y)', 99)    # y missing, no update
-    {'a': {'x': 1}}
+    >>> dotted.update({'a': {'x': 1}}, 'a(.x&.y)', 99)    # y missing → creates it
+    {'a': {'x': 99, 'y': 99}}
 
 #### First match
 
-Use `?` suffix to return only the first match:
+Use `?` suffix to return only the first match. When nothing matches, same
+fallback as disjunction—first concrete path (last to first):
 
     >>> d = {'a': {'x': 1, 'y': 2}}
     >>> dotted.get(d, 'a(.z,.x,.y)?')    # first that exists
     (1,)
+    >>> dotted.update({'a': {}}, 'a(.x,.y)?', 99)    # nothing matches → creates last (.y)
+    {'a': {'y': 99}}
 
 #### Negation (NOT)
 
@@ -668,7 +677,11 @@ NOP applies only to the segment it wraps; child segments are unaffected.
     >>> dotted.update(data, 'a.~b', 2)   # NOP at b, no change
     {'a': {'b': 1}}
 
-Use with first-match for "update only if missing" semantics:
+When combining NOP with disjunction, use match-first (`?`) so NOP wins—without
+it, disjunction updates all matching branches and the plain update overwrites.
+
+Use with first-match (`?`) for "update only if missing" semantics—disjunction
+doesn't short-circuit, so match-first is usually what you want when updating:
 
     >>> dotted.update({'name': {'first': 'alice'}}, '(name.~first, name.first)?', 'bob')
     {'name': {'first': 'alice'}}   # first existed, NOP branch matched
