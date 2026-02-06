@@ -39,6 +39,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
 | Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
 | Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
+| NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -47,6 +48,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
 - Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
+- NOP (`~`) to match without updating—e.g. `(name.~first, name.first)?` for conditional updates
 
 ## Breaking Changes
 
@@ -128,6 +130,19 @@ This works for `remove` as well:
 When `mutable=False` is specified and the root object is mutable, `copy.deepcopy()`
 is called first. This ensures no mutation occurs even when updating through nested
 immutable containers (e.g., a tuple inside a dict).
+
+#### Update with NOP (~)
+
+The NOP operator `~` means "match but don't update." Use it when some matches should
+be left unchanged. Combine with first-match (`?`) for conditional updates:
+
+    >>> import dotted
+    >>> data = {'name': {'first': 'hello'}}
+    >>> dotted.update(data, '(name.~first, name.first)?', 'world')  # first exists, NOP
+    {'name': {'first': 'hello'}}
+    >>> data = {'name': {}}
+    >>> dotted.update(data, '(name.~first, name.first)?', 'world')  # first missing, update
+    {'name': {'first': 'world'}}
 
 ### Remove
 
@@ -632,6 +647,33 @@ to remove an item using `update`:
     {'a': 'hello'}
     >>> dotted.remove(d, '-b', 'bye again')
     {'a': 'hello', 'b': 'bye again'}
+
+### The NOP `~` operator
+
+The NOP operator means "match but don't update." At `update` and `remove` time, paths
+marked with `~` are matched for traversal but the mutation is skipped at that segment.
+NOP applies only to the segment it wraps; child segments are unaffected.
+
+| Syntax | Meaning |
+|--------|---------|
+| `~a.b` | NOP at `a`, then `.b` |
+| `a.~b` | NOP at `b` (dot segment) |
+| `~(name.first)` | NOP on grouped path |
+| `[~*]` or `~[*]` | NOP on slot (canonical: `[~stuff]`) |
+| `@~attr` or `~@attr` | NOP on attr |
+
+    >>> data = {'a': {'b': 1}}
+    >>> dotted.update(data, '~a.b', 2)   # NOP at a, update .b
+    {'a': {'b': 2}}
+    >>> dotted.update(data, 'a.~b', 2)   # NOP at b, no change
+    {'a': {'b': 1}}
+
+Use with first-match for "update only if missing" semantics:
+
+    >>> dotted.update({'name': {'first': 'alice'}}, '(name.~first, name.first)?', 'bob')
+    {'name': {'first': 'alice'}}   # first existed, NOP branch matched
+    >>> dotted.update({'name': {}}, '(name.~first, name.first)?', 'bob')
+    {'name': {'first': 'bob'}}     # first missing, update branch matched
 
 ## Patterns
 
