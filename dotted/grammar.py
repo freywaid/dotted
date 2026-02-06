@@ -110,7 +110,8 @@ attrcmd = _attr_nop | _attr_plain
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
 
-slicecmd = (lb + Opt(slice) + rb).set_parse_action(el.Slice)
+slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
+    lambda t: el.NopWrap(el.Slice(*t[1:])) if t and t[0] == '~' else el.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots

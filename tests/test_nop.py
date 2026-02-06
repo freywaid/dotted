@@ -15,6 +15,27 @@ def test_nop_segment_skip_update():
     assert r == {'name': {'first': 'world'}}  # second branch: update
 
 
+def test_nop_first_match_empty_path():
+    # NOP branch must not create structure when path missing; fall through to update branch
+    r = dotted.update({}, '(name.~first, name.first)?', 'bob')
+    assert r == {'name': {'first': 'bob'}}
+    # name exists but first missing - second branch creates
+    r = dotted.update({'name': {}}, '(name.~first, name.first)?', 'bob')
+    assert r == {'name': {'first': 'bob'}}
+    # Same with ~(path) group form
+    r = dotted.update({}, '(~(name.first), name.first)?', 'bob')
+    assert r == {'name': {'first': 'bob'}}
+
+
+def test_nop_slot_first_match_empty_path():
+    # Slot NOP branch must not create structure when path missing; fall through to update branch
+    r = dotted.update([], '(~[0].x, [0].x)?', 'bob')
+    assert r == [{'x': 'bob'}]
+    # List with item missing .x
+    r = dotted.update([{}], '(~[0].x, [0].x)?', 'bob')
+    assert r == [{'x': 'bob'}]
+
+
 def test_nop_group_skip_update():
     # ~(name.first), name.first)?: NOP the path name.first when it exists
     data = {'name': {'first': 'hello'}}
@@ -66,6 +87,9 @@ def test_nop_canonical_forms():
     assert dotted.assemble(dotted.parse('[~*]').ops) == '[~*]'
     assert dotted.assemble(dotted.parse('~[0]').ops) == '[~0]'
     assert dotted.assemble(dotted.parse('[~0]').ops) == '[~0]'
+    # Slices: ~[1:3] and [~1:3] canonicalize to [~1:3]
+    assert dotted.assemble(dotted.parse('~[1:3]').ops) == '[~1:3]'
+    assert dotted.assemble(dotted.parse('[~1:3]').ops) == '[~1:3]'
 
 
 def test_nop_slot_style():

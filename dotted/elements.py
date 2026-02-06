@@ -1821,6 +1821,15 @@ class NopWrap(Op):
     def is_pattern(self):
         return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
 
+    def default(self):
+        return self.inner.default() if hasattr(self.inner, 'default') else {}
+
+    def upsert(self, node, val):
+        return self.inner.upsert(node, val) if hasattr(self.inner, 'upsert') else val
+
+    def items(self, node):
+        return self.inner.items(node) if hasattr(self.inner, 'items') else iter(())
+
 
 #
 #
@@ -2218,6 +2227,8 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
     if not ops:
         return node if nop else cur.upsert(node, val)
     if cur.is_empty(node) and not has_defaults:
+        if nop or isinstance(ops[0], NopWrap):
+            return node  # NOP: path doesn't exist, don't create
         built = updates(ops, build_default(ops), val, True, _path, nop)
         return cur.upsert(node, built)
     # nop applies only at this segment's leaf; do not propagate to children
