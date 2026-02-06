@@ -123,6 +123,7 @@ def test_update_opgroup():
     d = {'a': {'b': 1, 'c': 2}}
     r = dotted.update(d, 'a(.b,.c)', 99)
     assert r == {'a': {'b': 99, 'c': 99}}
+    assert dotted.get(r, 'a(.b,.c)') == (99, 99)
 
 
 def test_update_opgroup_partial():
@@ -134,8 +135,8 @@ def test_update_opgroup_partial():
     """
     d = {'a': {'b': 1}}  # 'c' doesn't exist
     r = dotted.update(d, 'a(.b,.c)', 99)
-    # Only existing keys are updated
     assert r == {'a': {'b': 99}}
+    assert dotted.get(r, 'a(.b,.c)') == (99,)
 
 
 def test_update_opgroup_nested():
@@ -154,6 +155,8 @@ def test_remove_opgroup():
     d = {'a': {'b': 1, 'c': 2, 'd': 3}}
     r = dotted.remove(d, 'a(.b,.c)')
     assert r == {'a': {'d': 3}}
+    assert dotted.has(r, 'a.b') is False
+    assert dotted.has(r, 'a.c') is False
 
 
 def test_remove_opgroup_partial():
@@ -163,6 +166,7 @@ def test_remove_opgroup_partial():
     d = {'a': {'b': 1, 'd': 3}}  # 'c' doesn't exist
     r = dotted.remove(d, 'a(.b,.c)')
     assert r == {'a': {'d': 3}}
+    assert dotted.has(r, 'a.b') is False
 
 
 def test_pluck_opgroup():
@@ -301,37 +305,70 @@ def test_expand_opgroup_and_missing():
 def test_update_opgroup_and_both_exist():
     """
     Test update with OpGroupAnd - updates only if ALL branches exist.
+    After update, conjunction eval as true.
     """
     d = {'a': {'b': 1, 'c': 2}}
     r = dotted.update(d, 'a(.b&.c)', 99)
     assert r == {'a': {'b': 99, 'c': 99}}
+    assert dotted.has(r, 'a(.b&.c)') is True
+    assert dotted.get(r, 'a(.b&.c)') == (99, 99)
 
 
 def test_update_opgroup_and_one_missing():
     """
-    Test update with OpGroupAnd where one branch is missing - no update.
+    Test update with OpGroupAnd where one branch is missing - creates it.
+    Conjunction: update all branches so conjunction eval as true.
     """
     d = {'a': {'b': 1, 'd': 3}}  # c missing
     r = dotted.update(d, 'a(.b&.c)', 99)
-    assert r == {'a': {'b': 1, 'd': 3}}  # unchanged
+    assert r == {'a': {'b': 99, 'c': 99, 'd': 3}}
+    assert dotted.has(r, 'a(.b&.c)') is True
+    assert dotted.get(r, 'a(.b&.c)') == (99, 99)
+
+
+def test_conjunction_all_missing():
+    """
+    Conjunction when all branches missing - create all.
+    After update, conjunction eval as true.
+    """
+    d = {'a': {}}
+    r = dotted.update(d, 'a(.b&.c)', 99)
+    assert r == {'a': {'b': 99, 'c': 99}}
+    assert dotted.has(r, 'a(.b&.c)') is True
+    assert dotted.get(r, 'a(.b&.c)') == (99, 99)
+
+
+def test_conjunction_filter_blocks():
+    """
+    Conjunction when filter doesn't match - abort, do nothing.
+    No partial update; original structure unchanged.
+    """
+    d = {'name': {'first': 'Alice'}}
+    r = dotted.update(d, '( (name&first=None).first & name.first )', 'hello')
+    assert r == {'name': {'first': 'Alice'}}
+    assert dotted.get(r, 'name.first') == 'Alice'
 
 
 def test_remove_opgroup_and_both_exist():
     """
     Test remove with OpGroupAnd - removes only if ALL branches exist.
+    After remove, conjunction eval as false (paths gone).
     """
     d = {'a': {'b': 1, 'c': 2, 'd': 3}}
     r = dotted.remove(d, 'a(.b&.c)')
     assert r == {'a': {'d': 3}}
+    assert dotted.has(r, 'a(.b&.c)') is False
 
 
 def test_remove_opgroup_and_one_missing():
     """
     Test remove with OpGroupAnd where one branch is missing - no remove.
+    Conjunction was false before; unchanged after.
     """
     d = {'a': {'b': 1, 'd': 3}}  # c missing
     r = dotted.remove(d, 'a(.b&.c)')
     assert r == {'a': {'b': 1, 'd': 3}}  # unchanged
+    assert dotted.has(r, 'a(.b&.c)') is False
 
 
 def test_has_opgroup_and():
@@ -437,6 +474,8 @@ def test_update_opgroup_not():
     d = {'a': {'b': 1, 'c': 2, 'd': 3}}
     r = dotted.update(d, 'a(!.b)', 99)
     assert r == {'a': {'b': 1, 'c': 99, 'd': 99}}
+    assert dotted.get(r, 'a.b') == 1
+    assert set(dotted.get(r, 'a(!.b)')) == {99} and len(dotted.get(r, 'a(!.b)')) == 2
 
 
 def test_remove_opgroup_not():
@@ -446,6 +485,9 @@ def test_remove_opgroup_not():
     d = {'a': {'b': 1, 'c': 2, 'd': 3}}
     r = dotted.remove(d, 'a(!.b)')
     assert r == {'a': {'b': 1}}
+    assert dotted.get(r, 'a.b') == 1
+    assert dotted.has(r, 'a.c') is False
+    assert dotted.has(r, 'a.d') is False
 
 
 def test_has_opgroup_not():
@@ -496,11 +538,13 @@ def test_opgroup_not_multiple_keys():
     d2 = {'a': 1, 'b': 2, 'c': 3}
     r = dotted.update(d2, '(!(.a,.b))', 99)
     assert r == {'a': 1, 'b': 2, 'c': 99}
+    assert dotted.get(r, '(!(.a,.b))') == (99,)
 
     # Remove with multi-key negation
     d3 = {'a': 1, 'b': 2, 'c': 3}
     r = dotted.remove(d3, '(!(.a,.b))')
     assert r == {'a': 1, 'b': 2}
+    assert dotted.has(r, 'c') is False
 
 
 # =============================================================================
@@ -513,8 +557,8 @@ def test_update_opgroup_first_matches():
     """
     d = {'a': {'b': 1, 'c': 2}}
     r = dotted.update(d, 'a(.b,.c)?', 99)
-    # Only first match (b) should be updated
     assert r == {'a': {'b': 99, 'c': 2}}
+    assert dotted.get(r, 'a(.b,.c)?') == (99,)
 
 
 def test_update_opgroup_first_no_first_match():
@@ -523,18 +567,49 @@ def test_update_opgroup_first_no_first_match():
     """
     d = {'a': {'c': 2}}  # b doesn't exist
     r = dotted.update(d, 'a(.b,.c)?', 99)
-    # Falls through to second branch (c)
     assert r == {'a': {'c': 99}}
+    assert dotted.get(r, 'a(.b,.c)?') == (99,)
 
 
 def test_update_opgroup_first_no_match_creates():
     """
-    Test update with OpGroupFirst where no branch exists - creates first.
+    Test update with OpGroupFirst where no branch exists - creates last concrete.
+    When nothing matches, we take first concrete path (scanning last to first).
     """
     d = {'a': {}}
     r = dotted.update(d, 'a(.b,.c)?', 99)
-    # Creates first branch
-    assert r == {'a': {'b': 99}}
+    assert r == {'a': {'c': 99}}
+    assert dotted.get(r, 'a.c') == 99
+
+
+def test_disjunction_fallback_wildcard_only():
+    """
+    When nothing matches and last branch is wildcard - do nothing.
+    No concrete path to create.
+    """
+    d = {'a': {}}
+    r = dotted.update(d, 'a([*])', 99)
+    assert r == {'a': {}}
+    assert dotted.get(r, 'a([*])') == ()
+
+
+def test_disjunction_fallback_single_branch():
+    """
+    When nothing matches and single branch - use it.
+    """
+    r = dotted.update({}, '(a)', 99)
+    assert r == {'a': 99}
+    assert dotted.get(r, 'a') == 99
+
+
+def test_disjunction_fallback_opgroup():
+    """
+    OpGroup (no ?) when nothing matches - same fallback, creates last concrete.
+    """
+    d = {'a': {}}
+    r = dotted.update(d, 'a(.b,.c)', 99)
+    assert r == {'a': {'c': 99}}
+    assert dotted.get(r, 'a.c') == 99
 
 
 def test_remove_opgroup_first_matches():
@@ -543,8 +618,9 @@ def test_remove_opgroup_first_matches():
     """
     d = {'a': {'b': 1, 'c': 2, 'd': 3}}
     r = dotted.remove(d, 'a(.b,.c)?')
-    # Only first match (b) should be removed
     assert r == {'a': {'c': 2, 'd': 3}}
+    assert dotted.has(r, 'a.b') is False
+    assert dotted.has(r, 'a.c') is True
 
 
 def test_remove_opgroup_first_no_first_match():
@@ -553,8 +629,8 @@ def test_remove_opgroup_first_no_first_match():
     """
     d = {'a': {'c': 2, 'd': 3}}  # b doesn't exist
     r = dotted.remove(d, 'a(.b,.c)?')
-    # Falls through to second branch (c)
     assert r == {'a': {'d': 3}}
+    assert dotted.has(r, 'a.c') is False
 
 
 def test_remove_opgroup_first_no_match():
@@ -564,6 +640,7 @@ def test_remove_opgroup_first_no_match():
     d = {'a': {'x': 1}}
     r = dotted.remove(d, 'a(.b,.c)?')
     assert r == {'a': {'x': 1}}
+    assert dotted.has(r, 'a.x') is True
 
 
 # =============================================================================

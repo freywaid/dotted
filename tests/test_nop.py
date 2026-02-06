@@ -1,6 +1,7 @@
 """
 Tests for NOP (~) operator: match but don't update.
 """
+import copy
 import dotted
 import pytest
 
@@ -10,21 +11,24 @@ def test_nop_segment_skip_update():
     data = {'name': {'first': 'hello'}}
     # (name.~first, name.first)?: if name.first exists NOP else update
     r = dotted.update(data, '(name.~first, name.first)?', 'world')
-    assert r == data  # unchanged: first branch matched and NOP
+    assert r == data
+    assert dotted.get(r, 'name.first') == 'hello'
     r = dotted.update({'name': {}}, '(name.~first, name.first)?', 'world')
-    assert r == {'name': {'first': 'world'}}  # second branch: update
+    assert r == {'name': {'first': 'world'}}
+    assert dotted.get(r, 'name.first') == 'world'
 
 
 def test_nop_first_match_empty_path():
     # NOP branch must not create structure when path missing; fall through to update branch
     r = dotted.update({}, '(name.~first, name.first)?', 'bob')
     assert r == {'name': {'first': 'bob'}}
-    # name exists but first missing - second branch creates
+    assert dotted.get(r, 'name.first') == 'bob'
     r = dotted.update({'name': {}}, '(name.~first, name.first)?', 'bob')
     assert r == {'name': {'first': 'bob'}}
-    # Same with ~(path) group form
+    assert dotted.get(r, 'name.first') == 'bob'
     r = dotted.update({}, '(~(name.first), name.first)?', 'bob')
     assert r == {'name': {'first': 'bob'}}
+    assert dotted.get(r, 'name.first') == 'bob'
 
 
 def test_nop_slot_first_match_empty_path():
@@ -41,8 +45,40 @@ def test_nop_group_skip_update():
     data = {'name': {'first': 'hello'}}
     r = dotted.update(data, '(~(name.first), name.first)?', 'world')
     assert r == data
+    assert dotted.get(r, 'name.first') == 'hello'
     r = dotted.update({'name': {}}, '(~(name.first), name.first)?', 'world')
     assert r == {'name': {'first': 'world'}}
+    assert dotted.get(r, 'name.first') == 'world'
+
+
+def test_nop_filter_update_nop_create():
+    # ( (name&first=None).first, name.~first, name.first )?:
+    # If first is None -> update; if first exists with value -> NOP; if missing -> create
+    # name.first missing -> create
+    r = dotted.update({'name': {}}, '( (name&first=None).first, name.~first, name.first )?', 'hello')
+    assert r == {'name': {'first': 'hello'}}
+    assert dotted.get(r, 'name.first') == 'hello'
+    # name.first exists with value -> NOP (preserve)
+    data = {'name': {'first': 'Alice'}}
+    r = dotted.update(copy.deepcopy(data), '( (name&first=None).first, name.~first, name.first )?', 'hello')
+    assert r == {'name': {'first': 'Alice'}}
+    assert dotted.get(r, 'name.first') == 'Alice'
+    # name.first is None -> update
+    r = dotted.update({'name': {'first': None}}, '( (name&first=None).first, name.~first, name.first )?', 'hello')
+    assert r == {'name': {'first': 'hello'}}
+    assert dotted.get(r, 'name.first') == 'hello'
+
+
+def test_nop_opgroup_vs_opgroup_first():
+    # OpGroup updates all matches - NOP and plain both match, plain overwrites
+    # OpGroupFirst stops at first match - NOP wins, preserves value
+    data = {'name': {'first': 'bye'}}
+    r_opgroup = dotted.update(copy.deepcopy(data), '( (name&first=None).first, name.~first, name.first )', 'hello')
+    r_first = dotted.update(copy.deepcopy(data), '( (name&first=None).first, name.~first, name.first )?', 'hello')
+    assert r_opgroup == {'name': {'first': 'hello'}}
+    assert dotted.get(r_opgroup, 'name.first') == 'hello'
+    assert r_first == {'name': {'first': 'bye'}}
+    assert dotted.get(r_first, 'name.first') == 'bye'
 
 
 def test_nop_get_unchanged():
@@ -56,25 +92,34 @@ def test_nop_get_unchanged():
 def test_nop_remove():
     # remove ~a: NOP at leaf, don't remove
     data = {'a': 1, 'b': 2}
-    assert dotted.remove(data.copy(), '~a') == {'a': 1, 'b': 2}
-    assert dotted.remove(data.copy(), 'a') == {'b': 2}
+    r = dotted.remove(data.copy(), '~a')
+    assert r == {'a': 1, 'b': 2}
+    assert dotted.has(r, 'a') is True
+    r = dotted.remove(data.copy(), 'a')
+    assert r == {'b': 2}
+    assert dotted.has(r, 'a') is False
     # remove ~a.b: NOP at a, do remove .b under a
     data = {'a': {'b': 1, 'c': 2}}
-    assert dotted.remove(data.copy(), '~a.b') == {'a': {'c': 2}}
+    r = dotted.remove(data.copy(), '~a.b')
+    assert r == {'a': {'c': 2}}
+    assert dotted.has(r, 'a.b') is False
     # remove [~*].x or ~[*].x: NOP at slot (don't remove list items), remove .x from each
     data = [{'x': 1, 'y': 2}, {'x': 3, 'y': 4}]
-    assert dotted.remove(data.copy(), '[~*].x') == [{'y': 2}, {'y': 4}]
-    assert dotted.remove(data.copy(), '~[*].x') == [{'y': 2}, {'y': 4}]
+    r = dotted.remove(data.copy(), '[~*].x')
+    assert r == [{'y': 2}, {'y': 4}]
+    assert dotted.get(r, '[*].x') == ()
+    r = dotted.remove(data.copy(), '~[*].x')
+    assert r == [{'y': 2}, {'y': 4}]
 
 
 def test_nop_path_start():
     # ~a.b: NOP at a, then .b
     data = {'a': {'b': 1}}
     r = dotted.update(data, '~a.b', 2)
-    assert r['a']['b'] == 2  # we update .b under a (NOP was at a only)
+    assert dotted.get(r, 'a.b') == 2
     data2 = {'a': {'b': 1}}
     r2 = dotted.update(data2, 'a.~b', 2)
-    assert r2['a']['b'] == 1  # unchanged: NOP at b
+    assert dotted.get(r2, 'a.b') == 1
 
 
 def test_nop_assemble():

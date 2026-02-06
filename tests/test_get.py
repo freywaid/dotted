@@ -150,16 +150,19 @@ def test_path_grouping_update_disjunction():
     d = {'a': 1, 'b': 2, 'c': 3}
     result = dotted.update(d, '(a,b)', 99)
     assert result == {'a': 99, 'b': 99, 'c': 3}
+    assert dotted.get(result, '(a,b)') == (99, 99)
 
     # Partial - only updates what exists
     d2 = {'a': 1, 'c': 3}
     result = dotted.update(d2, '(a,b)', 99)
     assert result == {'a': 99, 'c': 3}
+    assert dotted.get(result, '(a,b)') == (99,)
 
-    # None exist - no change
+    # None exist - creates last concrete path (first concrete when scanning last to first)
     d3 = {'c': 3}
     result = dotted.update(d3, '(a,b)', 99)
-    assert result == {'c': 3}
+    assert result == {'b': 99, 'c': 3}
+    assert dotted.get(result, 'b') == 99
 
 
 def test_path_grouping_update_conjunction():
@@ -168,10 +171,10 @@ def test_path_grouping_update_conjunction():
     result = dotted.update(d, '(a&b)', 99)
     assert result == {'a': 99, 'b': 99, 'c': 3}
 
-    # One missing - no update
+    # One missing - creates it (conjunction: make all branches true)
     d2 = {'a': 1, 'c': 3}
     result = dotted.update(d2, '(a&b)', 99)
-    assert result == {'a': 1, 'c': 3}
+    assert result == {'a': 99, 'b': 99, 'c': 3}
 
 
 def test_path_grouping_remove_disjunction():
@@ -179,11 +182,14 @@ def test_path_grouping_remove_disjunction():
     d = {'a': 1, 'b': 2, 'c': 3}
     result = dotted.remove(d, '(a,b)')
     assert result == {'c': 3}
+    assert dotted.has(result, 'a') is False
+    assert dotted.has(result, 'b') is False
 
     # Partial
     d2 = {'a': 1, 'c': 3}
     result = dotted.remove(d2, '(a,b)')
     assert result == {'c': 3}
+    assert dotted.has(result, 'a') is False
 
 
 def test_path_grouping_remove_conjunction():

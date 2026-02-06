@@ -44,7 +44,8 @@ numeric_quoted = _numeric_quoted.set_parse_action(el.NumericQuoted)
 numeric_key = integer.copy().set_parse_action(el.Numeric)
 numeric_slot = ppc.number.copy().set_parse_action(el.Numeric)
 
-word = (pp.Optional(backslash) + pp.CharsNotIn(reserved)).set_parse_action(el.Word)
+# Exclude whitespace so "first )" parses as key "first", not "first "
+word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(el.Word)
 non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(el.Word)
 nameop = name.copy().set_parse_action(el.Word)
 
@@ -168,8 +169,8 @@ op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 dotted_top_inner = path_grouped | op_grouped | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | empty
 _nop_wrap = (tilde + dotted_top_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
 dotted_top = _nop_wrap | dotted_top_inner
-# Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses
-op_seq_item << (_nop_wrap | keycmd | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd)
+# Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses; path_grouped for (a&b).c; op_grouped for ((a,b),c)
+op_seq_item << (_nop_wrap | path_grouped | op_grouped | keycmd | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd)
 
 # ~. and .~ both produce NopWrap (canonical form .~)
 _dot_nop = ((dot + tilde) | (tilde + dot)) + (path_grouped | keycmd)
