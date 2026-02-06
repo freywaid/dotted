@@ -53,6 +53,20 @@ def test_nop_get_unchanged():
     assert dotted.get(data, '~a.b', default=3) == 3
 
 
+def test_nop_remove():
+    # remove ~a: NOP at leaf, don't remove
+    data = {'a': 1, 'b': 2}
+    assert dotted.remove(data.copy(), '~a') == {'a': 1, 'b': 2}
+    assert dotted.remove(data.copy(), 'a') == {'b': 2}
+    # remove ~a.b: NOP at a, do remove .b under a
+    data = {'a': {'b': 1, 'c': 2}}
+    assert dotted.remove(data.copy(), '~a.b') == {'a': {'c': 2}}
+    # remove [~*].x or ~[*].x: NOP at slot (don't remove list items), remove .x from each
+    data = [{'x': 1, 'y': 2}, {'x': 3, 'y': 4}]
+    assert dotted.remove(data.copy(), '[~*].x') == [{'y': 2}, {'y': 4}]
+    assert dotted.remove(data.copy(), '~[*].x') == [{'y': 2}, {'y': 4}]
+
+
 def test_nop_path_start():
     # ~a.b: NOP at a, then .b
     data = {'a': {'b': 1}}
@@ -90,6 +104,32 @@ def test_nop_canonical_forms():
     # Slices: ~[1:3] and [~1:3] canonicalize to [~1:3]
     assert dotted.assemble(dotted.parse('~[1:3]').ops) == '[~1:3]'
     assert dotted.assemble(dotted.parse('[~1:3]').ops) == '[~1:3]'
+    # Empty slice: [~] and ~[] canonicalize to ~[]
+    assert dotted.assemble(dotted.parse('[~]').ops) == '~[]'
+    assert dotted.assemble(dotted.parse('~[]').ops) == '~[]'
+
+
+def test_nop_other_api():
+    # match: pattern with ~ matches same as without
+    assert dotted.match('~a.b', 'a.b') == 'a.b'
+    assert dotted.match('~*.c', 'x.c') == 'x.c'
+    # expand: ~* expands like *
+    d = {'a': 1, 'b': 2}
+    assert set(dotted.expand(d, '~*')) == set(dotted.expand(d, '*'))
+    # has
+    assert dotted.has(d, '~a') is True
+    assert dotted.has(d, '~z') is False
+    # build with NOP path (traverses same structure)
+    assert dotted.build({}, '~a.b') == {'a': {'b': None}}
+
+
+def test_nop_empty_slice():
+    # [~] and ~[] parse and canonicalize to ~[]; get returns full sequence
+    assert dotted.assemble(dotted.parse('[~]').ops) == '~[]'
+    assert dotted.assemble(dotted.parse('~[]').ops) == '~[]'
+    data = [1, 2, 3]
+    assert dotted.get(data, '[~]') == [1, 2, 3]
+    assert dotted.get(data, '~[]') == [1, 2, 3]
 
 
 def test_nop_slot_style():

@@ -1807,6 +1807,9 @@ class NopWrap(Op):
 
     def operator(self, top=False):
         s = self.inner.operator(top)
+        # Empty slice: canonical ~[]
+        if s == '[]':
+            return '~[]'
         # Slots: always [~stuff] (tilde inside brackets)
         if s.startswith('['):
             return '[~' + s[1:]
@@ -1829,6 +1832,23 @@ class NopWrap(Op):
 
     def items(self, node):
         return self.inner.items(node) if hasattr(self.inner, 'items') else iter(())
+
+    def values(self, node):
+        return self.inner.values(node) if hasattr(self.inner, 'values') else iter(())
+
+    def is_empty(self, node):
+        return self.inner.is_empty(node) if hasattr(self.inner, 'is_empty') else True
+
+    def update(self, node, key, val):
+        return self.inner.update(node, key, val) if hasattr(self.inner, 'update') else node
+
+    def match(self, op, specials=False):
+        if not hasattr(self.inner, 'match'):
+            return None
+        try:
+            return self.inner.match(op, specials=specials)
+        except TypeError:
+            return self.inner.match(op)
 
 
 #
@@ -2316,8 +2336,11 @@ def _removes_opgroup_first(cur, ops, node, val):
     return node
 
 
-def removes(ops, node, val=ANY):
+def removes(ops, node, val=ANY, nop=False):
     cur, *ops = ops
+    if isinstance(cur, NopWrap):
+        cur = cur.inner
+        nop = True
     if isinstance(cur, Invert):
         assert val is not ANY, 'Value required'
         return updates(ops, node, val)
@@ -2330,9 +2353,9 @@ def removes(ops, node, val=ANY):
     if isinstance(cur, OpGroup):
         return _removes_opgroup(cur, ops, node, val)
     if not ops:
-        return cur.remove(node, val)
+        return node if nop else cur.remove(node, val)
     for k, v in cur.items(node):
-        node = cur.update(node, k, removes(ops, v, val))
+        node = cur.update(node, k, removes(ops, v, val, nop=False))
     return node
 
 
