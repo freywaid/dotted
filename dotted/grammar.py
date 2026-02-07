@@ -63,10 +63,14 @@ _commons = string | _common_pats | numeric_quoted
 value = string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
 key = _commons | non_integer | numeric_key | word
 
-# filter_key allows dotted paths like user.id or config.db.host
-# also supports wildcards and regex patterns for matching
+# filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]).
+# Dot introduces a key part only; slot directly after key. No tags.[0] or .. (same rule as main path).
 _filter_key_part = string | _common_pats | non_integer | numeric_key | word
-filter_key = pp.Group(_filter_key_part + ZM(dot + _filter_key_part)).set_parse_action(el.FilterKey)
+filter_key_slot = (lb + (_commons | numeric_slot) + rb).set_parse_action(lambda t: el.Slot(t[0]))
+_filter_key_segment = _filter_key_part | filter_key_slot
+filter_key = pp.Group(
+    _filter_key_segment + ZM(filter_key_slot | (dot + _filter_key_part))
+).set_parse_action(el.FilterKey)
 
 # Single key=value comparison
 filter_single = pp.Group(filter_key + equal + value).set_parse_action(el.FilterKeyValue)

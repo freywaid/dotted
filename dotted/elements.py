@@ -256,35 +256,45 @@ class FilterKey(Op):
 
     def get_values(self, node):
         """Get all values from node matching this key, traversing dotted path if needed.
+        Supports slot parts (e.g. tags[*]) to yield each element of a list for matching.
         Yields (value, True) for each match, or (None, False) if no matches."""
+        yield from self._get_values(node, list(self.parts))
+
+    def _get_values(self, node, parts):
+        if not parts:
+            yield node, True
+            return
+        part = parts[0]
+        rest = parts[1:]
+        if isinstance(part, Slot):
+            try:
+                for v in part.values(node):
+                    yield from self._get_values(v, rest)
+            except (TypeError, AttributeError):
+                yield None, False
+            return
+        # Key-like part (Word, Wildcard, etc.)
         if not hasattr(node, 'keys'):
             yield None, False
             return
-        if not self.is_dotted():
-            # Simple key - yield all matching values
-            key = self.parts[0]
+        if len(parts) == 1 and not isinstance(part, Slot):
+            # Simple key - yield all matching values (existing single-key behavior)
             found_any = False
-            for km in key.matches(node.keys()):
+            for km in part.matches(node.keys()):
                 yield node[km], True
                 found_any = True
             if not found_any:
                 yield None, False
             return
-        # Dotted path - traverse (only first match at each level)
-        current = node
-        for part in self.parts:
-            if not hasattr(current, 'keys'):
-                yield None, False
-                return
-            found = False
-            for km in part.matches(current.keys()):
-                current = current[km]
-                found = True
-                break
-            if not found:
-                yield None, False
-                return
-        yield current, True
+        # Dotted path - traverse (first match only at each key-like level)
+        found = False
+        for km in part.matches(node.keys()):
+            child = node[km]
+            yield from self._get_values(child, rest)
+            found = True
+            break
+        if not found:
+            yield None, False
 
     def get_value(self, node):
         """

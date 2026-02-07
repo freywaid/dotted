@@ -295,6 +295,15 @@ def test_parse_error_double_dot():
     assert 'Invalid dotted notation' in str(exc.value)
 
 
+def test_parse_error_dot_before_slot():
+    """Dot must introduce a key, not a slot. Reject a.[0], a.[*], tags.[0]=1."""
+    for invalid in ('a.[0]', 'a.[*]', 'x.[1]'):
+        with pytest.raises(dotted.api.ParseError):
+            dotted.parse(invalid)
+    with pytest.raises(dotted.api.ParseError):
+        dotted.parse('addresses[*&tags.[0]=1]')
+
+
 def test_parse_error_trailing_dot():
     with pytest.raises(dotted.api.ParseError) as exc:
         dotted.get({}, 'hello.')

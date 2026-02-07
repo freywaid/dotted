@@ -10,6 +10,14 @@ def test_parse_lookahead_keyvalue():
     dotted.parse('a[*&id=1]')
 
 
+def test_parse_filter_key_slot_path():
+    """Filter keys can include slot paths (e.g. tags[*]=*) for array containment."""
+    dotted.parse('[*&tags[*]=*]')
+    dotted.parse('addresses[*&tags[*]=*]')
+    dotted.parse('[*&tags[*]="billing"]')
+    dotted.parse('items[*&tags[0]=*]')
+
+
 def test_match_filter_keyvalue():
     r = dotted.match('a&id=1', 'a&id=1')
     assert r == 'a&id=1'
@@ -356,6 +364,56 @@ def test_regex_filter_key():
     # Regex key - match keys ending with 'ount'
     r = dotted.get(d, 'items[/.*ount/=200]')
     assert r == [{'name': 'bar', 'count': 200}]
+
+
+def test_filter_key_slot_path():
+    """Filter keys with slot paths: tags[*]=* means 'any element of tags matches'."""
+    profile = {
+        'addresses': [
+            {
+                'tags': ['billing'],
+                'country': 'us',
+                'line': ['456 Old St'],
+                'city': 'Oakland',
+                'state': 'CA',
+                'zipcode': '94601',
+            },
+            {
+                'tags': ['shipping'],
+                'country': 'us',
+                'city': 'Portland',
+            },
+            {
+                'country': 'uk',
+                'city': 'London',
+            },
+        ]
+    }
+
+    # addresses where tags has any element (tags[*]=*)
+    r = dotted.get(profile, 'addresses[*&tags[*]=*]')
+    assert len(r) == 2
+    assert r[0]['city'] == 'Oakland'
+    assert r[1]['city'] == 'Portland'
+
+    # addresses where tags contains "billing"
+    r = dotted.get(profile, 'addresses[*&tags[*]="billing"]')
+    assert len(r) == 1
+    assert r[0]['city'] == 'Oakland'
+
+    # addresses where tags contains "shipping"
+    r = dotted.get(profile, 'addresses[*&tags[*]="shipping"]')
+    assert len(r) == 1
+    assert r[0]['city'] == 'Portland'
+
+    # no addresses with tag "admin"
+    r = dotted.get(profile, 'addresses[*&tags[*]="admin"]')
+    assert r == ()
+
+    # filter key with slot index: first tag equals "billing"
+    r = dotted.get(profile, 'addresses[*&tags[0]="billing"]')
+    assert len(r) == 1
+    assert r[0]['city'] == 'Oakland'
 
 
 def test_filter_grouping():
