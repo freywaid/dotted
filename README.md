@@ -131,6 +131,24 @@ When `mutable=False` is specified and the root object is mutable, `copy.deepcopy
 is called first. This ensures no mutation occurs even when updating through nested
 immutable containers (e.g., a tuple inside a dict).
 
+#### Update if
+
+`update_if` updates only when the path is missing or when `pred(current_value)` is true.
+It always updates when there is nothing at the key; the predicate only gates updates
+when the path exists. Default pred is `lambda val: val is None` (fill missing or None
+slots, don't overwrite existing non-None):
+
+    >>> import dotted
+    >>> dotted.update_if({'name': {}}, 'name.first', 'hello')
+    {'name': {'first': 'hello'}}
+    >>> dotted.update_if({'name': {'first': 'Alice'}}, 'name.first', 'hello')  # no change
+    {'name': {'first': 'Alice'}}
+    >>> dotted.update_if({'name': {'first': None}}, 'name.first', 'hello')
+    {'name': {'first': 'hello'}}
+
+The same behavior can be achieved with path expressions using the NOP operator (see below).
+Use `update_if_multi` for batch updates with per-item `(key, val)` or `(key, val, pred)`.
+
 #### Update with NOP (~)
 
 The NOP operator `~` means "match but don't update." Use it when some matches should
@@ -159,6 +177,19 @@ You can remove a field or do so only if it matches value.  For example,
 
 Similar to update, all patterns that match will be removed.  If you provide a value as
 well, only the matched patterns that also match the value will be removed.
+
+#### Remove if
+
+`remove_if` removes only when the path is missing or when `pred(current_value)` is true.
+Default pred is `lambda val: val is None` (remove only when value is missing or None):
+
+    >>> import dotted
+    >>> dotted.remove_if({'a': 1, 'b': None, 'c': 2}, 'b')
+    {'a': 1, 'c': 2}
+    >>> dotted.remove_if({'a': 1, 'b': 2, 'c': 3}, 'b')  # no change
+    {'a': 1, 'b': 2, 'c': 3}
+
+Use `remove_if_multi` for batch removal with per-item pred or `(key, val, pred)`.
 
 ### Match
 
@@ -318,9 +349,14 @@ Most operations have `*_multi` variants for batch processing:
     {'b': 2}
     >>> dotted.setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
     {'a': 1, 'b': 2}
+    >>> dotted.update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2)])  # (key, val) or (key, val, pred)
+    {'a': 99, 'b': 2}
+    >>> dotted.remove_if_multi({'a': 1, 'b': None, 'c': 2}, ['b'])  # keys_only=True, default pred
+    {'a': 1, 'c': 2}
 
-Available multi operations: `get_multi`, `update_multi`, `remove_multi`, `setdefault_multi`,
-`match_multi`, `expand_multi`, `apply_multi`, `build_multi`, `pluck_multi`, `assemble_multi`.
+Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `remove_multi`,
+`remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
+`build_multi`, `pluck_multi`, `assemble_multi`.
 
 ## Grammar
 
