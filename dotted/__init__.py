@@ -53,15 +53,15 @@ from .api import \
     apply, apply_multi, \
     get, get_multi, \
     has, setdefault, setdefault_multi, \
-    update, update_multi, \
-    remove, remove_multi, \
+    update, update_multi, update_if, update_if_multi, \
+    remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi
 
 __all__ = [
     # Core
     'get', 'update', 'remove', 'has', 'setdefault',
     # Multi
-    'get_multi', 'update_multi', 'remove_multi', 'setdefault_multi',
+    'get_multi', 'update_multi', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern
     'match', 'match_multi', 'expand', 'expand_multi',
     # Build/Pluck
