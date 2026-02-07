@@ -136,7 +136,8 @@ immutable containers (e.g., a tuple inside a dict).
 `update_if` updates only when the path is missing or when `pred(current_value)` is true.
 It always updates when there is nothing at the key; the predicate only gates updates
 when the path exists. Default pred is `lambda val: val is None` (fill missing or None
-slots, don't overwrite existing non-None):
+slots, don't overwrite existing non-None). Use `pred=None` for unconditional update
+(same as `update`):
 
     >>> import dotted
     >>> dotted.update_if({'name': {}}, 'name.first', 'hello')
@@ -181,7 +182,8 @@ well, only the matched patterns that also match the value will be removed.
 #### Remove if
 
 `remove_if` removes only when the path is missing or when `pred(current_value)` is true.
-Default pred is `lambda val: val is None` (remove only when value is missing or None):
+Default pred is `lambda val: val is None` (remove only when value is missing or None).
+Use `pred=None` for unconditional remove (same as `remove`):
 
     >>> import dotted
     >>> dotted.remove_if({'a': 1, 'b': None, 'c': 2}, 'b')
