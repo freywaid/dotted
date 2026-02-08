@@ -259,7 +259,8 @@ def setdefault(obj, key, val, apply_transforms=True):
     if has(obj, key):
         return get(obj, key, apply_transforms=apply_transforms)
     obj = update(obj, key, val, apply_transforms=apply_transforms)
-    return get(obj, key, apply_transforms=apply_transforms)
+    # Value we stored was already transformed by update; don't apply again
+    return get(obj, key, apply_transforms=False)
 
 
 def setdefault_multi(obj, keyvalues, apply_transforms=True):
