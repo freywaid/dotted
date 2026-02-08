@@ -257,24 +257,24 @@ def setdefault(obj, key, val, apply_transforms=True):
     7
     """
     if has(obj, key):
-        return get(obj, key, apply_transforms=apply_transforms)
+        return  get(obj, key, apply_transforms=apply_transforms)
     obj = update(obj, key, val, apply_transforms=apply_transforms)
-    # Value we stored was already transformed by update; don't apply again
     return get(obj, key, apply_transforms=False)
 
 
 def setdefault_multi(obj, keyvalues, apply_transforms=True):
     """
-    Set multiple values, only where keys do not exist. Returns updated obj.
-    >>> setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    For each (key, value), set value at key only if key does not exist (like setdefault).
+    Returns an iterable of the value at each path (same order as keyvalues), like get_multi.
+    Mutates obj in place.
+    >>> d = {'a': 1}
+    >>> list(setdefault_multi(d, [('a', 999), ('b', 2)]))
+    [1, 2]
+    >>> d
     {'a': 1, 'b': 2}
-    >>> setdefault_multi({'debug': True}, {'debug': False, 'timeout': 30})
-    {'debug': True, 'timeout': 30}
     """
     for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        if not has(obj, k):
-            obj = update(obj, k, v, apply_transforms=apply_transforms)
-    return obj
+        yield setdefault(obj, k, v, apply_transforms=apply_transforms)
 
 
 def update_if(obj, key, val, pred=lambda val: val is None, mutable=True, apply_transforms=True):

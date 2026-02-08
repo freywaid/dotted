@@ -349,7 +349,9 @@ Most operations have `*_multi` variants for batch processing:
     {'a': {'b': 1}, 'c': {'d': 2}}
     >>> dotted.remove_multi(d, ['a', 'c'])
     {'b': 2}
-    >>> dotted.setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    >>> d = {'a': 1}; list(dotted.setdefault_multi(d, [('a', 999), ('b', 2)]))
+    [1, 2]
+    >>> d
     {'a': 1, 'b': 2}
     >>> dotted.update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2)])  # (key, val) or (key, val, pred)
     {'a': 99, 'b': 2}

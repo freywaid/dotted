@@ -139,18 +139,24 @@ def test_setdefault_nested_partial():
 # setdefault_multi
 
 def test_setdefault_multi_list():
-    result = dotted.setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
-    assert result == {'a': 1, 'b': 2}
+    d = {'a': 1}
+    result = list(dotted.setdefault_multi(d, [('a', 999), ('b', 2)]))
+    assert result == [1, 2]  # value at each path (existing 1, then set 2)
+    assert d == {'a': 1, 'b': 2}
 
 
 def test_setdefault_multi_dict():
-    result = dotted.setdefault_multi({'debug': True}, {'debug': False, 'timeout': 30})
-    assert result == {'debug': True, 'timeout': 30}
+    d = {'debug': True}
+    result = list(dotted.setdefault_multi(d, {'debug': False, 'timeout': 30}))
+    assert result == [True, 30]  # existing debug, then set timeout
+    assert d == {'debug': True, 'timeout': 30}
 
 
 def test_setdefault_multi_nested():
-    result = dotted.setdefault_multi({}, {'a.b': 1, 'a.c': 2})
-    assert result == {'a': {'b': 1, 'c': 2}}
+    d = {}
+    result = list(dotted.setdefault_multi(d, {'a.b': 1, 'a.c': 2}))
+    assert result == [1, 2]
+    assert d == {'a': {'b': 1, 'c': 2}}
 
 
 # update_multi
