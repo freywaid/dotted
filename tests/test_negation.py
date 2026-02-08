@@ -457,9 +457,9 @@ def test_setdefault_with_path_negation():
     """
     d = {'a': 1, 'b': 2}
 
-    # (!a) matches 'b', which exists, so no change
+    # (!a) matches 'b', which exists, so no change; returns get (pattern -> tuple)
     r = dotted.setdefault(d, '(!a)', 99)
-    assert r == {'a': 1, 'b': 2}
+    assert r == (2,)  # get(d, '(!a)') for pattern returns tuple of matches
 
 
 # =============================================================================

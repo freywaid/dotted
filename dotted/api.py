@@ -247,30 +247,32 @@ def has(obj, key):
 
 def setdefault(obj, key, val, apply_transforms=True):
     """
-    Set value at key only if key does not exist; return obj
+    Get value at path if it exists, else set path to val and return that value (like dict.setdefault).
     >>> d = {'hello': 'there'}
     >>> setdefault(d, 'hello', 'world')
-    {'hello': 'there'}
+    'there'
     >>> setdefault(d, 'bye', 'world')
-    {'hello': 'there', 'bye': 'world'}
+    'world'
     >>> setdefault({}, 'a.b.c', 7)
-    {'a': {'b': {'c': 7}}}
+    7
     """
     if has(obj, key):
-        return obj
-    return update(obj, key, val, apply_transforms=apply_transforms)
+        return get(obj, key, apply_transforms=apply_transforms)
+    obj = update(obj, key, val, apply_transforms=apply_transforms)
+    return get(obj, key, apply_transforms=apply_transforms)
 
 
 def setdefault_multi(obj, keyvalues, apply_transforms=True):
     """
-    Set multiple values, only where keys do not exist
+    Set multiple values, only where keys do not exist. Returns updated obj.
     >>> setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
     {'a': 1, 'b': 2}
     >>> setdefault_multi({'debug': True}, {'debug': False, 'timeout': 30})
     {'debug': True, 'timeout': 30}
     """
     for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        obj = setdefault(obj, k, v, apply_transforms=apply_transforms)
+        if not has(obj, k):
+            obj = update(obj, k, v, apply_transforms=apply_transforms)
     return obj
 
 

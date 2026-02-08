@@ -406,6 +406,70 @@ class FilterKeyValue(FilterOp):
         return type(op)(op.key, op.val)
 
 
+class FilterKeyValueNot(FilterOp):
+    """
+    Single key!=value filter (same semantics as !(key=value), but repr is key!=val for clean reassembly).
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if len(self.args) == 1 and hasattr(self.args[0], '__iter__') and not isinstance(self.args[0], (str, bytes)):
+            items = list(self.args[0])
+            self.key = items[0]
+            self.val = items[1]
+        else:
+            self.key = self.args[0]
+            self.val = self.args[1]
+
+    def __hash__(self):
+        return hash(('!=', self.key, self.val))
+
+    def __repr__(self):
+        return f'{self.key}!={self.val}'
+
+    def _eq_filtered(self, node):
+        """True if node matches key=value (same logic as FilterKeyValue.is_filtered)."""
+        if not hasattr(node, 'keys'):
+            if len(self.key.parts) == 1 and isinstance(self.key.parts[0], (Wildcard, WildcardFirst)):
+                for _ in self.val.matches((node,)):
+                    return True
+            return False
+        for val, found in self.key.get_values(node):
+            if found:
+                for vm in self.val.matches((val,)):
+                    return True
+        return False
+
+    def is_filtered(self, node):
+        return not self._eq_filtered(node)
+
+    def filtered(self, items):
+        return (item for item in items if self.is_filtered(item))
+
+    def matchable(self, op):
+        if isinstance(op, FilterKeyValueNot):
+            return True
+        if isinstance(op, FilterOr):
+            return any(self.matchable(f) for f in op.filters)
+        return False
+
+    def match(self, op):
+        if isinstance(op, FilterOr):
+            for f in op.filters:
+                m = self.match(f)
+                if m is not None:
+                    return m
+            return None
+        if not isinstance(op, FilterKeyValueNot):
+            return None
+        if not self.key.matchable(op.key) or not self.val.matchable(op.val):
+            return None
+        mk = next(self.key.matches((op.key.value,)), _marker)
+        mv = next(self.val.matches((op.val.value,)), _marker)
+        if _marker in (mk, mv):
+            return None
+        return type(op)(op.key, op.val)
+
+
 class FilterGroup(FilterOp):
     """
     Parenthesized group of filter expressions
@@ -1301,9 +1365,9 @@ class Key(CmdOp):
             pass
         return type(node)((k, v) for k, v in node.items() if k != key)
     def remove(self, node, val):
-        for k,v in self.items(node):
-            if val is ANY or v == val:
-                return self.pop(node, k)
+        to_remove = [k for k, v in self.items(node) if val is ANY or v == val]
+        for k in to_remove:
+            node = self.pop(node, k)
         return node
 
 

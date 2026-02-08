@@ -270,12 +270,12 @@ Set a value only if the key doesn't already exist. Creates nested structures as 
 
     >>> import dotted
     >>> d = {'a': 1}
-    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change
-    {'a': 1}
-    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value
-    {'a': 1, 'b': 2}
-    >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure
-    {'a': {'b': {'c': 7}}}
+    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change; returns value
+    1
+    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value; returns it
+    2
+    >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure; returns value
+    7
 
 ### Pluck
 

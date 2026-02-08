@@ -12,6 +12,7 @@ ZM = pp.ZeroOrMore
 OM = pp.OneOrMore
 at = pp.Suppress('@')
 equal = pp.Suppress('=')
+not_equal = pp.Suppress('!=')
 dot = pp.Suppress('.')
 amp = pp.Suppress('&')
 comma = pp.Suppress(',')
@@ -72,7 +73,8 @@ filter_key = pp.Group(
     _filter_key_segment + ZM(filter_key_slot | (dot + _filter_key_part))
 ).set_parse_action(el.FilterKey)
 
-# Single key=value comparison
+# Single key=value or key!=value comparison (!= keeps its own repr so reassemble looks right)
+filter_single_neq = pp.Group(filter_key + not_equal + value).set_parse_action(el.FilterKeyValueNot)
 filter_single = pp.Group(filter_key + equal + value).set_parse_action(el.FilterKeyValue)
 
 # Recursive filter expression with grouping
@@ -83,7 +85,7 @@ lparen = pp.Suppress('(')
 rparen = pp.Suppress(')')
 bang = pp.Suppress('!')
 filter_group = (lparen + filter_expr + rparen).set_parse_action(el.FilterGroup)
-filter_atom = filter_group | filter_single
+filter_atom = filter_group | filter_single_neq | filter_single
 
 # NOT: ! prefix binds tightest (higher precedence than &)
 filter_not = (bang + filter_atom).set_parse_action(el.FilterNot) | filter_atom

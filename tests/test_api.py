@@ -111,27 +111,29 @@ def test_has_pattern():
 def test_setdefault_exists():
     d = {'hello': 'there'}
     result = dotted.setdefault(d, 'hello', 'world')
-    assert result == {'hello': 'there'}  # unchanged
+    assert result == 'there'  # returns value at path, unchanged
 
 
 def test_setdefault_not_exists():
     d = {'hello': 'there'}
     result = dotted.setdefault(d, 'bye', 'world')
-    assert result == {'hello': 'there', 'bye': 'world'}
+    assert result == 'world'  # returns value we set
+    assert d == {'hello': 'there', 'bye': 'world'}
 
 
 def test_setdefault_nested():
     result = dotted.setdefault({}, 'a.b.c', 7)
-    assert result == {'a': {'b': {'c': 7}}}
+    assert result == 7  # returns value at path
 
 
 def test_setdefault_nested_partial():
     d = {'a': {'b': {'c': 1}}}
     result = dotted.setdefault(d, 'a.b.d', 2)
-    assert result == {'a': {'b': {'c': 1, 'd': 2}}}
-    # existing key unchanged
+    assert result == 2  # returns value we set
+    assert d == {'a': {'b': {'c': 1, 'd': 2}}}
+    # existing key unchanged, returns existing value
     result = dotted.setdefault(d, 'a.b.c', 999)
-    assert result == {'a': {'b': {'c': 1, 'd': 2}}}
+    assert result == 1
 
 
 # setdefault_multi
