@@ -247,31 +247,34 @@ def has(obj, key):
 
 def setdefault(obj, key, val, apply_transforms=True):
     """
-    Set value at key only if key does not exist; return obj
+    Get value at path if it exists, else set path to val and return that value (like dict.setdefault).
     >>> d = {'hello': 'there'}
     >>> setdefault(d, 'hello', 'world')
-    {'hello': 'there'}
+    'there'
     >>> setdefault(d, 'bye', 'world')
-    {'hello': 'there', 'bye': 'world'}
+    'world'
     >>> setdefault({}, 'a.b.c', 7)
-    {'a': {'b': {'c': 7}}}
+    7
     """
     if has(obj, key):
-        return obj
-    return update(obj, key, val, apply_transforms=apply_transforms)
+        return  get(obj, key, apply_transforms=apply_transforms)
+    obj = update(obj, key, val, apply_transforms=apply_transforms)
+    return get(obj, key, apply_transforms=False)
 
 
 def setdefault_multi(obj, keyvalues, apply_transforms=True):
     """
-    Set multiple values, only where keys do not exist
-    >>> setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    For each (key, value), set value at key only if key does not exist (like setdefault).
+    Returns an iterable of the value at each path (same order as keyvalues), like get_multi.
+    Mutates obj in place.
+    >>> d = {'a': 1}
+    >>> list(setdefault_multi(d, [('a', 999), ('b', 2)]))
+    [1, 2]
+    >>> d
     {'a': 1, 'b': 2}
-    >>> setdefault_multi({'debug': True}, {'debug': False, 'timeout': 30})
-    {'debug': True, 'timeout': 30}
     """
     for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        obj = setdefault(obj, k, v, apply_transforms=apply_transforms)
-    return obj
+        yield setdefault(obj, k, v, apply_transforms=apply_transforms)
 
 
 def update_if(obj, key, val, pred=lambda val: val is None, mutable=True, apply_transforms=True):

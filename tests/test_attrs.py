@@ -141,9 +141,11 @@ def test_attr_has():
 def test_attr_setdefault():
     ns = types.SimpleNamespace()
     ns.existing = 'value'
-    dotted.setdefault(ns, '@existing', 'new')
+    r = dotted.setdefault(ns, '@existing', 'new')
+    assert r == 'value'
     assert ns.existing == 'value'
-    dotted.setdefault(ns, '@new_attr', 'created')
+    r = dotted.setdefault(ns, '@new_attr', 'created')
+    assert r == 'created'
     assert ns.new_attr == 'created'
 
 

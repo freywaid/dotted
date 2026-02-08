@@ -10,6 +10,17 @@ def test_parse_lookahead_keyvalue():
     dotted.parse('a[*&id=1]')
 
 
+def test_parse_not_equal():
+    """!= parses as its own filter (same semantics as !(key=val), repr stays id!=1)."""
+    dotted.parse('hello&id!=1')
+    dotted.parse('*&status!="active"')
+    dotted.parse('a[id!=1]')
+    dotted.parse('a[*&id!=1]')
+    # key!=val keeps its own repr so reassemble stays readable
+    p = dotted.parse('*&id!=1')
+    assert str(p[0].filters[0]) == 'id!=1'
+
+
 def test_parse_filter_key_slot_path():
     """Filter keys can include slot paths (e.g. tags[*]=*) for array containment."""
     dotted.parse('[*&tags[*]=*]')
@@ -115,6 +126,169 @@ def test_get_filter_keyvalue_on_list():
 
     r = dotted.get(d, '*[hello="there"][*].id')
     assert r == (1, 2, 3)
+
+
+def test_get_filter_not_equal_on_dict():
+    """key!=value matches when key is absent or not equal to value."""
+    d = {
+        'a': {'id': 1, 'hello': 'there'},
+        'b': {'id': 2, 'hello': 'there'},
+        'c': {'id': 1, 'hello': 'other'},
+    }
+    r = dotted.get(d, '*&id!=2')
+    assert r == ({'id': 1, 'hello': 'there'}, {'id': 1, 'hello': 'other'})
+
+    r = dotted.get(d, '*&id!=1')
+    assert r == ({'id': 2, 'hello': 'there'},)
+
+    r = dotted.get(d, '*&hello!="there"')
+    assert r == ({'id': 1, 'hello': 'other'},)
+
+
+def test_get_filter_not_equal_on_list():
+    """[key!=value] filters list elements where key is absent or not equal to value."""
+    d = {
+        'a': [{'id': 1}, {'id': 2}, {'id': 3}],
+        'b': [{'id': 2}, {'id': 4}],
+    }
+    r = dotted.get(d, '*[id!=2]')
+    assert r == ([{'id': 1}, {'id': 3}], [{'id': 4}])
+
+
+def test_match_filter_not_equal():
+    """Match treats != like = for path matching (same key, different comparison)."""
+    r = dotted.match('*&id!=1', 'a&id!=1')
+    assert r == 'a&id!=1'
+    r = dotted.match('*&id!=1', 'a&id=2')
+    assert r is None  # pattern is !=, path is =
+
+
+def test_filter_not_equal_and_or():
+    """!= composes with & and , like =."""
+    d = {
+        'a': {'id': 1, 'role': 'admin'},
+        'b': {'id': 2, 'role': 'admin'},
+        'c': {'id': 1, 'role': 'user'},
+    }
+    r = dotted.get(d, '*&id!=2&role="admin"')
+    assert r == ({'id': 1, 'role': 'admin'},)
+    # OR: id!=1 yields b; id!=2 yields a,c; combined we get a, b, c
+    r = dotted.get(d, '*&id!=1,id!=2')
+    assert set(x['id'] for x in r) == {1, 2}
+
+
+def test_update_remove_filter_not_equal():
+    """update/remove with != filter (pattern: update/remove where key!=value)."""
+    d = {
+        'a': {'id': 1, 'v': 10},
+        'b': {'id': 2, 'v': 20},
+    }
+    r = dotted.update(d, '*&id!=1', 99)
+    assert r == {'a': {'id': 1, 'v': 10}, 'b': 99}
+    d2 = {'a': {'id': 1}, 'b': {'id': 2}, 'c': {'id': 3}}
+    r = dotted.remove(d2, '*&id!=2')
+    assert r == {'b': {'id': 2}}
+
+
+def test_has_filter_not_equal():
+    """has() with != filter."""
+    d = {
+        'a': {'id': 1, 'name': 'alice'},
+        'b': {'id': 2, 'name': 'bob'},
+    }
+    assert dotted.has(d, '*&id!=2') is True   # a matches
+    assert dotted.has(d, '*&id!=99') is True  # both match
+    assert dotted.has(d, '*&id!=1') is True   # b matches
+    assert dotted.has(d, 'a&id!=1') is False  # a.id is 1
+    assert dotted.has(d, 'a&id!=2') is True
+
+
+def test_expand_pluck_filter_not_equal():
+    """expand/pluck with != filter."""
+    d = {
+        'a': {'id': 1, 'type': 'admin'},
+        'b': {'id': 2, 'type': 'user'},
+        'c': {'id': 3, 'type': 'admin'},
+    }
+    r = dotted.expand(d, '*&type!="admin"')
+    assert set(r) == {'b'}
+
+    r = dotted.pluck(d, '*&id!=2')
+    assert set(k for k, _ in r) == {'a', 'c'}
+
+
+def test_setdefault_filter_not_equal():
+    """setdefault with !=: no change when path matches; returns value at path."""
+    d = {'a': {'id': 1}, 'b': {'id': 2}}
+    r = dotted.setdefault(d, 'a&id!=2', 'new')
+    assert d['a'] == {'id': 1}  # unchanged, path exists
+    assert r == {'id': 1}  # returns get (value at path)
+
+
+def test_get_chained_filter_not_equal():
+    """Chained get with != then index/key."""
+    d = {'items': [{'id': 1, 'name': 'alice'}, {'id': 2, 'name': 'bob'}]}
+    r = dotted.get(d, 'items[id!=2][0].name')
+    assert r == 'alice'
+
+
+def test_dotted_filter_key_not_equal():
+    """Dotted path in filter key with != (e.g. user.id!=2)."""
+    d = {
+        'items': [
+            {'user': {'id': 1, 'name': 'alice'}, 'value': 100},
+            {'user': {'id': 2, 'name': 'bob'}, 'value': 200},
+        ]
+    }
+    r = dotted.get(d, 'items[user.id!=2]')
+    assert r == [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
+    r = dotted.get(d, 'items[user.id!=1]')
+    assert r == [{'user': {'id': 2, 'name': 'bob'}, 'value': 200}]
+
+
+def test_filter_grouping_not_equal():
+    """!= inside grouped expressions."""
+    data = [
+        {'id': 1, 'active': True},
+        {'id': 2, 'active': False},
+        {'id': 3, 'active': True},
+    ]
+    r = dotted.get(data, '[id!=2&active=True]')
+    assert len(r) == 2
+    assert set(item['id'] for item in r) == {1, 3}
+    # AND: id!=1 and id!=3 leaves only id 2
+    r = dotted.get(data, '[id!=1&id!=3]')
+    assert len(r) == 1
+    assert r[0]['id'] == 2
+
+
+def test_filter_not_equal_first_match():
+    """First-match suffix with != (e.g. [id!=1]?)."""
+    d = {
+        'a': [{'id': 1}, {'id': 2}, {'id': 3}],
+    }
+    r = dotted.get(d, 'a[id!=1?]')
+    # First element matching id!=1 is {'id': 2}
+    flat = r[0] if isinstance(r, tuple) else r
+    (first,) = flat if isinstance(flat, list) else (flat,)
+    assert first['id'] == 2
+
+
+def test_filter_not_equal_boolean_none():
+    """!= with True/False/None values (matches absent key or not equal)."""
+    data = [
+        {'name': 'alice', 'active': True},
+        {'name': 'bob', 'active': False},
+        {'name': 'carol', 'score': None},  # no 'active' key -> matches active!=True
+    ]
+    r = dotted.get(data, '[active!=True]')
+    assert len(r) == 2  # bob (False) and carol (missing active)
+    assert set(x['name'] for x in r) == {'bob', 'carol'}
+    r = dotted.get(data, '[score!=None]')
+    assert len(r) == 2  # alice, bob (no score or score not None)
+    d = {'a': {'enabled': True}, 'b': {'enabled': None}}
+    r = dotted.get(d, '*&enabled!=None')
+    assert r == ({'enabled': True},)
 
 
 def test_update_fiter_keyvalue_on_dict():
@@ -281,9 +455,10 @@ def test_setdefault_filter_keyvalue():
         'a': {'id': 1},
         'b': {'id': 2},
     }
-    # key with filter exists - no change
+    # key with filter exists - no change, returns value at path
     r = dotted.setdefault(d, 'a&id=1', 'new')
     assert d['a'] == {'id': 1}  # unchanged
+    assert r == {'id': 1}
 
 
 def test_get_filter_chained():

@@ -270,12 +270,12 @@ Set a value only if the key doesn't already exist. Creates nested structures as 
 
     >>> import dotted
     >>> d = {'a': 1}
-    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change
-    {'a': 1}
-    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value
-    {'a': 1, 'b': 2}
-    >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure
-    {'a': {'b': {'c': 7}}}
+    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change; returns value
+    1
+    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value; returns it
+    2
+    >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure; returns value
+    7
 
 ### Pluck
 
@@ -349,7 +349,9 @@ Most operations have `*_multi` variants for batch processing:
     {'a': {'b': 1}, 'c': {'d': 2}}
     >>> dotted.remove_multi(d, ['a', 'c'])
     {'b': 2}
-    >>> dotted.setdefault_multi({'a': 1}, [('a', 999), ('b', 2)])
+    >>> d = {'a': 1}; list(dotted.setdefault_multi(d, [('a', 999), ('b', 2)]))
+    [1, 2]
+    >>> d
     {'a': 1, 'b': 2}
     >>> dotted.update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2)])  # (key, val) or (key, val, pred)
     {'a': 99, 'b': 2}

@@ -93,7 +93,7 @@ def test_match_empty():
 def test_setdefault_empty_existing():
     data = {'a': 1}
     result = dotted.setdefault(data, '', {'b': 2})
-    # Root exists, so no change
+    # Root exists, so no change; returns value at path (root)
     assert result == {'a': 1}
 
 
