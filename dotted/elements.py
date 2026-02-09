@@ -2149,14 +2149,14 @@ def _gets_opgroup_not(cur, ops, node):
     all_keys = _get_all_keys(node)
     if all_keys is None:
         return
-    
+
     is_list = not hasattr(node, 'keys') and hasattr(node, '__iter__')
-    
+
     # Collect excluded keys from all branches
     # For (!(a,b)), structure is: branches = (((a,b),),) where (a,b) is an OpGroup
     # We need to traverse into any nested OpGroups to collect all excluded keys
     excluded_keys = set()
-    
+
     def collect_excluded(op):
         """Recursively collect keys to exclude from an op."""
         if isinstance(op, OpGroup) and not isinstance(op, (OpGroupAnd, OpGroupNot)):
@@ -2174,11 +2174,11 @@ def _gets_opgroup_not(cur, ops, node):
                 excluded_keys.update(op.keys(node))
         elif hasattr(op, 'keys'):
             excluded_keys.update(op.keys(node))
-    
+
     for branch in _branches_only(cur.branches):
         if branch:
             collect_excluded(branch[0])
-    
+
     for k in all_keys:
         if k in excluded_keys:
             continue
@@ -2207,21 +2207,22 @@ def _gets_opgroup(cur, ops, node):
     If that branch didn't match, skip the CUT and try the next branch.
     """
     br = cur.branches
-    i = 0
-    while i < len(br):
+    for i in range(len(br)):
         item = br[i]
         if item is _BRANCH_CUT:
-            i += 1
             continue
         branch_ops = list(item) + list(ops)
-        if branch_ops:
-            results = list(gets(branch_ops, node))
-            if results:
-                yield from results
-                if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
-                    yield _CUT_SENTINEL
-                    return
-        i += 1
+        if not branch_ops:
+            continue
+        found = False
+        for value in gets(branch_ops, node):
+            found = True
+            yield value
+        if not found:
+            continue
+        if i < len(br) - 1 and br[i + 1] is _BRANCH_CUT:
+            yield _CUT_SENTINEL
+            return
 
 
 def gets(ops, node):
