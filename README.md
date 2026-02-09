@@ -857,9 +857,10 @@ View all registered transforms with `dotted.registry()`.
 ### The key-value filter
 
 You may filter by key-value to narrow your result set. Use `key=value` for equality and
-`key!=value` for not-equals (syntactic sugar for `!(key=value)`). You may use with __key__
-or __bracketed__ fields. Key-value fields may be disjunctively (OR) specified via the `,`
-delimiter.
+`key!=value` for not-equals (syntactic sugar for `!(key=value)`). Filter keys can be
+dotted paths and may include slice notation (e.g. `name[:5]="hello"`, `file[-3:]=".py"`).
+You may use with __key__ or __bracketed__ fields. Key-value fields may be disjunctively (OR)
+specified via the `,` delimiter.
 
 A key-value field on __key__ field looks like: `keyfield&key1=value1,key2=value2...`.
 This will return all key-value matches on a subordinate dict-like object.  For example,
@@ -939,6 +940,20 @@ Filter keys can contain dotted paths to filter on nested fields:
     [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
     >>> dotted.get(d, 'items[user.name="bob"][0].value')
     200
+
+### Slice notation in filter keys
+
+Filter keys can include slice notation so the comparison applies to a slice of the field value (prefix, suffix, or any slice). Use the same slice syntax as in paths: integers and `+` for start/stop/step.
+
+    >>> data = [
+    ...     {'name': 'hello world', 'file': 'app.py'},
+    ...     {'name': 'hi', 'file': 'readme.md'},
+    ...     {'name': 'hello', 'file': 'x.py'},
+    ... ]
+    >>> dotted.get(data, '[*&name[:5]="hello"]')
+    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
+    >>> dotted.get(data, '[*&file[-3:]=".py"]')
+    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
 
 ### The key-value first filter
 

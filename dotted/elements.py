@@ -246,7 +246,12 @@ class FilterKey(Op):
         self.value = self.parts[0].value if len(self.parts) == 1 else None
 
     def __repr__(self):
-        return '.'.join(repr(p) for p in self.parts)
+        out = []
+        for i, p in enumerate(self.parts):
+            if i and not isinstance(p, (Slot, Slice)) and not isinstance(self.parts[i - 1], (Slot, Slice)):
+                out.append('.')
+            out.append(repr(p))
+        return ''.join(out)
 
     def __hash__(self):
         return hash(self.parts)
@@ -271,6 +276,14 @@ class FilterKey(Op):
                 for v in part.values(node):
                     yield from self._get_values(v, rest)
             except (TypeError, AttributeError):
+                yield None, False
+            return
+        if isinstance(part, Slice):
+            try:
+                s = part.slice(node)
+                val = node[s]
+                yield from self._get_values(val, rest)
+            except (TypeError, AttributeError, KeyError, IndexError):
                 yield None, False
             return
         # Key-like part (Word, Wildcard, etc.)
@@ -1788,6 +1801,9 @@ class Slice(CmdOp):
         return not node[self.slice(node)]
     def default(self):
         return []
+    def matchable(self, op):
+        return isinstance(op, Slice)
+
     def match(self, op, specials=False):
         if not isinstance(op, Slice):
             return None

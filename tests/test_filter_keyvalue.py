@@ -29,6 +29,37 @@ def test_parse_filter_key_slot_path():
     dotted.parse('items[*&tags[0]=*]')
 
 
+def test_parse_filter_key_slice():
+    """Filter keys can include slice notation (prefix/suffix/substring at position)."""
+    dotted.parse('*&name[:5]="hello"')
+    dotted.parse('*&file[-3:]=".py"')
+    dotted.parse('[*&name[:5]="hello"]')
+    p = dotted.parse('*&name[:5]="hello"')
+    assert 'name[:5]' in str(p[0].filters[0])
+    assert 'hello' in str(p[0].filters[0])
+
+
+def test_get_filter_key_slice():
+    """Filter by slice of field value: prefix, suffix, or slice equals RHS."""
+    data = [
+        {'name': 'hello world', 'file': 'app.py'},
+        {'name': 'hi', 'file': 'readme.md'},
+        {'name': 'hello', 'file': 'x.py'},
+    ]
+    # prefix: name[:5] == "hello"
+    r = dotted.get(data, '[*&name[:5]="hello"]')
+    assert len(r) == 2
+    assert set(x['name'] for x in r) == {'hello world', 'hello'}
+    # suffix: file[-3:] == ".py"
+    r = dotted.get(data, '[*&file[-3:]=".py"]')
+    assert len(r) == 2
+    assert set(x['file'] for x in r) == {'app.py', 'x.py'}
+    # slice in middle
+    r = dotted.get(data, '[*&name[6:11]="world"]')
+    assert len(r) == 1
+    assert r[0]['name'] == 'hello world'
+
+
 def test_match_filter_keyvalue():
     r = dotted.match('a&id=1', 'a&id=1')
     assert r == 'a&id=1'
