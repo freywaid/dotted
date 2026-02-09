@@ -202,7 +202,10 @@ def build(obj, key):
 def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     """
     Get a value specified by the dotted key. If dotted is a pattern,
-    return a tuple of all matches
+    return a tuple of all matches.
+
+    Cut (#) in disjunction: if a branch has # and it matches, only its results
+    are returned and later branches are not tried.
     >>> d = {'hello': {'there': [1, '2', 3]}}
     >>> get(d, 'hello.there[1]|int')
     2
@@ -210,9 +213,13 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     ['2', 3]
     >>> get([{'a': 1}, {'a':2}], '[*].a')
     (1, 2)
+    >>> get({'a': 1, 'b': 2}, '(a#, b)')   # cut: first branch matches, so (1,) only
+    (1,)
+    >>> get({'b': 2}, '(a#, b)')           # a missing, so try b
+    (2,)
     """
     ops = parse(key)
-    vals = el.gets(ops, obj)
+    vals = el.iter_until_cut(el.gets(ops, obj))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )
     found = tuple(vals)
@@ -640,7 +647,7 @@ def apply_multi(obj, patterns):
             if ops in seen:
                 continue
             seen[ops] = None
-            vals = tuple(el.gets(ops, obj))
+            vals = tuple(el.iter_until_cut(el.gets(ops, obj)))
             if not vals:
                 continue
             val = ops.apply(vals[0])
