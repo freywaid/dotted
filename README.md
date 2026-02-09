@@ -856,8 +856,9 @@ View all registered transforms with `dotted.registry()`.
 
 ### The key-value filter
 
-You may filter by key-value to narrow your result set.  You may use with __key__ or
-__bracketed__ fields.  Key-value fields may be disjunctively (OR) specified via the `,`
+You may filter by key-value to narrow your result set. Use `key=value` for equality and
+`key!=value` for not-equals (syntactic sugar for `!(key=value)`). You may use with __key__
+or __bracketed__ fields. Key-value fields may be disjunctively (OR) specified via the `,`
 delimiter.
 
 A key-value field on __key__ field looks like: `keyfield&key1=value1,key2=value2...`.
@@ -1003,9 +1004,9 @@ Filters support `True`, `False`, and `None` as values:
     >>> dotted.get(data, '[score=None]')
     [{'name': 'alice', 'active': True, 'score': None}]
 
-### Filter negation
+### Filter negation and not-equals
 
-Use `!` to negate filter conditions:
+Use `!` to negate filter conditions, or `!=` as syntactic sugar for not-equals (`key!=value` ≡ `!(key=value)`):
 
     >>> data = [
     ...     {'status': 'active', 'role': 'admin'},
@@ -1013,7 +1014,11 @@ Use `!` to negate filter conditions:
     ...     {'status': 'active', 'role': 'user'},
     ... ]
 
-    # Negate simple filter - items where status != "active"
+    # Not-equals: items where status != "active"
+    >>> dotted.get(data, '[status!="active"]')
+    [{'status': 'inactive', 'role': 'user'}]
+
+    # Equivalent using negation
     >>> dotted.get(data, '[!status="active"]')
     [{'status': 'inactive', 'role': 'user'}]
 
