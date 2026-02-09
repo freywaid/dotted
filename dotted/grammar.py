@@ -184,7 +184,7 @@ def _op_group_from_parse(t):
         branch = tuple(b) if isinstance(b, (list, tuple, pp.ParseResults)) else (b,)
         out.append(branch)
         if len(item) >= 2 and item[1] == '#':
-            out.append(el.BRANCH_CUT)
+            out.append(el._BRANCH_CUT)
     return el.OpGroup(*out)
 op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(_op_group_from_parse)
 op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(

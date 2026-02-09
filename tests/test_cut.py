@@ -161,11 +161,11 @@ def test_update_op_cut_nop_first_branch_misses():
 # -----------------------------------------------------------------------------
 
 def test_iter_until_cut_stops_on_sentinel():
-    """iter_until_cut yields values until CUT_SENTINEL, then stops."""
+    """iter_until_cut yields values until _CUT_SENTINEL, then stops."""
     def gen():
         yield 1
         yield 2
-        yield el.CUT_SENTINEL
+        yield el._CUT_SENTINEL
         yield 3
 
     out = tuple(el.iter_until_cut(gen()))
@@ -173,7 +173,7 @@ def test_iter_until_cut_stops_on_sentinel():
 
 
 def test_iter_until_cut_no_sentinel():
-    """iter_until_cut yields all if no CUT_SENTINEL."""
+    """iter_until_cut yields all if no _CUT_SENTINEL."""
     out = tuple(el.iter_until_cut(iter([1, 2, 3])))
     assert out == (1, 2, 3)
 

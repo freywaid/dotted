@@ -14,15 +14,15 @@ _marker = object()
 ANY = _marker
 
 # When a branch with cut (#) matches, we yield this after its results; consumer stops.
-CUT_SENTINEL = object()
-# Structural marker: in OpGroup.branches, means "after previous branch, emit CUT_SENTINEL and stop".
-BRANCH_CUT = object()
+_CUT_SENTINEL = object()
+# Structural marker: in OpGroup.branches, means "after previous branch, emit _CUT_SENTINEL and stop".
+_BRANCH_CUT = object()
 
 
 def _branches_only(branches):
-    """Yield branch tuples from OpGroup.branches, skipping BRANCH_CUT."""
+    """Yield branch tuples from OpGroup.branches, skipping _BRANCH_CUT."""
     for b in branches:
-        if b is not BRANCH_CUT:
+        if b is not _BRANCH_CUT:
             yield b
 
 
@@ -833,16 +833,16 @@ class OpGroup(Op):
         a(.b,[])     - from a, get both a.b and a[]
         a(.b#, .c)   - from a, first branch that matches wins (cut); if .b matches, stop
 
-    branches is a sequence of (branch_tuple, BRANCH_CUT?, branch_tuple, ...).
-    BRANCH_CUT in the sequence means: after yielding from the previous branch, yield CUT_SENTINEL and stop.
+    branches is a sequence of (branch_tuple, _BRANCH_CUT?, branch_tuple, ...).
+    _BRANCH_CUT in the sequence means: after yielding from the previous branch, yield _CUT_SENTINEL and stop.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # args may contain BRANCH_CUT; normalize branch tuples
+        # args may contain _BRANCH_CUT; normalize branch tuples
         out = []
         for x in self.args:
-            if x is BRANCH_CUT:
-                out.append(BRANCH_CUT)
+            if x is _BRANCH_CUT:
+                out.append(_BRANCH_CUT)
             else:
                 b = tuple(x) if isinstance(x, (list, tuple)) else (x,)
                 out.append(b)
@@ -852,7 +852,7 @@ class OpGroup(Op):
     def __repr__(self):
         parts = []
         for item in self.branches:
-            if item is BRANCH_CUT:
+            if item is _BRANCH_CUT:
                 if parts:
                     parts[-1] += '#'
             else:
@@ -1018,7 +1018,7 @@ def _path_to_opgroup(parsed_result):
     # Convert to branches
     branches = _to_branches(inner)
 
-    # Build final branches, then sequence with BRANCH_CUT where cut_after[i]
+    # Build final branches, then sequence with _BRANCH_CUT where cut_after[i]
     final_branches = []
     for b in branches:
         if isinstance(b, OpGroupAnd):
@@ -1035,7 +1035,7 @@ def _path_to_opgroup(parsed_result):
     for i, fb in enumerate(final_branches):
         out.append(fb)
         if cut_after and i < len(cut_after) and cut_after[i]:
-            out.append(BRANCH_CUT)
+            out.append(_BRANCH_CUT)
     # (a&b) parses as PathOr(PathAnd) -> single OpGroupAnd; return it directly
     if len(out) == 1 and isinstance(out[0], OpGroupAnd):
         return out[0]
@@ -1054,7 +1054,7 @@ def _path_to_opgroup_first(parsed_result):
 def _slot_to_opgroup(parsed_result):
     """
     Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
-    Each slot item becomes a branch; # inserts BRANCH_CUT after that branch.
+    Each slot item becomes a branch; # inserts _BRANCH_CUT after that branch.
     Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial.
     """
     out = []
@@ -1070,7 +1070,7 @@ def _slot_to_opgroup(parsed_result):
         if isinstance(first, (Slot, SlotSpecial)):
             out.append((first,))
             if len(item) >= 2 and item[1] == '#':
-                out.append(BRANCH_CUT)
+                out.append(_BRANCH_CUT)
     return OpGroup(*out)
 
 
@@ -2193,9 +2193,9 @@ def _gets_opgroup_not(cur, ops, node):
 
 
 def iter_until_cut(gen):
-    """Consume a get generator until CUT_SENTINEL; yield values, stop on sentinel."""
+    """Consume a get generator until _CUT_SENTINEL; yield values, stop on sentinel."""
     for x in gen:
-        if x is CUT_SENTINEL:
+        if x is _CUT_SENTINEL:
             return
         yield x
 
@@ -2203,14 +2203,14 @@ def iter_until_cut(gen):
 def _gets_opgroup(cur, ops, node):
     """
     OpGroup (disjunction): yield all results from all branches.
-    BRANCH_CUT: only after the *previous* branch yielded results, yield CUT_SENTINEL and return.
+    _BRANCH_CUT: only after the *previous* branch yielded results, yield _CUT_SENTINEL and return.
     If that branch didn't match, skip the CUT and try the next branch.
     """
     br = cur.branches
     i = 0
     while i < len(br):
         item = br[i]
-        if item is BRANCH_CUT:
+        if item is _BRANCH_CUT:
             i += 1
             continue
         branch_ops = list(item) + list(ops)
@@ -2218,8 +2218,8 @@ def _gets_opgroup(cur, ops, node):
             results = list(gets(branch_ops, node))
             if results:
                 yield from results
-                if i + 1 < len(br) and br[i + 1] is BRANCH_CUT:
-                    yield CUT_SENTINEL
+                if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
+                    yield _CUT_SENTINEL
                     return
         i += 1
 
@@ -2380,7 +2380,7 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
 def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroup (disjunction): update each branch that matches.
-    BRANCH_CUT: after updating previous branch, return.
+    _BRANCH_CUT: after updating previous branch, return.
     When nothing matches: update first concrete path (last to first).
     """
     matched_any = False
@@ -2388,14 +2388,14 @@ def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
     i = 0
     while i < len(br):
         item = br[i]
-        if item is BRANCH_CUT:
+        if item is _BRANCH_CUT:
             i += 1
             continue
         branch_ops = list(item) + list(ops)
         if branch_ops and list(gets(branch_ops, node)):
             matched_any = True
             node = updates(branch_ops, node, val, has_defaults, _path, nop)
-            if i + 1 < len(br) and br[i + 1] is BRANCH_CUT:
+            if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
                 return node
         i += 1
     if not matched_any:
@@ -2514,19 +2514,19 @@ def _removes_opgroup_not(cur, ops, node, val):
 def _removes_opgroup(cur, ops, node, val):
     """
     OpGroup (disjunction): remove from each branch.
-    BRANCH_CUT: after removing from previous branch, return.
+    _BRANCH_CUT: after removing from previous branch, return.
     """
     br = cur.branches
     i = 0
     while i < len(br):
         item = br[i]
-        if item is BRANCH_CUT:
+        if item is _BRANCH_CUT:
             i += 1
             continue
         branch_ops = list(item) + list(ops)
         if branch_ops and list(gets(branch_ops, node)):
             node = removes(branch_ops, node, val)
-            if i + 1 < len(br) and br[i + 1] is BRANCH_CUT:
+            if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
                 return node
         i += 1
     return node
@@ -2619,14 +2619,14 @@ def expands(ops, node):
         i = 0
         while i < len(br):
             item = br[i]
-            if item is BRANCH_CUT:
+            if item is _BRANCH_CUT:
                 return
             branch_ops = list(item) + list(ops)
             if branch_ops:
                 results = list(_expands(branch_ops, node))
                 if results:
                     yield from results
-                    if i + 1 < len(br) and br[i + 1] is BRANCH_CUT:
+                    if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
                         return
             i += 1
 
