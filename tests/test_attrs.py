@@ -154,3 +154,14 @@ def test_attr_with_transform():
     ns.count = '42'
     result = dotted.get(ns, '@count|int')
     assert result == 42
+
+
+def test_format_path_attr_segment():
+    """_format_path renders attribute segments as obj@attr (no dot before @)."""
+    import dotted.elements as el
+    # Path with key then attr: obj, (@, name) -> obj@name
+    path = ['obj', ('@', 'name')]
+    assert el._format_path(path) == 'obj@name'
+    # Key, key, attr -> obj.foo@name
+    path2 = ['obj', ('.', 'foo'), ('@', 'name')]
+    assert el._format_path(path2) == 'obj.foo@name'

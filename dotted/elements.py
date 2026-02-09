@@ -2263,9 +2263,21 @@ def _is_container(obj):
             hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
 
 
+def _path_segment(cur, k, path_is_empty):
+    """Return segment to append to _path so _format_path can render .key, @attr, [i] correctly."""
+    if path_is_empty:
+        return k
+    if isinstance(cur, Attr):
+        return ('@', k)
+    if isinstance(k, int):
+        return k
+    return ('.', k)
+
+
 def _format_path(path):
     """
     Format a path list into dotted notation for error messages.
+    Segments can be: plain value (first), ('.', k), ('@', k), or int for [i].
     """
     if not path:
         return ''
@@ -2273,6 +2285,8 @@ def _format_path(path):
     for p in path:
         if isinstance(p, int):
             result.append(f'[{p}]')
+        elif isinstance(p, tuple):
+            result.append(p[0] + str(p[1]))
         elif result:
             result.append(f'.{p}')
         else:
@@ -2372,7 +2386,7 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
         except (KeyError, IndexError, AttributeError):
             continue
         if remaining_ops:
-            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [k], nop))
+            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [_path_segment(update_op, k, not _path)], nop))
         else:
             node = update_op.update(node, k, val)
     return node
@@ -2456,7 +2470,7 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
     for k, v in cur.items(node):
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k], pass_nop))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [_path_segment(cur, k, not _path)], pass_nop))
     return node
 
 
