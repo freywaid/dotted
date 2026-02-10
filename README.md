@@ -48,6 +48,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
 - Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
+- **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
 - NOP (`~`) to match without updating—e.g. `(name.~first, name.first)?` for conditional updates
 
 ## Breaking Changes
@@ -526,11 +527,12 @@ multiple keys with a shared suffix or prefix:
     >>> dotted.get(d, '(x,y).val')
     (1, 2)
 
-Path groups support three operators:
+Path groups support three operators plus cut:
 
 | Syntax | Meaning | Behavior |
 |--------|---------|----------|
 | `(a,b)` | Disjunction (OR) | Returns all values that exist |
+| `(a#, b)` | Disjunction with **cut** | First branch that matches wins; later branches not tried |
 | `(a&b)` | Conjunction (AND) | Returns values only if ALL keys exist |
 | `(!a)` | Negation (NOT) | Returns values for keys NOT matching |
 
@@ -549,10 +551,12 @@ Use `?` suffix for first-match:
     >>> dotted.get(d, '(x,a,b)?')   # first that exists
     (1,)
 
-**Cut (`#`) in disjunction:** Suffix a branch with `#` to commit to it—if that branch
-matches, its results are returned and later branches are not tried. If it doesn't
-match, the next branch is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a``
-exists; when ``a`` is missing, it tries ``b`` and returns ``(2,)``.
+#### Cut (`#`) in disjunction
+
+Suffix a branch with `#` to commit to it—if that branch matches, its results are
+returned and later branches are not tried. If it doesn't match, the next branch
+is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a`` exists; when ``a`` is
+missing, it tries ``b`` and returns ``(2,)``.
 
     >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
     (1,)
@@ -606,9 +610,11 @@ concrete path (scanning last to first) is created:
     >>> dotted.update({'a': {}}, 'a(.x,.y)', 99)   # nothing matches → creates last (.y)
     {'a': {'y': 99}}
 
-**Cut (`#`) in disjunction:** Suffix a branch with `#` so that if it matches,
-only that branch is used (get/update/remove); later branches are not tried.
-Useful for "update if exists, else append" in lists. Example with slot grouping:
+#### Cut (`#`) in disjunction
+
+Suffix a branch with `#` so that if it matches, only that branch is used
+(get/update/remove); later branches are not tried. Useful for "update if exists,
+else append" in lists. Example with slot grouping:
 
     >>> data = {'emails': [{'email': 'alice@x.com', 'verified': False}]}
     >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
