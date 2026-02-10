@@ -16,6 +16,8 @@ not_equal = pp.Suppress('!=')
 dot = pp.Suppress('.')
 amp = pp.Suppress('&')
 comma = pp.Suppress(',')
+# Optional whitespace after comma so "(a, b)" and "(.a, .b)" parse (path/op group)
+_comma_ws = comma + pp.Optional(pp.White()).suppress()
 lb = pp.Suppress('[')
 rb = pp.Suppress(']')
 colon = pp.Suppress(':')
@@ -31,7 +33,7 @@ none = pp.Literal('None').set_parse_action(el.NoneValue)
 true = pp.Literal('True').set_parse_action(el.Boolean)
 false = pp.Literal('False').set_parse_action(el.Boolean)
 
-reserved = '.[]*:|+?/=,@&()!~'
+reserved = '.[]*:|+?/=,@&()!~#'  # # is cut in path/op groups; also used in numeric_quoted
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
@@ -122,9 +124,13 @@ slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
     lambda t: el.NopWrap(el.Slice(*t[1:])) if t and t[0] == '~' else el.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
-# Slot grouping: [(*&filter, +)] for disjunction inside slots
+# Cut marker: branch suffix # means "if this branch matches, don't try later branches" (per-horn cut)
+cut_marker = L('#')
+
+# Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
 _slot_item = _slotguts.copy().set_parse_action(el.Slot) | (appender_unique | appender).copy().set_parse_action(el.SlotSpecial)
-_slot_group_inner = _slot_item + ZM(comma + _slot_item)
+_slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
+_slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
 slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
 slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(el._slot_to_opgroup_first)
 
@@ -139,8 +145,9 @@ path_not = (bang + path_group_item).set_parse_action(el.PathNot) | path_group_it
 # AND: path items joined by &
 path_group_and = (path_not + OM(amp + path_not)).set_parse_action(el.PathAnd) | path_not
 
-# OR: and-groups joined by ,
-path_group_or = (path_group_and + OM(comma + path_group_and)).set_parse_action(el.PathOr) | path_group_and
+# OR: and-groups joined by ,; (a#, b) has cut on first branch
+path_group_or_term = pp.Group(path_group_and + Opt(cut_marker))
+path_group_or = (path_group_or_term + ZM(_comma_ws + path_group_or_term)).set_parse_action(el._path_or_with_cut) | path_group_and
 path_expr <<= path_group_or
 path_group = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
 path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el._path_to_opgroup_first)
@@ -158,14 +165,30 @@ op_seq = pp.Group(OM(op_seq_item))
 
 # OpGroup with AND/OR/NOT semantics:
 # (.b,.c)  - disjunction: get both a.b and a.c
+# (.b#,.c) - disjunction with cut: first branch that matches wins (commit, don't try rest)
 # (.b&.c)  - conjunction: get both only if both exist
 # (!.b)    - negation: get all except b
 op_group_and_inner = op_seq + OM(amp + op_seq)
 op_group_and = (lparen + op_group_and_inner + rparen).set_parse_action(el.OpGroupAnd)
 
-op_group_or_inner = op_seq + ZM(comma + op_seq)
-op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(el.OpGroup)
-op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(el.OpGroupFirst)
+op_group_or_term = pp.Group(op_seq + Opt(cut_marker))
+op_group_or_inner = op_group_or_term + ZM(_comma_ws + op_group_or_term)
+def _op_group_from_parse(t):
+    items = t  # list of terms (op_group_or_inner result)
+    out = []
+    for item in items:
+        b = item[0]  # op_seq result (Group of op_seq_items)
+        if isinstance(b, (list, tuple, pp.ParseResults)) and len(b) == 1:
+            b = b[0]
+        # Unwrap so branch is always tuple of elements, never raw ParseResults
+        branch = tuple(b) if isinstance(b, (list, tuple, pp.ParseResults)) else (b,)
+        out.append(branch)
+        if len(item) >= 2 and item[1] == '#':
+            out.append(el._BRANCH_CUT)
+    return el.OpGroup(*out)
+op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(_op_group_from_parse)
+op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(
+    lambda t: el.OpGroupFirst(*_op_group_from_parse(t).branches))
 
 # Negation: (!.b) or (!(.a,.b))
 op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_action(el.OpGroupNot)

@@ -13,6 +13,18 @@ import re
 _marker = object()
 ANY = _marker
 
+# When a branch with cut (#) matches, we yield this after its results; consumer stops.
+_CUT_SENTINEL = object()
+# Structural marker: in OpGroup.branches, means "after previous branch, emit _CUT_SENTINEL and stop".
+_BRANCH_CUT = object()
+
+
+def _branches_only(branches):
+    """Yield branch tuples from OpGroup.branches, skipping _BRANCH_CUT."""
+    for b in branches:
+        if b is not _BRANCH_CUT:
+            yield b
+
 
 class Match:
     def __init__(self, val):
@@ -819,29 +831,34 @@ class OpGroup(Op):
 
     This enables syntax like:
         a(.b,[])     - from a, get both a.b and a[]
-        a(.b.c,.d)   - from a, get both a.b.c and a.d
-        x(.a,.b,.c)  - from x, get x.a, x.b, and x.c
+        a(.b#, .c)   - from a, first branch that matches wins (cut); if .b matches, stop
 
-    Each branch is a tuple of Op objects representing a path suffix.
-    When traversing, all branches are followed and their results combined.
+    branches is a sequence of (branch_tuple, _BRANCH_CUT?, branch_tuple, ...).
+    _BRANCH_CUT in the sequence means: after yielding from the previous branch, yield _CUT_SENTINEL and stop.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Each arg is a tuple of ops representing one branch
-        # Convert lists to tuples for hashability
-        self.branches = tuple(
-            tuple(branch) if isinstance(branch, list) else
-            (branch,) if not isinstance(branch, tuple) else branch
-            for branch in self.args
-        )
-        # Override args with hashable branches
+        # args may contain _BRANCH_CUT; normalize branch tuples
+        out = []
+        for x in self.args:
+            if x is _BRANCH_CUT:
+                out.append(_BRANCH_CUT)
+            else:
+                b = tuple(x) if isinstance(x, (list, tuple)) else (x,)
+                out.append(b)
+        self.branches = tuple(out)
         self.args = self.branches
 
     def __repr__(self):
-        branch_strs = []
-        for branch in self.branches:
-            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
-        return '(' + ','.join(branch_strs) + ')'
+        parts = []
+        for item in self.branches:
+            if item is _BRANCH_CUT:
+                if parts:
+                    parts[-1] += '#'
+            else:
+                s = ''.join(op.operator(top=(j == 0)) for j, op in enumerate(item))
+                parts.append(s)
+        return '(' + ','.join(parts) + ')'
 
     def __hash__(self):
         return hash(self.branches)
@@ -858,9 +875,7 @@ class OpGroupFirst(OpGroup):
     First-match operation group - returns only first matching value across all branches.
     """
     def __repr__(self):
-        branch_strs = []
-        for branch in self.branches:
-            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
+        branch_strs = [''.join(op.operator(top=(i == 0)) for i, op in enumerate(b)) for b in _branches_only(self.branches)]
         return '(' + ','.join(branch_strs) + ')?'
 
 
@@ -909,15 +924,37 @@ def _key_to_op(key_item):
     if isinstance(key_item, (OpGroup, OpGroupAnd, OpGroupFirst, OpGroupNot)):
         # Already an OpGroup from nested path grouping - shouldn't be wrapped
         return key_item
-    # It's a raw parsed value, wrap it in Key
+    # Key expects op with .matches (e.g. Const/Word); wrap raw str
+    if isinstance(key_item, str):
+        key_item = Const(key_item)
     return Key(key_item)
+
+
+def _path_or_with_cut(parse_tokens):
+    """Parse action for (a#, b): build (PathOr(keys), cut_after)."""
+    items = parse_tokens  # list of terms (path_group_or result), not parse_tokens[0]
+    keys = []
+    cut_after = []
+    for item in items:
+        if hasattr(item, '__getitem__') and not isinstance(item, (str, bytes)):
+            keys.append(item[0])
+            cut_after.append(len(item) >= 2 and item[1] == '#')
+        else:
+            keys.append(item)
+            cut_after.append(False)
+    return (PathOr(*keys), tuple(cut_after))
 
 
 def _path_to_opgroup(parsed_result):
     """
-    Convert path grouping syntax (a,b) to OpGroup.
+    Convert path grouping syntax (a,b) or (a#, b) to OpGroup.
     This makes path grouping syntactic sugar for operation grouping.
     """
+    inner = parsed_result[0] if parsed_result else None
+    cut_after = None
+    if isinstance(inner, tuple) and len(inner) == 2 and isinstance(inner[1], tuple):
+        inner, cut_after = inner
+
     def _to_branches(item):
         """Recursively convert path group items to OpGroup branches."""
         # Handle OpGroup types (from nested path group conversion)
@@ -956,7 +993,6 @@ def _path_to_opgroup(parsed_result):
             # Simple key: wrap in a list as a single-op branch
             return [tuple([_key_to_op(item)])]
 
-    inner = parsed_result[0] if parsed_result else None
     if inner is None:
         return OpGroup()
 
@@ -982,15 +1018,12 @@ def _path_to_opgroup(parsed_result):
     # Convert to branches
     branches = _to_branches(inner)
 
-    # Build final branches, handling nested OpGroupAnd/OpGroupNot
+    # Build final branches, then sequence with _BRANCH_CUT where cut_after[i]
     final_branches = []
     for b in branches:
         if isinstance(b, OpGroupAnd):
-            # Nested AND in an OR context: keep as a nested group
-            # This allows ((a&b),c) to work: a&b checked together, c separate
             final_branches.append(b)
         elif isinstance(b, OpGroupNot):
-            # Nested NOT in an OR context
             final_branches.append(b)
         elif isinstance(b, tuple):
             final_branches.append(b)
@@ -998,8 +1031,15 @@ def _path_to_opgroup(parsed_result):
             final_branches.append(tuple(b))
         else:
             final_branches.append(tuple([_key_to_op(b)]))
-
-    return OpGroup(*final_branches)
+    out = []
+    for i, fb in enumerate(final_branches):
+        out.append(fb)
+        if cut_after and i < len(cut_after) and cut_after[i]:
+            out.append(_BRANCH_CUT)
+    # (a&b) parses as PathOr(PathAnd) -> single OpGroupAnd; return it directly
+    if len(out) == 1 and isinstance(out[0], OpGroupAnd):
+        return out[0]
+    return OpGroup(*out)
 
 
 def _path_to_opgroup_first(parsed_result):
@@ -1013,14 +1053,25 @@ def _path_to_opgroup_first(parsed_result):
 
 def _slot_to_opgroup(parsed_result):
     """
-    Convert slot grouping [(*&filter, +)] to OpGroup.
-    Each slot item (Slot or SlotSpecial) becomes a branch.
+    Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
+    Each slot item becomes a branch; # inserts _BRANCH_CUT after that branch.
+    Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial.
     """
-    branches = []
+    out = []
     for item in parsed_result:
         if isinstance(item, (Slot, SlotSpecial)):
-            branches.append((item,))
-    return OpGroup(*branches)
+            out.append((item,))
+            continue
+        if not (isinstance(item, (list, tuple, pp.ParseResults)) and len(item) >= 1):
+            continue
+        first = item[0]
+        while isinstance(first, (list, tuple, pp.ParseResults)) and len(first) == 1:
+            first = first[0]
+        if isinstance(first, (Slot, SlotSpecial)):
+            out.append((first,))
+            if len(item) >= 2 and item[1] == '#':
+                out.append(_BRANCH_CUT)
+    return OpGroup(*out)
 
 
 def _slot_to_opgroup_first(parsed_result):
@@ -1877,7 +1928,13 @@ class Invert(CmdOp):
         yield node
 
 
-class NopWrap(Op):
+class Wrap(Op):
+    """Abstract base for ops that wrap another op; use .inner to get the wrapped op."""
+
+    inner = None  # subclasses set in __init__
+
+
+class NopWrap(Wrap):
     """
     Wraps a path segment so that update/remove matches but does not mutate.
     Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
@@ -2066,7 +2123,7 @@ def _gets_opgroup_first(cur, ops, node):
     """
     OpGroupFirst: yield at most one result from all branches.
     """
-    for branch in cur.branches:
+    for branch in _branches_only(cur.branches):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
@@ -2098,19 +2155,19 @@ def _gets_opgroup_not(cur, ops, node):
     all_keys = _get_all_keys(node)
     if all_keys is None:
         return
-    
+
     is_list = not hasattr(node, 'keys') and hasattr(node, '__iter__')
-    
+
     # Collect excluded keys from all branches
     # For (!(a,b)), structure is: branches = (((a,b),),) where (a,b) is an OpGroup
     # We need to traverse into any nested OpGroups to collect all excluded keys
     excluded_keys = set()
-    
+
     def collect_excluded(op):
         """Recursively collect keys to exclude from an op."""
         if isinstance(op, OpGroup) and not isinstance(op, (OpGroupAnd, OpGroupNot)):
             # It's an OpGroup (disjunction) - collect from all its branches
-            for branch in op.branches:
+            for branch in _branches_only(op.branches):
                 if branch:
                     collect_excluded(branch[0])
         elif isinstance(op, Key):
@@ -2123,11 +2180,11 @@ def _gets_opgroup_not(cur, ops, node):
                 excluded_keys.update(op.keys(node))
         elif hasattr(op, 'keys'):
             excluded_keys.update(op.keys(node))
-    
-    for branch in cur.branches:
+
+    for branch in _branches_only(cur.branches):
         if branch:
             collect_excluded(branch[0])
-    
+
     for k in all_keys:
         if k in excluded_keys:
             continue
@@ -2141,14 +2198,37 @@ def _gets_opgroup_not(cur, ops, node):
             yield val
 
 
+def iter_until_cut(gen):
+    """Consume a get generator until _CUT_SENTINEL; yield values, stop on sentinel."""
+    for x in gen:
+        if x is _CUT_SENTINEL:
+            return
+        yield x
+
+
 def _gets_opgroup(cur, ops, node):
     """
     OpGroup (disjunction): yield all results from all branches.
+    _BRANCH_CUT: only after the *previous* branch yielded results, yield _CUT_SENTINEL and return.
+    If that branch didn't match, skip the CUT and try the next branch.
     """
-    for branch in cur.branches:
-        branch_ops = list(branch) + list(ops)
-        if branch_ops:
-            yield from gets(branch_ops, node)
+    br = cur.branches
+    for i in range(len(br)):
+        item = br[i]
+        if item is _BRANCH_CUT:
+            continue
+        branch_ops = list(item) + list(ops)
+        if not branch_ops:
+            continue
+        found = False
+        for value in gets(branch_ops, node):
+            found = True
+            yield value
+        if not found:
+            continue
+        if i < len(br) - 1 and br[i + 1] is _BRANCH_CUT:
+            yield _CUT_SENTINEL
+            return
 
 
 def gets(ops, node):
@@ -2189,20 +2269,25 @@ def _is_container(obj):
             hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
 
 
-def _format_path(path):
+def _format_path(segments):
     """
-    Format a path list into dotted notation for error messages.
+    Consume an iterable of (op, k) segments and assemble the path string for error messages.
+    Uses position and op type to decide .key, @attr, [k] and no leading dot on first segment.
     """
-    if not path:
-        return ''
     result = []
-    for p in path:
-        if isinstance(p, int):
-            result.append(f'[{p}]')
-        elif result:
-            result.append(f'.{p}')
+    for i, (op, k) in enumerate(segments):
+        cur = op.inner if isinstance(op, Wrap) else op
+        first = i == 0
+        if isinstance(cur, Attr):
+            result.append('@' + str(k))
+        elif isinstance(cur, Slot):
+            result.append(f'[{k}]')
+        elif isinstance(k, int):
+            # Assume int => slot (bracket index) when op type is unknown
+            result.append(f'[{k}]')
         else:
-            result.append(str(p))
+            # Key or other key-like
+            result.append('.' + str(k) if not first else str(k))
     return ''.join(result)
 
 
@@ -2212,7 +2297,7 @@ def _is_concrete_path(branch_ops):
     Concrete paths can be created when missing; wildcard paths cannot.
     """
     for op in branch_ops:
-        cur = op.inner if isinstance(op, NopWrap) else op
+        cur = op.inner if isinstance(op, Wrap) else op
         if getattr(cur, 'is_pattern', lambda: False)():
             return False
     return True
@@ -2230,7 +2315,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
     if not _is_concrete_path(branch_ops):
         return False
     first_op = branch_ops[0]
-    cur = first_op.inner if isinstance(first_op, NopWrap) else first_op
+    cur = first_op.inner if isinstance(first_op, Wrap) else first_op
     if isinstance(cur, Key) and getattr(cur, 'filters', ()):
         return False
     return True
@@ -2240,7 +2325,7 @@ def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop):
     """
     When nothing matches in disjunction: update first concrete path (last to first).
     """
-    for branch in reversed(cur.branches):
+    for branch in reversed(list(_branches_only(cur.branches))):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
@@ -2281,7 +2366,7 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
     # Collect excluded keys - handle OpGroup for (!(a,b)) case
     if isinstance(first_op, OpGroup) and not isinstance(first_op, (OpGroupAnd, OpGroupNot)):
         excluded_keys = set()
-        for branch in first_op.branches:
+        for branch in _branches_only(first_op.branches):
             if branch and hasattr(branch[0], 'keys'):
                 excluded_keys.update(branch[0].keys(node))
         # Use a Key for updates since we need to call .update()
@@ -2298,7 +2383,7 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
         except (KeyError, IndexError, AttributeError):
             continue
         if remaining_ops:
-            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [k], nop))
+            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(update_op, k)], nop))
         else:
             node = update_op.update(node, k, val)
     return node
@@ -2307,16 +2392,24 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
 def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
     """
     OpGroup (disjunction): update each branch that matches.
+    _BRANCH_CUT: after updating previous branch, return.
     When nothing matches: update first concrete path (last to first).
     """
     matched_any = False
-    for branch in cur.branches:
-        branch_ops = list(branch) + list(ops)
-        if not branch_ops:
+    br = cur.branches
+    i = 0
+    while i < len(br):
+        item = br[i]
+        if item is _BRANCH_CUT:
+            i += 1
             continue
-        if list(gets(branch_ops, node)):
+        branch_ops = list(item) + list(ops)
+        if branch_ops and list(gets(branch_ops, node)):
             matched_any = True
             node = updates(branch_ops, node, val, has_defaults, _path, nop)
+            if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
+                return node
+        i += 1
     if not matched_any:
         return _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop)
     return node
@@ -2327,7 +2420,7 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path, nop=False):
     OpGroupFirst: update only the first branch that matches.
     When nothing matches: update first concrete path (last to first).
     """
-    for branch in cur.branches:
+    for branch in _branches_only(cur.branches):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
@@ -2374,7 +2467,7 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
     for k, v in cur.items(node):
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [k], pass_nop))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [(cur, k)], pass_nop))
     return node
 
 
@@ -2409,10 +2502,9 @@ def _removes_opgroup_not(cur, ops, node, val):
     # Collect excluded keys - handle OpGroup for (!(a,b)) case
     if isinstance(first_op, OpGroup) and not isinstance(first_op, (OpGroupAnd, OpGroupNot)):
         excluded_keys = set()
-        for branch in first_op.branches:
+        for branch in _branches_only(first_op.branches):
             if branch and hasattr(branch[0], 'keys'):
                 excluded_keys.update(branch[0].keys(node))
-        # Use a Key for removes since we need to call .pop()/.update()
         remove_op = Key(Const(''))
     else:
         excluded_keys = set(first_op.keys(node))
@@ -2434,11 +2526,21 @@ def _removes_opgroup_not(cur, ops, node, val):
 def _removes_opgroup(cur, ops, node, val):
     """
     OpGroup (disjunction): remove from each branch.
+    _BRANCH_CUT: after removing from previous branch, return.
     """
-    for branch in cur.branches:
-        branch_ops = list(branch) + list(ops)
-        if branch_ops:
+    br = cur.branches
+    i = 0
+    while i < len(br):
+        item = br[i]
+        if item is _BRANCH_CUT:
+            i += 1
+            continue
+        branch_ops = list(item) + list(ops)
+        if branch_ops and list(gets(branch_ops, node)):
             node = removes(branch_ops, node, val)
+            if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
+                return node
+        i += 1
     return node
 
 
@@ -2446,7 +2548,7 @@ def _removes_opgroup_first(cur, ops, node, val):
     """
     OpGroupFirst: remove only the first branch that matches.
     """
-    for branch in cur.branches:
+    for branch in _branches_only(cur.branches):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
@@ -2502,7 +2604,7 @@ def expands(ops, node):
         # Collect excluded keys - handle OpGroup for (!(a,b)) case
         if isinstance(first_op, OpGroup) and not isinstance(first_op, (OpGroupAnd, OpGroupNot)):
             excluded_keys = set()
-            for branch in first_op.branches:
+            for branch in _branches_only(first_op.branches):
                 if branch and hasattr(branch[0], 'keys'):
                     excluded_keys.update(branch[0].keys(node))
             concrete_op = Key(Const(''))
@@ -2525,10 +2627,20 @@ def expands(ops, node):
                 yield (concrete,)
 
     def _expands_opgroup(cur, ops, node):
-        for branch in cur.branches:
-            branch_ops = list(branch) + list(ops)
+        br = cur.branches
+        i = 0
+        while i < len(br):
+            item = br[i]
+            if item is _BRANCH_CUT:
+                return
+            branch_ops = list(item) + list(ops)
             if branch_ops:
-                yield from _expands(branch_ops, node)
+                results = list(_expands(branch_ops, node))
+                if results:
+                    yield from results
+                    if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
+                        return
+            i += 1
 
     def _expands(ops, node):
         cur, *ops = ops

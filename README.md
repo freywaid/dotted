@@ -549,6 +549,16 @@ Use `?` suffix for first-match:
     >>> dotted.get(d, '(x,a,b)?')   # first that exists
     (1,)
 
+**Cut (`#`) in disjunction:** Suffix a branch with `#` to commit to it—if that branch
+matches, its results are returned and later branches are not tried. If it doesn't
+match, the next branch is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a``
+exists; when ``a`` is missing, it tries ``b`` and returns ``(2,)``.
+
+    >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
+    (1,)
+    >>> dotted.get({'b': 2}, '(a#, b)')
+    (2,)
+
 ### Operation grouping
 
 Use parentheses to group **operation sequences** that diverge from a common point.
@@ -595,6 +605,20 @@ concrete path (scanning last to first) is created:
     {'a': {'x': 99, 'y': 99}}
     >>> dotted.update({'a': {}}, 'a(.x,.y)', 99)   # nothing matches → creates last (.y)
     {'a': {'y': 99}}
+
+**Cut (`#`) in disjunction:** Suffix a branch with `#` so that if it matches,
+only that branch is used (get/update/remove); later branches are not tried.
+Useful for "update if exists, else append" in lists. Example with slot grouping:
+
+    >>> data = {'emails': [{'email': 'alice@x.com', 'verified': False}]}
+    >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
+    {'emails': [{'email': 'alice@x.com', 'verified': True}]}
+    >>> data = {'emails': [{'email': 'other@x.com'}]}
+    >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
+    {'emails': [{'email': 'other@x.com'}, {'email': 'alice@x.com', 'verified': True}]}
+
+First branch matches items where `email="alice@x.com"` and updates them (then cut);
+if none match, the `+` branch appends the new dict.
 
 #### Conjunction (AND)
 
