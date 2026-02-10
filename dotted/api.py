@@ -27,7 +27,7 @@ def _parse(ops):
 
 def parse(key):
     """
-    Parse dotted notation
+    Parse dotted notation. Results are LRU-cached (same path string reuses cached parse).
     >>> parse('hello.there|str:"=%s"')
     Dotted([hello, there], [('str', '=%s')])
     """

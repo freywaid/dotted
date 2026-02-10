@@ -8,7 +8,21 @@ helps you do that.
 - [Safe Traversal (Optional Chaining)](#safe-traversal-optional-chaining)
 - [Why Dotted?](#why-dotted)
 - [Breaking Changes](#breaking-changes)
-- [API](#api) — [Get](#get), [Update](#update), [Remove](#remove), [Match](#match), [Expand](#expand), [Has](#has), [Mutable](#mutable), [Setdefault](#setdefault), [Pluck](#pluck), [Build](#build), [Apply](#apply), [Assemble](#assemble), [Quote](#quote), [Multi Operations](#multi-operations)
+- [API](#api)
+  - [Get](#get)
+  - [Update](#update)
+  - [Remove](#remove)
+  - [Match](#match)
+  - [Expand](#expand)
+  - [Has](#has)
+  - [Mutable](#mutable)
+  - [Setdefault](#setdefault)
+  - [Pluck](#pluck)
+  - [Build](#build)
+  - [Apply](#apply)
+  - [Assemble](#assemble)
+  - [Quote](#quote)
+  - [Multi Operations](#multi-operations)
 - [Grammar](#grammar)
 - [Patterns](#patterns)
 - [Transforms](#transforms)
@@ -16,6 +30,7 @@ helps you do that.
 - [Constants and Exceptions](#constants-and-exceptions)
 - [FAQ](#faq)
 
+<a id="safe-traversal-optional-chaining"></a>
 ## Safe Traversal (Optional Chaining)
 
 Like JavaScript's optional chaining operator (`?.`), dotted safely handles missing paths.
@@ -34,6 +49,7 @@ instead of raising an exception:
 This makes dotted ideal for safely navigating deeply nested or uncertain data structures
 without defensive coding or try/except blocks.
 
+<a id="why-dotted"></a>
 ## Why Dotted?
 
 Several Python libraries handle nested data access. Here's how dotted compares:
@@ -64,6 +80,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
 - NOP (`~`) to match without updating—e.g. `(name.~first, name.first)?` for conditional updates
 
+<a id="breaking-changes"></a>
 ## Breaking Changes
 
 ### v0.13.0
@@ -80,12 +97,16 @@ to fetch the ith value from that nested list.
     >>> dotted.get(d, 'hi.there[1]')
     2
 
+<a id="api"></a>
 ## API
 
 Probably the easiest thing to do is pydoc the api layer.
 
     $ pydoc dotted.api
 
+Parsed dotted paths are LRU-cached (after the first parse of a given path string), so repeated use of the same path string is cheap.
+
+<a id="get"></a>
 ### Get
 
 See grammar discussion below about things you can do to get data via dotted.
@@ -94,6 +115,7 @@ See grammar discussion below about things you can do to get data via dotted.
     >>> dotted.get({'a': {'b': {'c': {'d': 'nested'}}}}, 'a.b.c.d')
     'nested'
 
+<a id="update"></a>
 ### Update
 
 Update will mutate the object if it can.  It always returns the changed object though. If
@@ -177,6 +199,7 @@ be left unchanged. Combine with first-match (`?`) for conditional updates:
     >>> dotted.update(data, '(name.~first, name.first)?', 'world')  # first missing, update
     {'name': {'first': 'world'}}
 
+<a id="remove"></a>
 ### Remove
 
 You can remove a field or do so only if it matches value.  For example,
@@ -207,6 +230,7 @@ Use `pred=None` for unconditional remove (same as `remove`):
 
 Use `remove_if_multi` for batch removal with per-item pred or `(key, val, pred)`.
 
+<a id="match"></a>
 ### Match
 
 Use to match a dotted-style pattern to a field.  Partial matching is on by default.  You
@@ -226,6 +250,7 @@ With the `groups=True` parameter, you'll see how it was matched:
 In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
 matching is enabled by default).
 
+<a id="expand"></a>
 ### Expand
 
 You may wish to _expand_ all fields that match a pattern in an object.
@@ -241,6 +266,7 @@ You may wish to _expand_ all fields that match a pattern in an object.
     >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
 
+<a id="has"></a>
 ### Has
 
 Check if a key or pattern exists in an object.
@@ -254,6 +280,7 @@ Check if a key or pattern exists in an object.
     >>> dotted.has(d, 'a.*')
     True
 
+<a id="mutable"></a>
 ### Mutable
 
 Check if `update(obj, key, val)` would mutate `obj` in place. Returns `False` for
@@ -278,6 +305,7 @@ This is useful when you need to know whether to use the return value:
     ... else:
     ...     data = dotted.update(data, 'a', 2)  # use return value
 
+<a id="setdefault"></a>
 ### Setdefault
 
 Set a value only if the key doesn't already exist. Creates nested structures as needed.
@@ -291,6 +319,7 @@ Set a value only if the key doesn't already exist. Creates nested structures as 
     >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure; returns value
     7
 
+<a id="pluck"></a>
 ### Pluck
 
 Extract (key, value) pairs from an object matching a pattern.
@@ -304,6 +333,7 @@ Extract (key, value) pairs from an object matching a pattern.
     >>> dotted.pluck(d, 'nested.*')
     (('nested.x', 10),)
 
+<a id="build"></a>
 ### Build
 
 Create a default nested structure for a dotted key.
@@ -316,6 +346,7 @@ Create a default nested structure for a dotted key.
     >>> dotted.build({}, 'items[0]')
     {'items': [None]}
 
+<a id="apply"></a>
 ### Apply
 
 Apply transforms to values in an object in-place.
@@ -327,6 +358,7 @@ Apply transforms to values in an object in-place.
     >>> dotted.apply(d, '*|int')
     {'price': 99, 'quantity': 5}
 
+<a id="assemble"></a>
 ### Assemble
 
 Build a dotted notation string from a list of keys.
@@ -339,6 +371,7 @@ Build a dotted notation string from a list of keys.
     >>> dotted.assemble([7, 'hello'])
     '7.hello'
 
+<a id="quote"></a>
 ### Quote
 
 Properly quote a key for use in dotted notation.
@@ -351,6 +384,7 @@ Properly quote a key for use in dotted notation.
     >>> dotted.quote(7.5)
     "#'7.5'"
 
+<a id="multi-operations"></a>
 ### Multi Operations
 
 Most operations have `*_multi` variants for batch processing:
@@ -378,6 +412,7 @@ Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `rem
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
 `build_multi`, `pluck_multi`, `assemble_multi`.
 
+<a id="grammar"></a>
 ## Grammar
 
 Dotted notation shares similarities with python. A _dot_ `.` field expects to see a
@@ -773,6 +808,7 @@ doesn't short-circuit, so match-first is usually what you want when updating:
     >>> dotted.update({'name': {}}, '(name.~first, name.first)?', 'bob')
     {'name': {'first': 'bob'}}     # first missing, update branch matched
 
+<a id="patterns"></a>
 ## Patterns
 
 You may use dotted for pattern matching. You can match to wildcards or regular
@@ -836,6 +872,7 @@ To chain through the items, use a pattern instead:
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
 
+<a id="transforms"></a>
 ## Transforms
 
 You can optionally add transforms to the end of dotted notation. These will
@@ -897,6 +934,7 @@ Register custom transforms using `register` or the `@transform` decorator:
 
 View all registered transforms with `dotted.registry()`.
 
+<a id="filters"></a>
 ## Filters
 
 ### The key-value filter
@@ -1117,6 +1155,7 @@ value `None`):
 This works because `email=*` matches any value when the field exists, so `!email=*`
 only passes when the field is missing.
 
+<a id="constants-and-exceptions"></a>
 ## Constants and Exceptions
 
 ### ANY
@@ -1140,6 +1179,7 @@ Raised when dotted notation cannot be parsed:
     ...
     dotted.api.ParseError: Expected ']' at pos 8: '[invalid'
 
+<a id="faq"></a>
 ## FAQ
 
 ### Why do I get a tuple for my get?
