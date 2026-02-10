@@ -1928,7 +1928,13 @@ class Invert(CmdOp):
         yield node
 
 
-class NopWrap(Op):
+class Wrap(Op):
+    """Abstract base for ops that wrap another op; use .inner to get the wrapped op."""
+
+    inner = None  # subclasses set in __init__
+
+
+class NopWrap(Wrap):
     """
     Wraps a path segment so that update/remove matches but does not mutate.
     Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
@@ -2263,34 +2269,25 @@ def _is_container(obj):
             hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
 
 
-def _path_segment(cur, k, path_is_empty):
-    """Return segment to append to _path so _format_path can render .key, @attr, [i] correctly."""
-    if path_is_empty:
-        return k
-    if isinstance(cur, Attr):
-        return ('@', k)
-    if isinstance(k, int):
-        return k
-    return ('.', k)
-
-
-def _format_path(path):
+def _format_path(segments):
     """
-    Format a path list into dotted notation for error messages.
-    Segments can be: plain value (first), ('.', k), ('@', k), or int for [i].
+    Consume an iterable of (op, k) segments and assemble the path string for error messages.
+    Uses position and op type to decide .key, @attr, [k] and no leading dot on first segment.
     """
-    if not path:
-        return ''
     result = []
-    for p in path:
-        if isinstance(p, int):
-            result.append(f'[{p}]')
-        elif isinstance(p, tuple):
-            result.append(p[0] + str(p[1]))
-        elif result:
-            result.append(f'.{p}')
+    for i, (op, k) in enumerate(segments):
+        cur = op.inner if isinstance(op, Wrap) else op
+        first = i == 0
+        if isinstance(cur, Attr):
+            result.append('@' + str(k))
+        elif isinstance(cur, Slot):
+            result.append(f'[{k}]')
+        elif isinstance(k, int):
+            # Assume int => slot (bracket index) when op type is unknown
+            result.append(f'[{k}]')
         else:
-            result.append(str(p))
+            # Key or other key-like
+            result.append('.' + str(k) if not first else str(k))
     return ''.join(result)
 
 
@@ -2300,7 +2297,7 @@ def _is_concrete_path(branch_ops):
     Concrete paths can be created when missing; wildcard paths cannot.
     """
     for op in branch_ops:
-        cur = op.inner if isinstance(op, NopWrap) else op
+        cur = op.inner if isinstance(op, Wrap) else op
         if getattr(cur, 'is_pattern', lambda: False)():
             return False
     return True
@@ -2318,7 +2315,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
     if not _is_concrete_path(branch_ops):
         return False
     first_op = branch_ops[0]
-    cur = first_op.inner if isinstance(first_op, NopWrap) else first_op
+    cur = first_op.inner if isinstance(first_op, Wrap) else first_op
     if isinstance(cur, Key) and getattr(cur, 'filters', ()):
         return False
     return True
@@ -2386,7 +2383,7 @@ def _updates_opgroup_not(cur, ops, node, val, has_defaults, _path, nop=False):
         except (KeyError, IndexError, AttributeError):
             continue
         if remaining_ops:
-            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [_path_segment(update_op, k, not _path)], nop))
+            node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(update_op, k)], nop))
         else:
             node = update_op.update(node, k, val)
     return node
@@ -2470,7 +2467,7 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
     for k, v in cur.items(node):
         if v is None and ops:
             v = build_default(ops)
-        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [_path_segment(cur, k, not _path)], pass_nop))
+        node = cur.update(node, k, updates(ops, v, val, has_defaults, _path + [(cur, k)], pass_nop))
     return node
 
 
