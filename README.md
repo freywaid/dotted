@@ -3,6 +3,19 @@
 Sometimes you want to fetch data from a deeply nested data structure. Dotted notation
 helps you do that.
 
+## Table of Contents
+
+- [Safe Traversal (Optional Chaining)](#safe-traversal-optional-chaining)
+- [Why Dotted?](#why-dotted)
+- [Breaking Changes](#breaking-changes)
+- [API](#api) — [Get](#get), [Update](#update), [Remove](#remove), [Match](#match), [Expand](#expand), [Has](#has), [Mutable](#mutable), [Setdefault](#setdefault), [Pluck](#pluck), [Build](#build), [Apply](#apply), [Assemble](#assemble), [Quote](#quote), [Multi Operations](#multi-operations)
+- [Grammar](#grammar)
+- [Patterns](#patterns)
+- [Transforms](#transforms)
+- [Filters](#filters)
+- [Constants and Exceptions](#constants-and-exceptions)
+- [FAQ](#faq)
+
 ## Safe Traversal (Optional Chaining)
 
 Like JavaScript's optional chaining operator (`?.`), dotted safely handles missing paths.
@@ -341,6 +354,8 @@ Properly quote a key for use in dotted notation.
 ### Multi Operations
 
 Most operations have `*_multi` variants for batch processing:
+
+**Note:** `get_multi` returns a generator (not a list or tuple). That distinguishes it from a pattern `get`, which returns a tuple of matches. It also keeps input and output in the same style when you pass an iterator or generator of paths—lazy in, lazy out.
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'c': 3}
@@ -1124,3 +1139,27 @@ Raised when dotted notation cannot be parsed:
     Traceback (most recent call last):
     ...
     dotted.api.ParseError: Expected ']' at pos 8: '[invalid'
+
+## FAQ
+
+### Why do I get a tuple for my get?
+
+`get()` returns a **single value** for a non-pattern path and a **tuple of values** for a pattern path. A path is a pattern if:
+
+- Any path segment is a pattern (e.g. wildcard `*`, regex), or
+- The path uses path-level NOT, conjunction, or disjunction: `!(...)`, `(a&b)`, `(a, b)`.
+
+Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&*=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None."
+
+For `update` and `remove` you usually don't care: the result is the (possibly mutated) object either way. For `get`, the return shape depends on pattern vs non-pattern. Use `dotted.is_pattern(path)` if you need to branch on it.
+
+### How do I craft an efficient path?
+
+Same intent can be expressed in more or less efficient ways. Example: "match when name.first is None"
+
+- **Inefficient:** `name.*&first=None` — pattern path; iterates every key under `name`, then filters. No short-circuit.
+- **Better:** `name.*&first=None?` — same path with first-match `?`; stops after one match.
+- **Even better:** `name.first&*=None` — non-pattern path; goes straight to `name.first` and the filter only checks that key. No iteration over siblings.
+- **Most efficient (but barely):** `name.first&first=None` — same as above with a concrete filter key instead of `*`.
+
+Prefer a concrete path when it expresses what you want; use pattern + `?` when you need multiple candidates but only care about the first match.
