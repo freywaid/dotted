@@ -18,12 +18,24 @@ _CUT_SENTINEL = object()
 # Structural marker: in OpGroup.branches, means "after previous branch, emit _CUT_SENTINEL and stop".
 _BRANCH_CUT = object()
 
+# Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
+# the user's data when it is a generator/iterator (e.g. a sequence at some path, or values from
+# .items()/.values()). Only materialize (list/tuple) when we must iterate multiple times or
+# mutate-during-iterate. Use _has_any(gen) for "any match?", any(True for _ in gen) for "is empty?",
+# next(gen, sentinel) when only the first item is needed. Keeps get_multi(obj, path_iterator)
+# lazy-in/lazy-out and avoids pulling large or infinite streams into memory.
+
 
 def _branches_only(branches):
     """Yield branch tuples from OpGroup.branches, skipping _BRANCH_CUT."""
     for b in branches:
         if b is not _BRANCH_CUT:
             yield b
+
+
+def _has_any(gen):
+    """Return True if gen yields at least one item, without consuming the rest."""
+    return any(True for _ in gen)
 
 
 class Match:
@@ -1368,7 +1380,7 @@ class Key(CmdOp):
         return (v for _, v in self.items(node))
 
     def is_empty(self, node):
-        return not tuple(self.keys(node))
+        return not any(True for _ in self.keys(node))
 
     def default(self):
         if self.is_pattern():
@@ -1736,11 +1748,9 @@ class SliceFilter(CmdOp):
         return (k for k, _ in self._items(node))
 
     def _items(self, node):
-        # Filter while preserving indices
-        indexed = list(enumerate(node))
-        for idx, v in indexed:
-            # Check if this item passes all filters
-            if tuple(self.filtered((v,))):
+        # Stream over node (do not materialize); if node is a generator we avoid pulling it all.
+        for idx, v in enumerate(node):
+            if any(True for _ in self.filtered((v,))):
                 yield (idx, v)
 
     def upsert(self, node, val):
@@ -2310,7 +2320,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
     concrete path we can create. We cannot update if: filter doesn't match
     or path is a wildcard.
     """
-    if list(gets(branch_ops, node)):
+    if _has_any(gets(branch_ops, node)):
         return True
     if not _is_concrete_path(branch_ops):
         return False
@@ -2404,7 +2414,7 @@ def _updates_opgroup(cur, ops, node, val, has_defaults, _path, nop=False):
             i += 1
             continue
         branch_ops = list(item) + list(ops)
-        if branch_ops and list(gets(branch_ops, node)):
+        if branch_ops and _has_any(gets(branch_ops, node)):
             matched_any = True
             node = updates(branch_ops, node, val, has_defaults, _path, nop)
             if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
@@ -2424,7 +2434,7 @@ def _updates_opgroup_first(cur, ops, node, val, has_defaults, _path, nop=False):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        if list(gets(branch_ops, node)):
+        if _has_any(gets(branch_ops, node)):
             return updates(branch_ops, node, val, has_defaults, _path, nop)
     return _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop)
 
@@ -2479,7 +2489,7 @@ def _removes_opgroup_and(cur, ops, node, val):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        if not list(gets(branch_ops, node)):
+        if not _has_any(gets(branch_ops, node)):
             return node
     for branch in cur.branches:
         branch_ops = list(branch) + list(ops)
@@ -2536,7 +2546,7 @@ def _removes_opgroup(cur, ops, node, val):
             i += 1
             continue
         branch_ops = list(item) + list(ops)
-        if branch_ops and list(gets(branch_ops, node)):
+        if branch_ops and _has_any(gets(branch_ops, node)):
             node = removes(branch_ops, node, val)
             if i + 1 < len(br) and br[i + 1] is _BRANCH_CUT:
                 return node
@@ -2552,7 +2562,7 @@ def _removes_opgroup_first(cur, ops, node, val):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue
-        if list(gets(branch_ops, node)):
+        if _has_any(gets(branch_ops, node)):
             return removes(branch_ops, node, val)
     return node
 

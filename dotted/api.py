@@ -163,12 +163,13 @@ def mutable(obj, key):
         if _is_mutable_container(current):
             return True
 
-        # Traverse to next level
-        vals = list(op.values(current))
-        if not vals:
+        # Traverse to next level (consume only first value)
+        _marker = object()
+        first = next(op.values(current), _marker)
+        if first is _marker:
             # Path doesn't exist - would be created, but parent is immutable
             return False
-        current = vals[0]
+        current = first
 
     return False
 
@@ -642,15 +643,16 @@ def apply_multi(obj, patterns):
     {'hello': '7.0', 'there': 9.0}
     """
     seen = {}
+    _marker = object()
     for pat in patterns:
         for ops in el.expands(parse(pat), obj):
             if ops in seen:
                 continue
             seen[ops] = None
-            vals = tuple(el.iter_until_cut(el.gets(ops, obj)))
-            if not vals:
+            first = next(el.iter_until_cut(el.gets(ops, obj)), _marker)
+            if first is _marker:
                 continue
-            val = ops.apply(vals[0])
+            val = ops.apply(first)
             obj = el.updates(ops, obj, val)
     return obj
 
