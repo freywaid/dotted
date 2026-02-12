@@ -5,7 +5,7 @@ with open("README.md", "rt") as f:
 
 setuptools.setup(
     name="dotted_notation",
-    version="0.27.3",
+    version="0.27.4",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms",
