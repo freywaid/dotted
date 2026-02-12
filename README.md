@@ -23,10 +23,45 @@ helps you do that.
   - [Assemble](#assemble)
   - [Quote](#quote)
   - [Multi Operations](#multi-operations)
-- [Grammar](#grammar)
+- [Paths](#paths)
+  - [Key fields](#key-fields)
+  - [Bracketed fields](#bracketed-fields)
+  - [Attr fields](#attr-fields)
+  - [Slicing](#slicing)
+  - [Dot notation for sequence indexing](#dot-notation-for-sequence-indexing)
+  - [Empty path (root access)](#empty-path-root-access)
+- [Typing & Quoting](#typing--quoting)
+  - [Numeric types](#numeric-types)
+  - [Quoting](#quoting)
+  - [The numericize `#` operator](#the-numericize--operator)
 - [Patterns](#patterns)
-- [Transforms](#transforms)
+  - [Wildcards](#wildcards)
+  - [Regular expressions](#regular-expressions)
+  - [The match-first operator](#the-match-first-operator)
+  - [Slicing vs Patterns](#slicing-vs-patterns)
+- [Grouping](#grouping)
+  - [Operation grouping](#operation-grouping)
+  - [Path grouping](#path-grouping)
+- [Operators](#operators)
+  - [The append `+` operator](#the-append--operator)
+  - [The append-unique `+?` operator](#the-append-unique--operator)
+  - [The invert `-` operator](#the-invert---operator)
+  - [The NOP `~` operator](#the-nop--operator)
+  - [The cut `#` operator](#the-cut--operator)
+  - [The numericize `#` operator](#the-numericize--operator-1)
 - [Filters](#filters)
+  - [The key-value filter](#the-key-value-filter)
+  - [The key-value first filter](#the-key-value-first-filter)
+  - [Conjunction vs disjunction](#conjunction-vs-disjunction)
+  - [Grouping with parentheses](#grouping-with-parentheses)
+  - [Filter negation and not-equals](#filter-negation-and-not-equals)
+  - [Boolean and None filter values](#boolean-and-none-filter-values)
+  - [Filtering primitive sequences](#filtering-primitive-sequences)
+  - [Dotted filter keys](#dotted-filter-keys)
+  - [Slice notation in filter keys](#slice-notation-in-filter-keys)
+- [Transforms](#transforms)
+  - [Built-in Transforms](#built-in-transforms)
+  - [Custom Transforms](#custom-transforms)
 - [Constants and Exceptions](#constants-and-exceptions)
 - [FAQ](#faq)
 
@@ -69,6 +104,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
 | Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
+| Cut (#) short-circuit disjunction | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -78,7 +114,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
 - Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
-- NOP (`~`) to match without updating—e.g. `(name.~first, name.first)?` for conditional updates
+- NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
@@ -88,14 +124,6 @@ Several Python libraries handle nested data access. Here's how dotted compares:
   chaining multiple filters has changed. Previously, `*.id=1.name="alice"` was used for
   conjunctive (AND) filtering. Now use `*&id=1&name="alice"`. This change enables support
   for dotted paths within filter keys (e.g., `items[user.id=1]` to filter on nested fields).
-
-Let's say you have a dictionary containing a dictionary containing a list and you wish
-to fetch the ith value from that nested list.
-
-    >>> import dotted
-    >>> d = {'hi': {'there': [1, 2, 3]}}
-    >>> dotted.get(d, 'hi.there[1]')
-    2
 
 <a id="api"></a>
 ## API
@@ -109,7 +137,7 @@ Parsed dotted paths are LRU-cached (after the first parse of a given path string
 <a id="get"></a>
 ### Get
 
-See grammar discussion below about things you can do to get data via dotted.
+See the Paths, Patterns, and Operators sections below for the full notation.
 
     >>> import dotted
     >>> dotted.get({'a': {'b': {'c': {'d': 'nested'}}}}, 'a.b.c.d')
@@ -189,14 +217,14 @@ Use `update_if_multi` for batch updates with per-item `(key, val)` or `(key, val
 #### Update with NOP (~)
 
 The NOP operator `~` means "match but don't update." Use it when some matches should
-be left unchanged. Combine with first-match (`?`) for conditional updates:
+be left unchanged. Combine with cut (`#`) for conditional updates:
 
     >>> import dotted
     >>> data = {'name': {'first': 'hello'}}
-    >>> dotted.update(data, '(name.~first, name.first)?', 'world')  # first exists, NOP
+    >>> dotted.update(data, '(name.~first#, name.first)', 'world')  # first exists, NOP + cut
     {'name': {'first': 'hello'}}
     >>> data = {'name': {}}
-    >>> dotted.update(data, '(name.~first, name.first)?', 'world')  # first missing, update
+    >>> dotted.update(data, '(name.~first#, name.first)', 'world')  # first missing, update
     {'name': {'first': 'world'}}
 
 <a id="remove"></a>
@@ -412,15 +440,103 @@ Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `rem
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
 `build_multi`, `pluck_multi`, `assemble_multi`.
 
-<a id="grammar"></a>
-## Grammar
+<a id="paths"></a>
+## Paths
 
 Dotted notation shares similarities with python. A _dot_ `.` field expects to see a
 dictionary-like object (using `keys` and `__getitem__` internally).  A _bracket_ `[]`
 field is biased towards sequences (like lists or strs) but can also act on dicts.  A
-_attr_ `@` field uses `getattr/setattr/delattr`.  Dotted also support slicing notation
-as well as transforms discussed below.
+_attr_ `@` field uses `getattr/setattr/delattr`.
 
+<a id="key-fields"></a>
+### Key fields
+
+A key field is expressed as `a` or part of a dotted expression, such as `a.b`.  The
+grammar parser is permissive for what can be in a key field.  Pretty much any non-reserved
+char will match.  Note that key fields will only work on objects that have a `keys`
+method.  Basically, they work with dictionary or dictionary-like objects.
+
+    >>> import dotted
+    >>> dotted.get({'a': {'b': 'hello'}}, 'a.b')
+    'hello'
+
+If the key field starts with a space or `-`, you should either quote it OR you may use
+a `\` as the first char.
+
+<a id="bracketed-fields"></a>
+### Bracketed fields
+
+You may also use bracket notation, such as `a[0]` which does a `__getitem__` at key 0.
+The parser prefers numeric types over string types (if you wish to look up a non-numeric
+field using brackets be sure to quote it).  Bracketed fields will work with pretty much
+any object that can be looked up via `__getitem__`.
+
+    >>> import dotted
+    >>> dotted.get({'a': ['first', 'second', 'third']}, 'a[0]')
+    'first'
+    >>> dotted.get({'a': {'b': 'hello'}}, 'a["b"]')
+    'hello'
+
+<a id="attr-fields"></a>
+### Attr fields
+
+An attr field is expressed by prefixing with `@`. This will fetch data at that attribute.
+You may wonder why have this when you can just as easily use standard python to access.
+Two important reasons: nested expressions and patterns.
+
+    >>> import dotted, types
+    >>> ns = types.SimpleNamespace()
+    >>> ns.hello = {'me': 'goodbye'}
+    >>> dotted.get(ns, '@hello.me')
+    'goodbye'
+
+<a id="slicing"></a>
+### Slicing
+
+Dotted slicing works like python slicing and all that entails.
+
+    >>> import dotted
+    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
+    >>> dotted.get(d, 'hi.there[::2]')
+    [1, 3]
+    >>> dotted.get(d, '*.there[1:]')
+    ([2, 3], [5, 6])
+
+<a id="dot-notation-for-sequence-indexing"></a>
+### Dot notation for sequence indexing
+
+Numeric keys work as indices when accessing sequences (lists, tuples, strings):
+
+    >>> import dotted
+    >>> data = {'items': [10, 20, 30]}
+    >>> dotted.get(data, 'items.0')
+    10
+    >>> dotted.get(data, 'items.-1')  # negative index
+    30
+
+This is equivalent to bracket notation for existing sequences:
+
+    >>> dotted.get(data, 'items[0]')  # same result
+    10
+
+Chaining works naturally:
+
+    >>> data = {'users': [{'name': 'alice'}, {'name': 'bob'}]}
+    >>> dotted.get(data, 'users.0.name')
+    'alice'
+
+Updates and removes also work:
+
+    >>> dotted.update(data, 'users.0.name', 'ALICE')
+    >>> dotted.get(data, 'users.0.name')
+    'ALICE'
+
+**Note**: When _creating_ structures, use bracket notation for lists:
+
+    >>> dotted.build({}, 'items.0')    # creates dict: {'items': {0: None}}
+    >>> dotted.build({}, 'items[0]')   # creates list: {'items': [None]}
+
+<a id="empty-path-root-access"></a>
 ### Empty path (root access)
 
 An empty string `''` refers to the root of the data structure itself:
@@ -458,45 +574,10 @@ Other empty path operations:
     >>> dotted.pluck(data, '')
     ('', {'a': 1, 'b': 2})
 
-### Key fields
+<a id="typing--quoting"></a>
+## Typing & Quoting
 
-A key field is expressed as `a` or part of a dotted expression, such as `a.b`.  The
-grammar parser is permissive for what can be in a key field.  Pretty much any non-reserved
-char will match.  Note that key fields will only work on objects that have a `keys`
-method.  Basically, they work with dictionary or dictionary-like objects.
-
-    >>> import dotted
-    >>> dotted.get({'a': {'b': 'hello'}}, 'a.b')
-    'hello'
-
-If the key field starts with a space or `-`, you should either quote it OR you may use
-a `\` as the first char.
-
-### Bracketed fields
-
-You may also use bracket notation, such as `a[0]` which does a `__getitem__` at key 0.
-The parser prefers numeric types over string types (if you wish to look up a non-numeric
-field using brackets be sure to quote it).  Bracketed fields will work with pretty much
-any object that can be looked up via `__getitem__`.
-
-    >>> import dotted
-    >>> dotted.get({'a': ['first', 'second', 'third']}, 'a[0]')
-    'first'
-    >>> dotted.get({'a': {'b': 'hello'}}, 'a["b"]')
-    'hello'
-
-### Attr fields
-
-An attr field is expressed by prefixing with `@`. This will fetch data at that attribute.
-You may wonder why have this when you can just as easily use standard python to access.
-Two important reasons: nested expressions and patterns.
-
-    >>> import dotted, types
-    >>> ns = types.SimpleNamespace()
-    >>> ns.hello = {'me': 'goodbye'}
-    >>> dotted.get(ns, '@hello.me')
-    'goodbye'
-
+<a id="numeric-types"></a>
 ### Numeric types
 
 The parser will attempt to interpret a field numerically if it can, such as `field.1`
@@ -506,39 +587,7 @@ will interpret the `1` part numerically.
     >>> dotted.get({'7': 'me', 7: 'you'}, '7')
     'you'
 
-### Dot notation for sequence indexing
-
-Numeric keys work as indices when accessing sequences (lists, tuples, strings):
-
-    >>> import dotted
-    >>> data = {'items': [10, 20, 30]}
-    >>> dotted.get(data, 'items.0')
-    10
-    >>> dotted.get(data, 'items.-1')  # negative index
-    30
-
-This is equivalent to bracket notation for existing sequences:
-
-    >>> dotted.get(data, 'items[0]')  # same result
-    10
-
-Chaining works naturally:
-
-    >>> data = {'users': [{'name': 'alice'}, {'name': 'bob'}]}
-    >>> dotted.get(data, 'users.0.name')
-    'alice'
-
-Updates and removes also work:
-
-    >>> dotted.update(data, 'users.0.name', 'ALICE')
-    >>> dotted.get(data, 'users.0.name')
-    'ALICE'
-
-**Note**: When _creating_ structures, use bracket notation for lists:
-
-    >>> dotted.build({}, 'items.0')    # creates dict: {'items': {0: None}}
-    >>> dotted.build({}, 'items[0]')   # creates list: {'items': [None]}
-
+<a id="quoting"></a>
 ### Quoting
 
 Sometimes you need to quote a field which you can do by just putting the field in quotes.
@@ -547,6 +596,7 @@ Sometimes you need to quote a field which you can do by just putting the field i
     >>> dotted.get({'has . in it': 7}, '"has . in it"')
     7
 
+<a id="the-numericize--operator"></a>
 ### The numericize `#` operator
 
 Non-integer numeric fields may be interpreted incorrectly if they have decimal point. To
@@ -560,64 +610,82 @@ This will coerce to a numeric type (e.g. float).
     >>> dotted.get(d, 'a.#"1.2"')
     'hello'
 
-### Path grouping
+<a id="patterns"></a>
+## Patterns
 
-Use parentheses to group **keys** at any position in a path. This allows accessing
-multiple keys with a shared suffix or prefix:
+You may use dotted for pattern matching. You can match to wildcards or regular
+expressions.  You'll note that patterns always return a tuple of matches.
 
     >>> import dotted
-    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
+    >>> dotted.get(d, '*.there[2]')
+    (3, 6)
+    >>> dotted.get(d, '/h.*/.*')
+    ([1, 2, 3],)
 
-    # Group keys
-    >>> dotted.get(d, '(a,b)')
-    (1, 2)
+Dotted will return all values that match the pattern(s).
 
-    # With a shared suffix
-    >>> d = {'x': {'val': 1}, 'y': {'val': 2}}
-    >>> dotted.get(d, '(x,y).val')
-    (1, 2)
+<a id="wildcards"></a>
+### Wildcards
 
-Path groups support three operators plus cut:
+The wildcard pattern is `*`.  It will match anything.
 
-| Syntax | Meaning | Behavior |
-|--------|---------|----------|
-| `(a,b)` | Disjunction (OR) | Returns all values that exist |
-| `(a#, b)` | Disjunction with **cut** | First branch that matches wins; later branches not tried |
-| `(a&b)` | Conjunction (AND) | Returns values only if ALL keys exist |
-| `(!a)` | Negation (NOT) | Returns values for keys NOT matching |
+<a id="regular-expressions"></a>
+### Regular expressions
 
-    >>> d = {'a': 1, 'b': 2, 'c': 3}
-    >>> dotted.get(d, '(a,b)')      # OR: both
-    (1, 2)
-    >>> dotted.get(d, '(a&b)')      # AND: both must exist
-    (1, 2)
-    >>> dotted.get(d, '(a&x)')      # AND: x missing, fails
-    ()
-    >>> sorted(dotted.get(d, '(!a)'))  # NOT: all except a
-    [2, 3]
+The regex pattern is enclosed in slashes: `/regex/`. Note that if the field is a non-str,
+the regex pattern will internally match to its str representation.
 
-Use `?` suffix for first-match:
+<a id="the-match-first-operator"></a>
+### The match-first operator
 
-    >>> dotted.get(d, '(x,a,b)?')   # first that exists
-    (1,)
+You can also postfix any pattern with a `?`.  This will return only
+the first match.
 
-#### Cut (`#`) in disjunction
+    >>> import dotted
+    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
+    >>> dotted.get(d, '*?.there[2]')
+    (3,)
 
-Suffix a branch with `#` to commit to it—if that branch matches, its results are
-returned and later branches are not tried. If it doesn't match, the next branch
-is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a`` exists; when ``a`` is
-missing, it tries ``b`` and returns ``(2,)``.
+<a id="slicing-vs-patterns"></a>
+### Slicing vs Patterns
 
-    >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
-    (1,)
-    >>> dotted.get({'b': 2}, '(a#, b)')
-    (2,)
+Slicing a sequence produces a sequence and a filter on a sequence is a special
+type of slice operation. Whereas, patterns _iterate_ through items:
 
+    >>> import dotted
+    >>> data = [{'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[1:3]')
+    [{'name': 'bob'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[name="alice"]')
+    [{'name': 'alice'}, {'name': 'alice'}]
+    >>> dotted.get(data, '[*]')
+    ({'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'})
+
+Chaining after a slice accesses the result itself, not the items within it:
+
+    >>> dotted.get(data, '[1:3].name')           # accessing .name on the list
+    None
+    >>> dotted.get(data, '[name="alice"].name')  # also accessing .name on the list
+    None
+    >>> dotted.get(data, '[].name')              # .name on a raw list
+    None
+
+To chain through the items, use a pattern instead:
+
+    >>> dotted.get(data, '[*].name')
+    ('alice', 'bob', 'alice')
+    >>> dotted.get(data, '[*&name="alice"]')
+    ({'name': 'alice'}, {'name': 'alice'})
+
+<a id="grouping"></a>
+## Grouping
+
+<a id="operation-grouping"></a>
 ### Operation grouping
 
 Use parentheses to group **operation sequences** that diverge from a common point.
-Unlike path grouping (which groups keys), operation grouping groups entire operation
-chains including dots, brackets, and attrs:
+Each branch is a full operation chain including dots, brackets, and attrs:
 
     >>> import dotted
 
@@ -631,7 +699,7 @@ chains including dots, brackets, and attrs:
     >>> dotted.get(d, 'x(.a.i,.b.k)')
     (1, 3)
 
-Operation groups support the same operators as path groups:
+Operation groups support these operators:
 
 | Syntax | Meaning | Behavior |
 |--------|---------|----------|
@@ -730,17 +798,64 @@ Updates and removes apply to all non-matching keys:
 
 **Note**: For De Morgan's law with filter expressions, see the Filters section below.
 
-### Slicing
+<a id="path-grouping"></a>
+### Path grouping
 
-Dotted slicing works like python slicing and all that entails.
+Path grouping is syntactic sugar for operation grouping where each branch is a
+single key. `(a,b).c` is equivalent to `(.a,.b).c`.
 
     >>> import dotted
-    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
-    >>> dotted.get(d, 'hi.there[::2]')
-    [1, 3]
-    >>> dotted.get(d, '*.there[1:]')
-    ([2, 3], [5, 6])
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
 
+    # Group keys
+    >>> dotted.get(d, '(a,b)')
+    (1, 2)
+
+    # With a shared suffix
+    >>> d = {'x': {'val': 1}, 'y': {'val': 2}}
+    >>> dotted.get(d, '(x,y).val')
+    (1, 2)
+
+Path groups support the same operators as operation groups:
+
+| Syntax | Meaning | Behavior |
+|--------|---------|----------|
+| `(a,b)` | Disjunction (OR) | Returns all values that exist |
+| `(a#, b)` | Disjunction with **cut** | First branch that matches wins; later branches not tried |
+| `(a&b)` | Conjunction (AND) | Returns values only if ALL keys exist |
+| `(!a)` | Negation (NOT) | Returns values for keys NOT matching |
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.get(d, '(a,b)')      # OR: both
+    (1, 2)
+    >>> dotted.get(d, '(a&b)')      # AND: both must exist
+    (1, 2)
+    >>> dotted.get(d, '(a&x)')      # AND: x missing, fails
+    ()
+    >>> sorted(dotted.get(d, '(!a)'))  # NOT: all except a
+    [2, 3]
+
+Use `?` suffix for first-match:
+
+    >>> dotted.get(d, '(x,a,b)?')   # first that exists
+    (1,)
+
+#### Cut (`#`) in disjunction
+
+Suffix a branch with `#` to commit to it—if that branch matches, its results are
+returned and later branches are not tried. If it doesn't match, the next branch
+is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a`` exists; when ``a`` is
+missing, it tries ``b`` and returns ``(2,)``.
+
+    >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
+    (1,)
+    >>> dotted.get({'b': 2}, '(a#, b)')
+    (2,)
+
+<a id="operators"></a>
+## Operators
+
+<a id="the-append--operator"></a>
 ### The append `+` operator
 
 Both bracketed fields and slices support the '+' operator which refers to the end of
@@ -753,6 +868,7 @@ sequence. You may append an item or slice to the end a sequence.
     >>> dotted.update(d, '*.there[+:]', [999])
     {'hi': {'there': [1, 2, 3, 8, 999]}, 'bye': {'there': [4, 5, 6, 8, 999]}}
 
+<a id="the-append-unique--operator"></a>
 ### The append-unique `+?` operator
 
 If you want to update only _unique_ items to a list, you can use the `?`
@@ -765,6 +881,7 @@ postfix.  This will ensure that it's only added once (see match-first below).
     >>> dotted.update(items, '[+?]', 3)
     [1, 2, 3]
 
+<a id="the-invert---operator"></a>
 ### The invert `-` operator
 
 You can invert the meaning of the notation by prefixing a `-`.  For example,
@@ -777,6 +894,7 @@ to remove an item using `update`:
     >>> dotted.remove(d, '-b', 'bye again')
     {'a': 'hello', 'b': 'bye again'}
 
+<a id="the-nop--operator"></a>
 ### The NOP `~` operator
 
 The NOP operator means "match but don't update." At `update` and `remove` time, paths
@@ -797,146 +915,55 @@ NOP applies only to the segment it wraps; child segments are unaffected.
     >>> dotted.update(data, 'a.~b', 2)   # NOP at b, no change
     {'a': {'b': 1}}
 
-When combining NOP with disjunction, use match-first (`?`) so NOP wins—without
-it, disjunction updates all matching branches and the plain update overwrites.
+Combine NOP with cut (`#`) for "update only if missing" semantics—if the NOP
+branch matches, cut commits to it and skips the remaining branches:
 
-Use with first-match (`?`) for "update only if missing" semantics—disjunction
-doesn't short-circuit, so match-first is usually what you want when updating:
+    >>> dotted.update({'name': {'first': 'alice'}}, '(name.~first#, name.first)', 'bob')
+    {'name': {'first': 'alice'}}   # first existed, NOP branch matched and cut
+    >>> dotted.update({'name': {}}, '(name.~first#, name.first)', 'bob')
+    {'name': {'first': 'bob'}}     # first missing, fell through to update branch
 
-    >>> dotted.update({'name': {'first': 'alice'}}, '(name.~first, name.first)?', 'bob')
-    {'name': {'first': 'alice'}}   # first existed, NOP branch matched
-    >>> dotted.update({'name': {}}, '(name.~first, name.first)?', 'bob')
-    {'name': {'first': 'bob'}}     # first missing, update branch matched
+<a id="the-cut--operator"></a>
+### The cut `#` operator
 
-<a id="patterns"></a>
-## Patterns
-
-You may use dotted for pattern matching. You can match to wildcards or regular
-expressions.  You'll note that patterns always return a tuple of matches.
+Think of cut as an OR/disjunction short-circuit. Suffix a branch with `#`
+so that if it matches, only that branch is used and later branches are not tried.
+If it doesn't match, evaluation falls through to the next branch.
 
     >>> import dotted
-    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
-    >>> dotted.get(d, '*.there[2]')
-    (3, 6)
-    >>> dotted.get(d, '/h.*/.*')
-    ([1, 2, 3],)
+    >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
+    (1,)
+    >>> dotted.get({'b': 2}, '(a#, b)')
+    (2,)
 
-Dotted will return all values that match the pattern(s).
+This is especially useful for "update if exists, else create" patterns:
 
-### Wildcards
+    >>> data = {'emails': [{'email': 'alice@x.com', 'verified': False}]}
+    >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
+    {'emails': [{'email': 'alice@x.com', 'verified': True}]}
+    >>> data = {'emails': [{'email': 'other@x.com'}]}
+    >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
+    {'emails': [{'email': 'other@x.com'}, {'email': 'alice@x.com', 'verified': True}]}
 
-The wildcard pattern is `*`.  It will match anything.
+<a id="the-numericize--operator-1"></a>
+### The numericize `#` operator
 
-### Regular expressions
-
-The regex pattern is enclosed in slashes: `/regex/`. Note that if the field is a non-str,
-the regex pattern will internally match to its str representation.
-
-### The match-first operator
-
-You can also postfix any pattern with a `?`.  This will return only
-the first match.
-
-    >>> import dotted
-    >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
-    >>> dotted.get(d, '*?.there[2]')
-    (3,)
-
-### Slicing vs Patterns
-
-Slicing a sequence produces a sequence and a filter on a sequence is a special
-type of slice operation. Whereas, patterns _iterate_ through items:
+The `#` prefix is also used to coerce a quoted field to a numeric type (e.g. float).
+This is needed when a non-integer numeric key contains a decimal point that would
+otherwise be parsed as a path separator. See [Typing & Quoting](#the-numericize--operator)
+for full details.
 
     >>> import dotted
-    >>> data = [{'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'}]
-    >>> dotted.get(data, '[1:3]')
-    [{'name': 'bob'}, {'name': 'alice'}]
-    >>> dotted.get(data, '[name="alice"]')
-    [{'name': 'alice'}, {'name': 'alice'}]
-    >>> dotted.get(data, '[*]')
-    ({'name': 'alice'}, {'name': 'bob'}, {'name': 'alice'})
-
-Chaining after a slice accesses the result itself, not the items within it:
-
-    >>> dotted.get(data, '[1:3].name')           # accessing .name on the list
-    None
-    >>> dotted.get(data, '[name="alice"].name')  # also accessing .name on the list
-    None
-    >>> dotted.get(data, '[].name')              # .name on a raw list
-    None
-
-To chain through the items, use a pattern instead:
-
-    >>> dotted.get(data, '[*].name')
-    ('alice', 'bob', 'alice')
-    >>> dotted.get(data, '[*&name="alice"]')
-    ({'name': 'alice'}, {'name': 'alice'})
-
-<a id="transforms"></a>
-## Transforms
-
-You can optionally add transforms to the end of dotted notation. These will
-be applied on `get` and `update`. Transforms are separated by the `|` operator
-and multiple may be chained together. Transforms may be parameterized using
-the `:` operator.
-
-    >>> import dotted
-    >>> d = [1, '2', 3]
-    >>> dotted.get(d, '[1]')
-    '2'
-    >>> dotted.get(d, '[1]|int')
-    2
-    >>> dotted.get(d, '[0]|str:number=%d')
-    'number=1'
-
-You may register new transforms via either `register` or the `@transform`
-decorator.
-
-### Built-in Transforms
-
-| Transform | Parameters | Description |
-|-----------|------------|-------------|
-| `str` | `fmt`, `raises` | Convert to string. Optional format: `\|str:Hello %s` |
-| `int` | `base`, `raises` | Convert to int. Optional base: `\|int:16` for hex |
-| `float` | `raises` | Convert to float |
-| `decimal` | `raises` | Convert to `Decimal` |
-| `none` | values... | Return `None` if falsy or matches values: `\|none::null:empty` |
-| `strip` | `chars`, `raises` | Strip whitespace or specified chars |
-| `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
-| `lowercase` | `raises` | Convert string to lowercase |
-| `uppercase` | `raises` | Convert string to uppercase |
-| `add` | `rhs` | Add value: `\|add:10` |
-| `list` | `raises` | Convert to list |
-| `tuple` | `raises` | Convert to tuple |
-| `set` | `raises` | Convert to set |
-
-The `raises` parameter causes the transform to raise an exception on failure instead of
-returning the original value:
-
-    >>> import dotted
-    >>> dotted.get({'n': 'hello'}, 'n|int')      # fails silently
+    >>> d = {'a': {1.2: 'hello', 1: {2: 'fooled you'}}}
+    >>> dotted.get(d, 'a.1.2')
+    'fooled you'
+    >>> dotted.get(d, 'a.#"1.2"')
     'hello'
-    >>> dotted.get({'n': 'hello'}, 'n|int::raises')  # raises ValueError
-    Traceback (most recent call last):
-    ...
-    ValueError: invalid literal for int() with base 10: 'hello'
-
-### Custom Transforms
-
-Register custom transforms using `register` or the `@transform` decorator:
-
-    >>> import dotted
-    >>> @dotted.transform('double')
-    ... def double(val):
-    ...     return val * 2
-    >>> dotted.get({'n': 5}, 'n|double')
-    10
-
-View all registered transforms with `dotted.registry()`.
 
 <a id="filters"></a>
 ## Filters
 
+<a id="the-key-value-filter"></a>
 ### The key-value filter
 
 You may filter by key-value to narrow your result set. Use `key=value` for equality and
@@ -975,69 +1002,7 @@ This will return all items in a list that match key-value filter.  For example,
     >>> dotted.get(d, '*[hello="there"][*].id')
     (1, 2, 3)
 
-### Filtering primitive sequences
-
-For lists of primitive values (not dicts), use `[*=value]` to filter by value:
-
-    >>> data = [None, 1, 2, 3]
-    >>> dotted.get(data, '[*=None]')
-    [None]
-    >>> dotted.get(data, '[*=1]')
-    [1]
-
-This works with booleans, strings, and regex patterns:
-
-    >>> data = [True, False, True, None]
-    >>> dotted.get(data, '[*=True]')
-    [True, True]
-    >>> dotted.get(data, '[*=False]')
-    [False]
-
-    >>> words = ['hello', 'world', 'help', 'foo']
-    >>> dotted.get(words, '[*="hello"]')
-    ['hello']
-    >>> dotted.get(words, '[*=/hel.*/]')  # regex value
-    ['hello', 'help']
-
-Negation works too:
-
-    >>> dotted.get(data, '[!*=None]')  # everything except None
-    [True, False, True]
-
-**Note**: Python equality applies, so `1 == True` and `0 == False`:
-
-    >>> dotted.get([True, 1, False, 0], '[*=True]')
-    [True, 1]
-
-### Dotted filter keys
-
-Filter keys can contain dotted paths to filter on nested fields:
-
-    >>> d = {
-    ...     'items': [
-    ...         {'user': {'id': 1, 'name': 'alice'}, 'value': 100},
-    ...         {'user': {'id': 2, 'name': 'bob'}, 'value': 200},
-    ...     ]
-    ... }
-    >>> dotted.get(d, 'items[user.id=1]')
-    [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
-    >>> dotted.get(d, 'items[user.name="bob"][0].value')
-    200
-
-### Slice notation in filter keys
-
-Filter keys can include slice notation so the comparison applies to a slice of the field value (prefix, suffix, or any slice). Use the same slice syntax as in paths: integers and `+` for start/stop/step.
-
-    >>> data = [
-    ...     {'name': 'hello world', 'file': 'app.py'},
-    ...     {'name': 'hi', 'file': 'readme.md'},
-    ...     {'name': 'hello', 'file': 'x.py'},
-    ... ]
-    >>> dotted.get(data, '[*&name[:5]="hello"]')
-    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
-    >>> dotted.get(data, '[*&file[-3:]=".py"]')
-    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
-
+<a id="the-key-value-first-filter"></a>
 ### The key-value first filter
 
 You can have it match first by appending a `?` to the end of the filter.
@@ -1049,6 +1014,7 @@ You can have it match first by appending a `?` to the end of the filter.
     >>> dotted.get(d, 'a[hello="there"?]')
     [{'id': 1, 'hello': 'there'}]
 
+<a id="conjunction-vs-disjunction"></a>
 ### Conjunction vs disjunction
 
 To _conjunctively_ connect filters use the `&` operator. Filters offer the ability to act
@@ -1061,6 +1027,7 @@ For example, given
 Note that this gives you the ability to have a key filter multiple values, such as:
 `*&key1=value1,key2=value2`.
 
+<a id="grouping-with-parentheses"></a>
 ### Grouping with parentheses
 
 Use parentheses to control precedence in complex filter expressions:
@@ -1089,19 +1056,7 @@ OR groups inside AND expressions.
 
 To use literal parentheses in keys, quote them: `"(key)"`.
 
-### Boolean and None filter values
-
-Filters support `True`, `False`, and `None` as values:
-
-    >>> data = [
-    ...     {'name': 'alice', 'active': True, 'score': None},
-    ...     {'name': 'bob', 'active': False, 'score': 100},
-    ... ]
-    >>> dotted.get(data, '[active=True]')
-    [{'name': 'alice', 'active': True, 'score': None}]
-    >>> dotted.get(data, '[score=None]')
-    [{'name': 'alice', 'active': True, 'score': None}]
-
+<a id="filter-negation-and-not-equals"></a>
 ### Filter negation and not-equals
 
 Use `!` to negate filter conditions, or `!=` as syntactic sugar for not-equals (`key!=value` ≡ `!(key=value)`):
@@ -1155,6 +1110,150 @@ value `None`):
 This works because `email=*` matches any value when the field exists, so `!email=*`
 only passes when the field is missing.
 
+<a id="boolean-and-none-filter-values"></a>
+### Boolean and None filter values
+
+Filters support `True`, `False`, and `None` as values:
+
+    >>> data = [
+    ...     {'name': 'alice', 'active': True, 'score': None},
+    ...     {'name': 'bob', 'active': False, 'score': 100},
+    ... ]
+    >>> dotted.get(data, '[active=True]')
+    [{'name': 'alice', 'active': True, 'score': None}]
+    >>> dotted.get(data, '[score=None]')
+    [{'name': 'alice', 'active': True, 'score': None}]
+
+<a id="filtering-primitive-sequences"></a>
+### Filtering primitive sequences
+
+For lists of primitive values (not dicts), use `[*=value]` to filter by value:
+
+    >>> data = [None, 1, 2, 3]
+    >>> dotted.get(data, '[*=None]')
+    [None]
+    >>> dotted.get(data, '[*=1]')
+    [1]
+
+This works with booleans, strings, and regex patterns:
+
+    >>> data = [True, False, True, None]
+    >>> dotted.get(data, '[*=True]')
+    [True, True]
+    >>> dotted.get(data, '[*=False]')
+    [False]
+
+    >>> words = ['hello', 'world', 'help', 'foo']
+    >>> dotted.get(words, '[*="hello"]')
+    ['hello']
+    >>> dotted.get(words, '[*=/hel.*/]')  # regex value
+    ['hello', 'help']
+
+Negation works too:
+
+    >>> dotted.get(data, '[!*=None]')  # everything except None
+    [True, False, True]
+
+**Note**: Python equality applies, so `1 == True` and `0 == False`:
+
+    >>> dotted.get([True, 1, False, 0], '[*=True]')
+    [True, 1]
+
+<a id="dotted-filter-keys"></a>
+### Dotted filter keys
+
+Filter keys can contain dotted paths to filter on nested fields:
+
+    >>> d = {
+    ...     'items': [
+    ...         {'user': {'id': 1, 'name': 'alice'}, 'value': 100},
+    ...         {'user': {'id': 2, 'name': 'bob'}, 'value': 200},
+    ...     ]
+    ... }
+    >>> dotted.get(d, 'items[user.id=1]')
+    [{'user': {'id': 1, 'name': 'alice'}, 'value': 100}]
+    >>> dotted.get(d, 'items[user.name="bob"][0].value')
+    200
+
+<a id="slice-notation-in-filter-keys"></a>
+### Slice notation in filter keys
+
+Filter keys can include slice notation so the comparison applies to a slice of the field value (prefix, suffix, or any slice). Use the same slice syntax as in paths: integers and `+` for start/stop/step.
+
+    >>> data = [
+    ...     {'name': 'hello world', 'file': 'app.py'},
+    ...     {'name': 'hi', 'file': 'readme.md'},
+    ...     {'name': 'hello', 'file': 'x.py'},
+    ... ]
+    >>> dotted.get(data, '[*&name[:5]="hello"]')
+    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
+    >>> dotted.get(data, '[*&file[-3:]=".py"]')
+    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
+
+<a id="transforms"></a>
+## Transforms
+
+You can optionally add transforms to the end of dotted notation. These will
+be applied on `get` and `update`. Transforms are separated by the `|` operator
+and multiple may be chained together. Transforms may be parameterized using
+the `:` operator.
+
+    >>> import dotted
+    >>> d = [1, '2', 3]
+    >>> dotted.get(d, '[1]')
+    '2'
+    >>> dotted.get(d, '[1]|int')
+    2
+    >>> dotted.get(d, '[0]|str:number=%d')
+    'number=1'
+
+You may register new transforms via either `register` or the `@transform`
+decorator.
+
+<a id="built-in-transforms"></a>
+### Built-in Transforms
+
+| Transform | Parameters | Description |
+|-----------|------------|-------------|
+| `str` | `fmt`, `raises` | Convert to string. Optional format: `\|str:Hello %s` |
+| `int` | `base`, `raises` | Convert to int. Optional base: `\|int:16` for hex |
+| `float` | `raises` | Convert to float |
+| `decimal` | `raises` | Convert to `Decimal` |
+| `none` | values... | Return `None` if falsy or matches values: `\|none::null:empty` |
+| `strip` | `chars`, `raises` | Strip whitespace or specified chars |
+| `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
+| `lowercase` | `raises` | Convert string to lowercase |
+| `uppercase` | `raises` | Convert string to uppercase |
+| `add` | `rhs` | Add value: `\|add:10` |
+| `list` | `raises` | Convert to list |
+| `tuple` | `raises` | Convert to tuple |
+| `set` | `raises` | Convert to set |
+
+The `raises` parameter causes the transform to raise an exception on failure instead of
+returning the original value:
+
+    >>> import dotted
+    >>> dotted.get({'n': 'hello'}, 'n|int')      # fails silently
+    'hello'
+    >>> dotted.get({'n': 'hello'}, 'n|int::raises')  # raises ValueError
+    Traceback (most recent call last):
+    ...
+    ValueError: invalid literal for int() with base 10: 'hello'
+
+<a id="custom-transforms"></a>
+### Custom Transforms
+
+Register custom transforms using `register` or the `@transform` decorator:
+
+    >>> import dotted
+    >>> @dotted.transform('double')
+    ... def double(val):
+    ...     return val * 2
+    >>> dotted.get({'n': 5}, 'n|double')
+    10
+
+View all registered transforms with `dotted.registry()`.
+
 <a id="constants-and-exceptions"></a>
 ## Constants and Exceptions
 
@@ -1187,7 +1286,7 @@ Raised when dotted notation cannot be parsed:
 `get()` returns a **single value** for a non-pattern path and a **tuple of values** for a pattern path. A path is a pattern if:
 
 - Any path segment is a pattern (e.g. wildcard `*`, regex), or
-- The path uses path-level NOT, conjunction, or disjunction: `!(...)`, `(a&b)`, `(a, b)`.
+- The path uses operation or path grouping: disjunction `(.a,.b)` / `(a,b)`, conjunction `(.a&.b)` / `(a&b)`, or negation `(!.a)` / `(!a)`.
 
 Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&*=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None."
 
