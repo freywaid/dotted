@@ -187,3 +187,77 @@ def test_nop_slot_style():
     # [~1].v: NOP at [1] (don't replace list item), then update .v under it
     r2 = dotted.update([{'v': 0}, {'v': 99}], '[~1].v', 1)
     assert r2[1]['v'] == 1  # .v updated; nop applied only at [1] segment
+
+
+def test_nop_slot_group_parse():
+    """NOP (~) inside slot groups parses correctly (was ParseError before fix)."""
+    p = dotted.parse('[(~*#, +)]')
+    assert p is not None
+    p2 = dotted.parse('[(~*&x=1#, +)]')
+    assert p2 is not None
+    p3 = dotted.parse('[(~*&email=/(?i)alice/#, +)]')
+    assert p3 is not None
+
+
+def test_nop_slot_group_update():
+    """NOP slot group without continuation: [(~*#, +)] prevents item replacement."""
+    # Existing items: NOP preserves, cut prevents append
+    data = [{'x': 1}, {'x': 2}]
+    r = dotted.update(copy.deepcopy(data), '[(~*#, +)]', {'x': 3})
+    assert r == [{'x': 1}, {'x': 2}]  # NOP: items not replaced
+
+    # Empty list: NOP branch doesn't match, append fires
+    r2 = dotted.update([], '[(~*#, +)]', {'x': 3})
+    assert r2 == [{'x': 3}]
+
+
+def test_nop_slot_group_subpath():
+    """NOP at slot level doesn't prevent sub-path updates (NOP only protects the slot item)."""
+    data = [{'x': 1}, {'x': 2}]
+    # NOP on [*] but .x still updates through the matched items
+    r = dotted.update(copy.deepcopy(data), '[(~*#, +)].x', 99)
+    assert len(r) == 2  # cut prevented append
+    assert r[0]['x'] == 99  # .x updated (NOP only protects slot, not sub-paths)
+    assert r[1]['x'] == 99
+
+
+def test_nop_continuation_op_group():
+    """NOP on operation group in continuation position: x~(.a,.b)"""
+    # Should parse without error
+    p = dotted.parse('x~(.a,.b)')
+    assert p is not None
+
+    # Functional: x~(.a,.b) should get both .a and .b but NOP (no update)
+    data = {'x': {'a': 1, 'b': 2}}
+    assert dotted.get(data, 'x~(.a,.b)') == (1, 2)
+
+    # Update: NOP means don't update through the group
+    r = dotted.update(copy.deepcopy(data), 'x~(.a,.b)', 99)
+    assert r['x']['a'] == 1  # NOP preserved
+    assert r['x']['b'] == 2  # NOP preserved
+
+    # Without NOP, update goes through
+    r2 = dotted.update(copy.deepcopy(data), 'x(.a,.b)', 99)
+    assert r2['x']['a'] == 99
+    assert r2['x']['b'] == 99
+
+
+def test_nop_continuation_op_group_assemble():
+    """Round-trip parse/assemble for x~(.a,.b)"""
+    p = dotted.parse('x~(.a,.b)')
+    s = dotted.assemble(p.ops)
+    assert '~' in s
+    # Re-parse the assembled form to verify it's valid
+    p2 = dotted.parse(s)
+    assert p2 is not None
+
+
+def test_nop_continuation_op_group_first():
+    """NOP on operation group first in continuation: x~(.a,.b)?"""
+    p = dotted.parse('x~(.a,.b)?')
+    assert p is not None
+
+    data = {'x': {'a': 1, 'b': 2}}
+    r = dotted.update(copy.deepcopy(data), 'x~(.a,.b)?', 99)
+    assert r['x']['a'] == 1  # NOP preserved
+    assert r['x']['b'] == 2  # NOP preserved

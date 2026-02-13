@@ -1067,11 +1067,12 @@ def _slot_to_opgroup(parsed_result):
     """
     Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
     Each slot item becomes a branch; # inserts _BRANCH_CUT after that branch.
-    Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial.
+    Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
     """
+    _slot_types = (Slot, SlotSpecial, NopWrap)
     out = []
     for item in parsed_result:
-        if isinstance(item, (Slot, SlotSpecial)):
+        if isinstance(item, _slot_types):
             out.append((item,))
             continue
         if not (isinstance(item, (list, tuple, pp.ParseResults)) and len(item) >= 1):
@@ -1079,7 +1080,7 @@ def _slot_to_opgroup(parsed_result):
         first = item[0]
         while isinstance(first, (list, tuple, pp.ParseResults)) and len(first) == 1:
             first = first[0]
-        if isinstance(first, (Slot, SlotSpecial)):
+        if isinstance(first, _slot_types):
             out.append((first,))
             if len(item) >= 2 and item[1] == '#':
                 out.append(_BRANCH_CUT)

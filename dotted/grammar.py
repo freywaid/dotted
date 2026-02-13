@@ -128,7 +128,9 @@ slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceF
 cut_marker = L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
-_slot_item = _slotguts.copy().set_parse_action(el.Slot) | (appender_unique | appender).copy().set_parse_action(el.SlotSpecial)
+_slot_item_plain = _slotguts.copy().set_parse_action(el.Slot)
+_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: el.NopWrap(el.Slot(*t[1:])))
+_slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(el.SlotSpecial)
 _slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
 _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
 slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
@@ -207,7 +209,8 @@ _dot_nop = ((dot + tilde) | (tilde + dot)) + (path_grouped | keycmd)
 _dot_nop = _dot_nop.set_parse_action(lambda t: el.NopWrap(t[-1]))
 _dot_plain = (dot + (path_grouped | keycmd)).set_parse_action(lambda t: t[0])
 _dot_segment = _dot_nop | _dot_plain
-multi = OM(_dot_segment | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | op_grouped)
+_nop_op_grouped = (tilde + op_grouped).set_parse_action(lambda t: el.NopWrap(t[1]))
+multi = OM(_dot_segment | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | _nop_op_grouped | op_grouped)
 invert = Opt(L('-').set_parse_action(el.Invert))
 dotted = invert + dotted_top + ZM(multi)
 
