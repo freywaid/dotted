@@ -56,7 +56,7 @@ helps you do that.
   - [Grouping with parentheses](#grouping-with-parentheses)
   - [Filter negation and not-equals](#filter-negation-and-not-equals)
   - [Boolean and None filter values](#boolean-and-none-filter-values)
-  - [Filtering primitive sequences](#filtering-primitive-sequences)
+  - [Value guard](#value-guard)
   - [Dotted filter keys](#dotted-filter-keys)
   - [Slice notation in filter keys](#slice-notation-in-filter-keys)
 - [Transforms](#transforms)
@@ -118,6 +118,15 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
+
+### v0.28.0
+- **`[*=value]` on primitive lists no longer works** — use `[*]=value` (value guard) instead.
+  `[*=value]` is a SliceFilter that tests *keys* of dict-like items; primitives have no keys,
+  so it now correctly returns `[]`.
+- **`[!*=value]` on primitive lists no longer works** — use `[*]!=value` instead.
+- **`*&*=value` no longer matches primitives** — use `*=value` (value guard) instead.
+- Existing `[*=value]` on dicts/objects is unchanged.
+- Existing `&` filter behavior on dict-like nodes is unchanged.
 
 ### v0.13.0
 - **Filter conjunction operator changed from `.` to `&`**: The conjunction operator for
@@ -1124,40 +1133,58 @@ Filters support `True`, `False`, and `None` as values:
     >>> dotted.get(data, '[score=None]')
     [{'name': 'alice', 'active': True, 'score': None}]
 
-<a id="filtering-primitive-sequences"></a>
-### Filtering primitive sequences
+<a id="value-guard"></a>
+### Value guard
 
-For lists of primitive values (not dicts), use `[*=value]` to filter by value:
+A **value guard** tests the value at a path and yields it only if it matches.
+Use `key=value` or `[slot]=value` after accessing a field:
 
-    >>> data = [None, 1, 2, 3]
-    >>> dotted.get(data, '[*=None]')
-    [None]
-    >>> dotted.get(data, '[*=1]')
-    [1]
+    >>> d = {'first': 7, 'last': 3}
+    >>> dotted.get(d, 'first=7')
+    7
+    >>> dotted.get(d, 'first=3')   # no match
+    >>> dotted.get(d, '*=7')
+    (7,)
+    >>> dotted.pluck(d, '*=7')
+    (('first', 7),)
 
-This works with booleans, strings, and regex patterns:
+For lists of primitive values, use `[*]=value`:
 
-    >>> data = [True, False, True, None]
-    >>> dotted.get(data, '[*=True]')
-    [True, True]
-    >>> dotted.get(data, '[*=False]')
-    [False]
+    >>> data = [1, 7, 3, 7]
+    >>> dotted.get(data, '[*]=7')
+    (7, 7)
+    >>> dotted.get(data, '[0]=1')
+    1
 
-    >>> words = ['hello', 'world', 'help', 'foo']
-    >>> dotted.get(words, '[*="hello"]')
-    ['hello']
-    >>> dotted.get(words, '[*=/hel.*/]')  # regex value
-    ['hello', 'help']
+Guards support all value types: numbers, `None`, `True`/`False`, strings, regex, and `*`:
 
-Negation works too:
+    >>> dotted.get([None, 1, 2], '[*]=None')
+    (None,)
+    >>> dotted.get(['hello', 'world', 'help'], '[*]="hello"')
+    ('hello',)
+    >>> dotted.get(['hello', 'world', 'help'], '[*]=/hel.*/')
+    ('hello', 'help')
 
-    >>> dotted.get(data, '[!*=None]')  # everything except None
-    [True, False, True]
+Use `!=` for negation:
+
+    >>> dotted.get([True, False, None, 1, 2], '[*]!=True')
+    (False, None, 2)
+    >>> dotted.get({'a': 7, 'b': 3}, '*!=7')
+    (3,)
+
+Guards compose with continuation (dot paths):
+
+    >>> dotted.get({'a': {'first': 7}}, 'a.first=7')
+    7
+
+**Note**: `[*=value]` (equals inside brackets) is a SliceFilter — it tests *keys* of each
+dict-like list item. `[*]=value` (equals outside brackets) is a value guard — it tests
+the item values directly. For primitive lists, use `[*]=value`.
 
 **Note**: Python equality applies, so `1 == True` and `0 == False`:
 
-    >>> dotted.get([True, 1, False, 0], '[*=True]')
-    [True, 1]
+    >>> dotted.get([True, 1, False, 0], '[*]=True')
+    (True, True, 1)
 
 <a id="dotted-filter-keys"></a>
 ### Dotted filter keys
@@ -1288,7 +1315,7 @@ Raised when dotted notation cannot be parsed:
 - Any path segment is a pattern (e.g. wildcard `*`, regex), or
 - The path uses operation or path grouping: disjunction `(.a,.b)` / `(a,b)`, conjunction `(.a&.b)` / `(a&b)`, or negation `(!.a)` / `(!a)`.
 
-Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&*=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None."
+Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&first=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None." Value guards (e.g. `name.first=None`) also preserve the pattern/non-pattern status of the underlying path segment.
 
 For `update` and `remove` you usually don't care: the result is the (possibly mutated) object either way. For `get`, the return shape depends on pattern vs non-pattern. Use `dotted.is_pattern(path)` if you need to branch on it.
 
@@ -1298,7 +1325,7 @@ Same intent can be expressed in more or less efficient ways. Example: "match whe
 
 - **Inefficient:** `name.*&first=None` — pattern path; iterates every key under `name`, then filters. No short-circuit.
 - **Better:** `name.*&first=None?` — same path with first-match `?`; stops after one match.
-- **Even better:** `name.first&*=None` — non-pattern path; goes straight to `name.first` and the filter only checks that key. No iteration over siblings.
-- **Most efficient (but barely):** `name.first&first=None` — same as above with a concrete filter key instead of `*`.
+- **Even better:** `name.first=None` — value guard; non-pattern path; goes straight to `name.first` and tests the value directly.
+- **Also good:** `name.first&first=None` — non-pattern path with a concrete filter key.
 
 Prefer a concrete path when it expresses what you want; use pattern + `?` when you need multiple candidates but only care about the first match.
