@@ -402,10 +402,6 @@ class FilterKeyValue(FilterOp):
 
     def is_filtered(self, node):
         if not hasattr(node, 'keys'):
-            # For primitives with wildcard key, match the value itself
-            if len(self.key.parts) == 1 and isinstance(self.key.parts[0], (Wildcard, WildcardFirst)):
-                for _ in self.val.matches((node,)):
-                    return True
             return False
         for val, found in self.key.get_values(node):
             if found:
@@ -466,9 +462,6 @@ class FilterKeyValueNot(FilterOp):
     def _eq_filtered(self, node):
         """True if node matches key=value (same logic as FilterKeyValue.is_filtered)."""
         if not hasattr(node, 'keys'):
-            if len(self.key.parts) == 1 and isinstance(self.key.parts[0], (Wildcard, WildcardFirst)):
-                for _ in self.val.matches((node,)):
-                    return True
             return False
         for val, found in self.key.get_values(node):
             if found:
@@ -2003,6 +1996,99 @@ class NopWrap(Wrap):
     def match(self, op, specials=False):
         if not hasattr(self.inner, 'match'):
             return None
+        try:
+            return self.inner.match(op, specials=specials)
+        except TypeError:
+            return self.inner.match(op)
+
+
+def _guard_repr(guard):
+    """
+    Produce the repr string for a guard value (the RHS of key=value).
+    """
+    return repr(guard)
+
+
+class ValueGuard(Wrap):
+    """
+    Wraps Key/Slot with a direct value test: key=value, [slot]=value.
+    """
+
+    def __init__(self, inner, guard, negate=False, *args, **kwargs):
+        super().__init__(inner, *args, **kwargs)
+        self.inner = inner    # Key or Slot
+        self.guard = guard    # value op (Numeric, String, Wildcard, Regex, etc.)
+        self.negate = negate
+
+    def __repr__(self):
+        eq = '!=' if self.negate else '='
+        return f'{self.inner!r}{eq}{self.guard!r}'
+
+    def __hash__(self):
+        return hash(('guard', self.inner, self.guard, self.negate))
+
+    def __eq__(self, other):
+        return (isinstance(other, ValueGuard) and self.inner == other.inner
+                and self.guard == other.guard and self.negate == other.negate)
+
+    def _guard_matches(self, val):
+        """
+        True if val matches the guard value.
+        """
+        matched = any(True for _ in self.guard.matches((val,)))
+        return not matched if self.negate else matched
+
+    def operator(self, top=False):
+        eq = '!=' if self.negate else '='
+        return self.inner.operator(top) + eq + _guard_repr(self.guard)
+
+    def is_pattern(self):
+        return self.inner.is_pattern()
+
+    def default(self):
+        return self.inner.default()
+
+    def is_empty(self, node):
+        return self.inner.is_empty(node)
+
+    def values(self, node):
+        return (v for v in self.inner.values(node) if self._guard_matches(v))
+
+    def items(self, node):
+        return ((k, v) for k, v in self.inner.items(node) if self._guard_matches(v))
+
+    def keys(self, node):
+        return (k for k, v in self.inner.items(node) if self._guard_matches(v))
+
+    def upsert(self, node, val):
+        # Only update entries where guard matches
+        matched_keys = set(self.keys(node))
+        if not matched_keys:
+            return node
+        # Delegate per-key update to inner
+        for k in matched_keys:
+            node = self.inner.update(node, k, val)
+        return node
+
+    def update(self, node, key, val):
+        return self.inner.update(node, key, val)
+
+    def remove(self, node, val):
+        # Only remove entries where guard matches
+        to_remove = [(k, v) for k, v in self.inner.items(node) if self._guard_matches(v)]
+        for k, v in reversed(to_remove):
+            if val is ANY or v == val:
+                node = self.inner.pop(node, k)
+        return node
+
+    def pop(self, node, key):
+        return self.inner.pop(node, key)
+
+    def concrete(self, val):
+        return self.inner.concrete(val)
+
+    def match(self, op, specials=False):
+        # Guard ignored for structural matching — delegate to inner
         try:
             return self.inner.match(op, specials=specials)
         except TypeError:
