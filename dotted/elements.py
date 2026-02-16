@@ -871,6 +871,25 @@ class OpGroup(Op):
     def is_pattern(self):
         return True
 
+    def default(self):
+        """
+        Derive default from the first branch's first op, so auto-creation works
+        (e.g. slot group [(*&filter#, +)] defaults to []).
+        """
+        for branch in _branches_only(self.branches):
+            if branch:
+                first_op = branch[0]
+                # Unwrap NopWrap/ValueGuard to find the underlying op
+                inner = first_op
+                while isinstance(inner, (NopWrap, ValueGuard)):
+                    inner = inner.inner
+                # Slot groups operate on lists
+                if isinstance(inner, Slot):
+                    return []
+                if hasattr(first_op, 'default'):
+                    return first_op.default()
+        return {}
+
     def operator(self, top=False):
         return self.__repr__()
 
