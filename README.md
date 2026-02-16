@@ -64,6 +64,9 @@ helps you do that.
   - [Custom Transforms](#custom-transforms)
 - [Constants and Exceptions](#constants-and-exceptions)
 - [FAQ](#faq)
+  - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
+  - [How do I craft an efficient path?](#how-do-i-craft-an-efficient-path)
+  - [Why do I get a RuntimeError when updating with a slice filter?](#why-do-i-get-a-runtimeerror-when-updating-with-a-slice-filter)
 
 <a id="safe-traversal-optional-chaining"></a>
 ## Safe Traversal (Optional Chaining)
@@ -1329,3 +1332,9 @@ Same intent can be expressed in more or less efficient ways. Example: "match whe
 - **Also good:** `name.first&first=None` — non-pattern path with a concrete filter key.
 
 Prefer a concrete path when it expresses what you want; use pattern + `?` when you need multiple candidates but only care about the first match.
+
+### Why do I get a RuntimeError when updating with a slice filter?
+
+A slice filter like `[id=1]` returns the **filtered sublist** as a single value — it operates on the list itself, not on individual items. Updating that sublist in place is ambiguous: the matching items may be at non-contiguous indices, so there's no clean way to splice a replacement back into the original.
+
+But you probably don't want to update a slice filter anyway — instead, use a pattern like `[*&id=1]` which walks the items individually and updates each match in place.
