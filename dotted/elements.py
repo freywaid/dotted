@@ -2003,12 +2003,16 @@ class NopWrap(Wrap):
 
 
 def _guard_repr(guard):
-    """Produce the repr string for a guard value (the RHS of key=value)."""
+    """
+    Produce the repr string for a guard value (the RHS of key=value).
+    """
     return repr(guard)
 
 
 class ValueGuard(Wrap):
-    """Wraps Key/Slot with a direct value test: key=value, [slot]=value."""
+    """
+    Wraps Key/Slot with a direct value test: key=value, [slot]=value.
+    """
 
     def __init__(self, inner, guard, negate=False, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
@@ -2028,7 +2032,9 @@ class ValueGuard(Wrap):
                 and self.guard == other.guard and self.negate == other.negate)
 
     def _guard_matches(self, val):
-        """True if val matches the guard value."""
+        """
+        True if val matches the guard value.
+        """
         matched = any(True for _ in self.guard.matches((val,)))
         return not matched if self.negate else matched
 
