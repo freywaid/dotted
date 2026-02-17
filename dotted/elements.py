@@ -2788,6 +2788,13 @@ def quote(key, as_key=True):
 
 
 def assemble(ops, start=0, pedantic=False):
+    """
+    Reassemble ops into a dotted notation string.
+
+    By default, strips a redundant trailing [] (e.g. hello[] -> hello)
+    unless it follows another [] (hello[][] is preserved as-is).
+    Set pedantic=True to always preserve trailing [].
+    """
     parts = []
     top = True
     for op in itertools.islice(ops, start, None):
