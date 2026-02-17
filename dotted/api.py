@@ -218,6 +218,14 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     (1,)
     >>> get({'b': 2}, '(a#, b)')           # a missing, so try b
     (2,)
+
+    Recursive traversal with ** (all depths) and *key (chain-following):
+    >>> get({'a': {'b': {'c': 1}}, 'x': {'b': {'c': 2}}}, '**.c')
+    (1, 2)
+    >>> get({'b': {'b': {'c': 1}}}, '*b.c')
+    (1,)
+    >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
+    (7,)
     """
     ops = parse(key)
     vals = el.iter_until_cut(el.gets(ops, obj))
@@ -381,6 +389,10 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
     >>> update({'name': {}}, '(name.~first, name.first)?', 'bob')
     {'name': {'first': 'bob'}}
 
+    Recursive update with value guard:
+    >>> update({'a': {'b': 7, 'c': 3}, 'd': 7}, '**=7', 99)
+    {'a': {'b': 99, 'c': 3}, 'd': 99}
+
     Use mutable=False to prevent mutation of the original object:
     >>> d = {'a': 1}
     >>> result = update(d, 'a', 2, mutable=False)
@@ -480,6 +492,10 @@ def remove(obj, key, val=ANY, mutable=True):
     >>> remove({}, '-hello.there', [2])
     {'hello': {'there': [2]}}
 
+    Recursive remove with value guard:
+    >>> remove({'a': {'b': 7, 'c': 3}, 'd': 7}, '**=7')
+    {'a': {'c': 3}}
+
     Use mutable=False to prevent mutation of the original object:
     >>> d = {'a': 1, 'b': 2}
     >>> result = remove(d, 'a', mutable=False)
@@ -565,6 +581,13 @@ def match(pattern, key, groups=False, partial=True):
     ('hello.there.bye', ('hello.there.bye',))
     >>> match('hello.*', 'hello.there.bye', groups=True)
     ('hello.there.bye', ('hello', 'there.bye'))
+
+    Recursive patterns:
+    >>> match('**.c', 'a.b.c')
+    'a.b.c'
+    >>> match('*b', 'b.b.b')
+    'b.b.b'
+    >>> match('*b', 'a.b.c')
     """
     def returns(r, matches):
         return (r, tuple(matches)) if groups else r

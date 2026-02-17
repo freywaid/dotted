@@ -39,6 +39,13 @@ helps you do that.
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
+- [Recursive Traversal](#recursive-traversal)
+  - [Recursive wildcard `**`](#recursive-wildcard-)
+  - [Chain-following `*key`](#chain-following-key)
+  - [Depth slicing](#depth-slicing)
+  - [Recursive with value guard](#recursive-with-value-guard)
+  - [Recursive update and remove](#recursive-update-and-remove)
+  - [Recursive match](#recursive-match)
 - [Grouping](#grouping)
   - [Operation grouping](#operation-grouping)
   - [Path grouping](#path-grouping)
@@ -689,6 +696,109 @@ To chain through the items, use a pattern instead:
     ('alice', 'bob', 'alice')
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
+
+<a id="recursive-traversal"></a>
+## Recursive Traversal
+
+The recursive operator traverses nested data structures at all depths. `**` is the
+recursive wildcard (visits all nodes), and `*key` follows chains of a specific key.
+
+<a id="recursive-wildcard-"></a>
+### Recursive wildcard `**`
+
+`**` visits every value at every depth, yielding all non-container values:
+
+    >>> import dotted
+    >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
+    >>> dotted.get(d, '**')
+    ({'b': {'c': 1}}, {'c': 1}, 1, {'y': 2}, 2)
+
+Use `**` with continuation to find a key at any depth:
+
+    >>> dotted.get(d, '**.c')
+    (1,)
+
+Use `**?` to get only the first match:
+
+    >>> dotted.get(d, '**?')
+    ({'b': {'c': 1}},)
+
+<a id="chain-following-key"></a>
+### Chain-following `*key`
+
+`*key` follows chains where the same key name repeats at successive levels:
+
+    >>> d = {'b': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ({'b': {'c': 1}}, {'c': 1})
+    >>> dotted.get(d, '*b.c')
+    (1,)
+
+The chain stops when the key no longer matches:
+
+    >>> d = {'a': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ()
+
+<a id="depth-slicing"></a>
+### Depth slicing
+
+Control which depths are visited using slice notation. Depth 0 is the values of
+the first-level keys. Lists increment depth (their elements are one level deeper).
+
+    >>> d = {'a': {'x': 1}, 'b': {'y': {'z': 2}}}
+    >>> dotted.get(d, '**:0')
+    ({'x': 1}, {'y': {'z': 2}})
+    >>> dotted.get(d, '**:1')
+    (1, {'z': 2})
+
+Use negative indices to count from the leaf. `**:-1` returns leaves only,
+`**:-2` returns the penultimate level:
+
+    >>> dotted.get(d, '**:-1')
+    (1, 2)
+
+Range slicing works like Python slices: `**:start:stop` and `**:::step`:
+
+    >>> dotted.get(d, '**:0:1')
+    ({'x': 1}, 1, {'y': {'z': 2}}, {'z': 2})
+
+<a id="recursive-with-value-guard"></a>
+### Recursive with value guard
+
+Combine `**` with value guards to find specific values at any depth:
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': {'e': 7}}
+    >>> dotted.get(d, '**=7')
+    (7, 7)
+    >>> dotted.get(d, '**!=7')
+    ({'b': 7, 'c': 3}, 3, {'e': 7})
+
+<a id="recursive-update-and-remove"></a>
+### Recursive update and remove
+
+Recursive operators work with `update` and `remove`:
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': 7}
+    >>> dotted.update(d, '**=7', 99)
+    {'a': {'b': 99, 'c': 3}, 'd': 99}
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': 7}
+    >>> dotted.remove(d, '**=7')
+    {'a': {'c': 3}}
+
+<a id="recursive-match"></a>
+### Recursive match
+
+Recursive patterns work with `match`. `**` matches any key path, `*key` matches
+chains of a specific key:
+
+    >>> dotted.match('**.c', 'a.b.c')
+    'a.b.c'
+    >>> dotted.match('*b', 'b.b.b')
+    'b.b.b'
+    >>> dotted.match('*b', 'a.b.c') is None
+    True
 
 <a id="grouping"></a>
 ## Grouping

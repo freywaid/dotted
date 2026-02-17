@@ -2522,7 +2522,8 @@ class Recursive(CmdOp):
                 (self.depth_stop is not None and self.depth_stop < 0))
 
     def in_depth_range(self, depth, max_dtl=0):
-        """Check if depth is within the configured depth range.
+        """
+        Check if depth is within the configured depth range.
 
         Args:
             depth: current depth (0-based from first keys)
@@ -2569,12 +2570,16 @@ class Recursive(CmdOp):
         return depth >= eff_start
 
     def _matching_keys(self, node):
-        """Yield (key, value) pairs for keys matching inner pattern in a mapping."""
+        """
+        Yield (key, value) pairs for keys matching inner pattern in a mapping.
+        """
         for k in self.inner.matches(node.keys()):
             yield k, node[k]
 
     def _max_depth_to_leaf(self, node):
-        """Compute max depth to leaf from this node (structural, ignores filters/depth range)."""
+        """
+        Compute max depth to leaf from this node (structural, ignores filters/depth range).
+        """
         if is_mapping(node):
             child_depths = [self._max_depth_to_leaf(v) for k, v in self._matching_keys(node)]
             if child_depths:
@@ -2689,7 +2694,9 @@ class Recursive(CmdOp):
 
 
 class RecursiveFirst(Recursive):
-    """First-match variant of Recursive -- yields only the first result."""
+    """
+    First-match variant of Recursive -- yields only the first result.
+    """
 
     def __repr__(self):
         return super().__repr__() + '?'
