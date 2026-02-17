@@ -40,8 +40,8 @@ helps you do that.
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
 - [Recursive Traversal](#recursive-traversal)
+  - [The recursive operator `*`](#the-recursive-operator-)
   - [Recursive wildcard `**`](#recursive-wildcard-)
-  - [Chain-following `*key`](#chain-following-key)
   - [Depth slicing](#depth-slicing)
   - [Recursive with value guard](#recursive-with-value-guard)
   - [Recursive update and remove](#recursive-update-and-remove)
@@ -700,15 +700,41 @@ To chain through the items, use a pattern instead:
 <a id="recursive-traversal"></a>
 ## Recursive Traversal
 
-The recursive operator traverses nested data structures at all depths. `**` is the
-recursive wildcard (visits all nodes), and `*key` follows chains of a specific key.
+The recursive operator `*` traverses nested data structures by following keys
+that match a pattern at successive levels.
+
+<a id="the-recursive-operator-"></a>
+### The recursive operator `*`
+
+`*pattern` recurses into values whose keys match the pattern. It follows chains
+of matching keys — at each level, if a key matches, its value is yielded and
+the traversal continues into that value:
+
+    >>> import dotted
+    >>> d = {'b': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ({'b': {'c': 1}}, {'c': 1})
+    >>> dotted.get(d, '*b.c')
+    (1,)
+
+The chain stops when the key no longer matches:
+
+    >>> d = {'a': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ()
+
+The inner pattern can be any key pattern — a literal key, a wildcard, or a regex:
+
+    >>> d = {'x1': {'x2': 1}, 'y': 2}
+    >>> dotted.get(d, '*/x.*/')
+    ({'x2': 1}, 1)
 
 <a id="recursive-wildcard-"></a>
 ### Recursive wildcard `**`
 
-`**` visits every value at every depth, yielding all non-container values:
+`**` is shorthand for `*` with a wildcard inner — it matches all keys and visits
+every value at every depth:
 
-    >>> import dotted
     >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
     >>> dotted.get(d, '**')
     ({'b': {'c': 1}}, {'c': 1}, 1, {'y': 2}, 2)
@@ -722,23 +748,6 @@ Use `**?` to get only the first match:
 
     >>> dotted.get(d, '**?')
     ({'b': {'c': 1}},)
-
-<a id="chain-following-key"></a>
-### Chain-following `*key`
-
-`*key` follows chains where the same key name repeats at successive levels:
-
-    >>> d = {'b': {'b': {'c': 1}}}
-    >>> dotted.get(d, '*b')
-    ({'b': {'c': 1}}, {'c': 1})
-    >>> dotted.get(d, '*b.c')
-    (1,)
-
-The chain stops when the key no longer matches:
-
-    >>> d = {'a': {'b': {'c': 1}}}
-    >>> dotted.get(d, '*b')
-    ()
 
 <a id="depth-slicing"></a>
 ### Depth slicing
