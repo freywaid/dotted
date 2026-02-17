@@ -2592,7 +2592,7 @@ class Recursive(CmdOp):
                 return max(child_depths) + 1
         return 0
 
-    def _walk_recursive(self, ops, node, paths, depth=0):
+    def _walk_recursive(self, ops, node, paths, depth=0, prefix=()):
         if is_mapping(node):
             iterable = self._matching_keys(node)
             matched = True
@@ -2605,24 +2605,24 @@ class Recursive(CmdOp):
             return
 
         for k, v in iterable:
+            cp = prefix + (concrete(k),) if paths else None
             if not matched or not any(True for _ in self.filtered((v,))):
-                yield from self._walk_recursive(ops, v, paths, depth + 1)
+                yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
-                yield from self._walk_recursive(ops, v, paths, depth + 1)
+                yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
                 continue
             if not ops:
-                yield ((concrete(k),) if paths else None, v)
+                yield (cp, v)
             else:
                 for sub_path, sub_val in walk(ops, v, paths):
                     if sub_path is _CUT_SENTINEL:
                         yield (_CUT_SENTINEL, None)
                         return
-                    cp = (concrete(k),) + sub_path if paths else None
-                    yield (cp, sub_val)
+                    yield (cp + sub_path if paths else None, sub_val)
             # Always recurse into children
-            yield from self._walk_recursive(ops, v, paths, depth + 1)
+            yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
 
     def walk(self, ops, node, paths):
         yield from self._walk_recursive(ops, node, paths)
