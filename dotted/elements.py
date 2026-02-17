@@ -1949,7 +1949,8 @@ class Slot(Key):
             return node
         except TypeError:
             pass
-        return type(node)(v for i,v in enumerate(node) if i != key)
+        idx = key if key >= 0 else len(node) + key
+        return type(node)(v for i,v in enumerate(node) if i != idx)
     def remove(self, node, val):
         if hasattr(node, 'keys'):
             return super().remove(node, val)
@@ -1959,7 +1960,9 @@ class Slot(Key):
                 for k in reversed(keys):
                     del node[k]
                 return node
-            return node.__class__(v for i, v in enumerate(node) if i not in keys)
+            n = len(node)
+            normalized = {k if k >= 0 else n + k for k in keys}
+            return node.__class__(v for i, v in enumerate(node) if i not in normalized)
         if hasattr(node, 'remove'):
             try:
                 node.remove(val)
@@ -2211,7 +2214,7 @@ class Slice(CmdOp):
             return node
         except TypeError:
             pass
-        r = range(key.start, key.stop, key.step)
+        r = range(*key.indices(len(node)))
         iterable = ( v for i,v in enumerate(node) if i not in r )
         if hasattr(node, 'join'):
             return node.__class__().join(iterable)
