@@ -238,3 +238,69 @@ class TestValueGuard:
         d = {'a': [1, 7, 3, 7]}
         result = dotted.remove(d, '**=7')
         assert result == {'a': [1, 3]}
+
+
+# Complex paths
+
+class TestComplexPaths:
+    """Tests with deeper nesting, continuations, and combined operators."""
+
+    USERS = {
+        'users': {
+            'alice': {'age': 30, 'scores': [90, 85]},
+            'bob': {'age': 25, 'scores': [70, 95]},
+        },
+        'meta': {'version': 1}
+    }
+
+    def test_recursive_continuation_get(self):
+        assert dotted.get(self.USERS, '**.age') == (30, 25)
+
+    def test_recursive_group_continuation(self):
+        result = dotted.get(self.USERS, '**(.age, .scores)')
+        assert result == (30, [90, 85], 25, [70, 95])
+
+    def test_recursive_continuation_pluck_paths(self):
+        result = dotted.pluck(self.USERS, '**.age')
+        assert result == (('users.alice.age', 30), ('users.bob.age', 25))
+
+    def test_recursive_continuation_pluck_list_paths(self):
+        result = dotted.pluck(self.USERS, '**.scores')
+        assert result == (('users.alice.scores', [90, 85]), ('users.bob.scores', [70, 95]))
+
+    def test_recursive_list_continuation(self):
+        d = {'items': [{'name': 'a'}, {'name': 'b'}]}
+        assert dotted.get(d, '**.name') == ('a', 'b')
+
+    def test_recursive_list_continuation_pluck_paths(self):
+        d = {'items': [{'name': 'a'}, {'name': 'b'}]}
+        result = dotted.pluck(d, '**.name')
+        assert result == (('items[0].name', 'a'), ('items[1].name', 'b'))
+
+    def test_star_key_chain(self):
+        d = {'cfg': {'cfg': {'cfg': 'deep'}}, 'other': 1}
+        assert dotted.get(d, '*cfg') == ({'cfg': {'cfg': 'deep'}}, {'cfg': 'deep'}, 'deep')
+
+    def test_depth_range(self):
+        d = {'a': {'b': {'c': {'d': 'deep'}}}}
+        assert dotted.get(d, '**:1:3') == ({'c': {'d': 'deep'}}, {'d': 'deep'}, 'deep')
+
+    def test_leaves_pluck_paths(self):
+        d = {'a': {'b': {'c': 1, 'd': 2}, 'e': 3}, 'f': 4}
+        result = dotted.pluck(d, '**:-1')
+        assert result == (('a.b.c', 1), ('a.b.d', 2), ('a.e', 3), ('f', 4))
+
+    def test_update_with_continuation(self):
+        d = {'a': {'x': {'val': 1}}, 'b': {'x': {'val': 2}}}
+        dotted.update(d, '**:-2.val', 0)
+        assert d == {'a': {'x': {'val': 0}}, 'b': {'x': {'val': 0}}}
+
+    def test_remove_with_continuation(self):
+        d = {'a': {'x': {'val': 1, 'keep': 2}}, 'b': {'x': {'val': 3, 'keep': 4}}}
+        dotted.remove(d, '**:-2.val')
+        assert d == {'a': {'x': {'keep': 2}}, 'b': {'x': {'keep': 4}}}
+
+    def test_unpack_pattern(self):
+        d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'hello': {'there': 'bye'}}
+        result = dotted.pluck(d, '**:-2(.*, [])')
+        assert result == (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('hello.there', 'bye'))
