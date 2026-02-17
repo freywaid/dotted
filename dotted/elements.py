@@ -2185,16 +2185,20 @@ class Slice(CmdOp):
             return node
         except TypeError:
             pass
-        r = range(key.start, key.stop, key.step)
+        r = range(*key.indices(len(node)))
         idx = 0
         out = []
         for i,v in enumerate(node):
-            if i not in range:
+            if i not in r:
                 out.append(v)
                 continue
             if idx < len(val):
                 out.append(val[idx])
                 idx += 1
+        # Append remaining val items (handles empty/shorter node)
+        while idx < len(val):
+            out.append(val[idx])
+            idx += 1
         if hasattr(node, 'join'):
             return node.__class__().join(out)
         return node.__class__(out)
