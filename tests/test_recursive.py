@@ -127,11 +127,11 @@ class TestGetDepthSlicing:
 
     def test_negative_stop(self):
         d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}}
-        # ::-2 = all depths up to and including penultimate
+        # ::-2 = all depths from 0 up to penultimate (excludes leaves)
         result = dotted.get(d, '**::-2')
         assert [1, 2, 3] in result
         assert [4, 5] in result
-        assert 1 in result  # leaves are also included
+        assert 1 not in result  # leaves excluded
 
 
 # Get -- filters

@@ -2549,8 +2549,9 @@ class Recursive(CmdOp):
 
         orig_stop = self.depth_stop
         if stop is not None and stop < 0:
-            # negative stop: check max_dtl <= abs(stop) - 1
-            if max_dtl > abs(stop) - 1:
+            # negative stop: -2 means penultimate, so exclude nodes closer to leaf
+            # -2 requires max_dtl >= 1 (at least penultimate)
+            if max_dtl < abs(stop) - 1:
                 return False
             stop = None  # effectively no upper bound on depth
 
