@@ -125,6 +125,14 @@ class TestGetDepthSlicing:
         # -2 = penultimate: nodes whose children are all leaves
         assert dotted.get(d, '**:-2') == ({'b': 1},)
 
+    def test_negative_stop(self):
+        d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}}
+        # ::-2 = all depths up to and including penultimate
+        result = dotted.get(d, '**::-2')
+        assert [1, 2, 3] in result
+        assert [4, 5] in result
+        assert 1 in result  # leaves are also included
+
 
 # Get -- filters
 

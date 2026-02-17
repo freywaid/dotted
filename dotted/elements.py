@@ -2547,14 +2547,15 @@ class Recursive(CmdOp):
                 return True
             start = depth  # matches, so convert to positive for range check
 
+        orig_stop = self.depth_stop
         if stop is not None and stop < 0:
             # negative stop: check max_dtl <= abs(stop) - 1
             if max_dtl > abs(stop) - 1:
                 return False
             stop = None  # effectively no upper bound on depth
 
-        # Exact depth (only start specified)
-        if stop is None and step is None:
+        # Exact depth (only start specified, and stop wasn't converted from negative)
+        if stop is None and step is None and orig_stop is None:
             return depth == start
 
         # Range check
