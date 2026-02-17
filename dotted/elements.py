@@ -2618,8 +2618,7 @@ class Recursive(CmdOp):
             else:
                 for sub_path, sub_val in walk(ops, v, paths):
                     if sub_path is _CUT_SENTINEL:
-                        yield (_CUT_SENTINEL, None)
-                        return
+                        break
                     yield (cp + sub_path if paths else None, sub_val)
             # Always recurse into children
             yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
