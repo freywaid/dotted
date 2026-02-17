@@ -2743,8 +2743,8 @@ class Dotted:
         self.ops = tuple(results['ops'])
         self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
 
-    def assemble(self, start=0):
-        return assemble(self, start)
+    def assemble(self, start=0, pedantic=False):
+        return assemble(self, start, pedantic=pedantic)
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     def __hash__(self):
@@ -2787,14 +2787,16 @@ def quote(key, as_key=True):
     return s
 
 
-def assemble(ops, start=0):
-    def _gen():
-        top = True
-        for op in itertools.islice(ops, start, None):
-            yield op.operator(top)
-            if not isinstance(op, Invert):
-                top = False
-    return ''.join(_gen())
+def assemble(ops, start=0, pedantic=False):
+    parts = []
+    top = True
+    for op in itertools.islice(ops, start, None):
+        parts.append(op.operator(top))
+        if not isinstance(op, Invert):
+            top = False
+    if not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]':
+        parts.pop()
+    return ''.join(parts)
 
 
 def transform(name):
