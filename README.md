@@ -732,8 +732,8 @@ The inner pattern can be any key pattern — a literal key, a wildcard, or a reg
 <a id="recursive-wildcard-"></a>
 ### Recursive wildcard `**`
 
-`**` is shorthand for `*` with a wildcard inner — it matches all keys and visits
-every value at every depth:
+`**` is the recursive wildcard — it matches all keys and visits every value at
+every depth:
 
     >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
     >>> dotted.get(d, '**')
