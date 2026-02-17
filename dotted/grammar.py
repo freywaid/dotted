@@ -180,6 +180,74 @@ path_group = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
 path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el._path_to_opgroup_first)
 path_grouped = path_group_first | path_group
 
+# Recursive operator: ** (recursive wildcard) and *pattern (recursive chain-following)
+# Depth slice: :start:stop:step — uses sentinel for missing values to preserve position
+_rec_none = pp.Empty().set_parse_action(lambda: [None])
+_rec_depth_start = colon + (integer | _rec_none)
+_rec_depth_stop = colon + (integer | _rec_none)
+_rec_depth_step = colon + (integer | _rec_none)
+_rec_depth = _rec_depth_start + Opt(_rec_depth_stop + Opt(_rec_depth_step))
+
+def _make_recursive(t, first=False):
+    t = list(t)
+    inner = t[0]
+    rest = t[1:]
+    depth_start = depth_stop = depth_step = None
+    filt = []
+    depth_vals = []
+    for item in rest:
+        if isinstance(item, el.FilterOp):
+            filt.append(item)
+        else:
+            depth_vals.append(item)
+    if len(depth_vals) >= 1:
+        depth_start = depth_vals[0]
+    if len(depth_vals) >= 2:
+        depth_stop = depth_vals[1]
+    if len(depth_vals) >= 3:
+        depth_step = depth_vals[2]
+    cls = el.RecursiveFirst if first else el.Recursive
+    r = cls(inner, depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
+    if filt:
+        r.filters = tuple(filt)
+    return r
+
+# ** and *pattern base expressions (no parse actions — shared by guarded/first/plain variants)
+_rec_dstar_prefix = S(L('*') + L('*'))
+_rec_inner = string | regex_first | regex | numeric_quoted | non_integer | numeric_key | word
+_rec_pat_prefix = S(L('*'))
+
+def _dstar_body():
+    return _rec_dstar_prefix + Opt(_rec_depth) + ZM(amp + filters)
+
+def _pat_body():
+    return _rec_pat_prefix + _rec_inner + Opt(_rec_depth) + ZM(amp + filters)
+
+# ValueGuard composition: **=7, *name!=None, etc. (must try before plain forms)
+rec_dstar_guarded_neq = (_dstar_body() + _guard_neq).set_parse_action(
+    lambda t: el.ValueGuard(_make_recursive([el.Wildcard()] + list(t[:-1])), t[-1], negate=True))
+rec_dstar_guarded = (_dstar_body() + _guard_eq).set_parse_action(
+    lambda t: el.ValueGuard(_make_recursive([el.Wildcard()] + list(t[:-1])), t[-1]))
+rec_pat_guarded_neq = (_pat_body() + _guard_neq).set_parse_action(
+    lambda t: el.ValueGuard(_make_recursive(t[:-1]), t[-1], negate=True))
+rec_pat_guarded = (_pat_body() + _guard_eq).set_parse_action(
+    lambda t: el.ValueGuard(_make_recursive(t[:-1]), t[-1]))
+
+# First-match: **?, *name?
+rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
+    lambda t: _make_recursive([el.Wildcard()] + list(t), first=True))
+rec_pat_first = (_pat_body() + S('?')).set_parse_action(
+    lambda t: _make_recursive(t, first=True))
+
+# Plain: **, *name
+rec_dstar = _dstar_body().set_parse_action(
+    lambda t: _make_recursive([el.Wildcard()] + list(t)))
+rec_pat = _pat_body().set_parse_action(
+    lambda t: _make_recursive(t))
+
+recursive_op = (rec_dstar_guarded_neq | rec_dstar_guarded | rec_pat_guarded_neq | rec_pat_guarded |
+                rec_dstar_first | rec_dstar | rec_pat_first | rec_pat)
+
 empty = pp.Empty().set_parse_action(el.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
@@ -227,11 +295,11 @@ op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_actio
 op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 
 # NOP (~): match but don't update. At top assemble to ~@/~.; else .~/@~
-dotted_top_inner = path_grouped | op_grouped | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | empty
+dotted_top_inner = path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | empty
 _nop_wrap = (tilde + dotted_top_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
 dotted_top = _nop_wrap | dotted_top_inner
 # Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses; path_grouped for (a&b).c; op_grouped for ((a,b),c)
-op_seq_item << (_nop_wrap | path_grouped | op_grouped | keycmd_guarded_neq | keycmd_guarded | keycmd | _dot_keycmd_guarded_neq | _dot_keycmd_guarded | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd)
+op_seq_item << (_nop_wrap | path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | _dot_keycmd_guarded_neq | _dot_keycmd_guarded | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd)
 
 # ~. and .~ both produce NopWrap (canonical form .~)
 _dot_nop_guarded = ((dot + tilde) | (tilde + dot)) + (keycmd_guarded_neq | keycmd_guarded)
@@ -243,7 +311,8 @@ _dot_nop = _dot_nop.set_parse_action(lambda t: el.NopWrap(t[-1]))
 _dot_plain = (dot + (path_grouped | keycmd)).set_parse_action(lambda t: t[0])
 _dot_segment = _dot_nop | _dot_plain
 _nop_op_grouped = (tilde + op_grouped).set_parse_action(lambda t: el.NopWrap(t[1]))
-multi = OM(_dot_segment_guarded | _dot_segment | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | _nop_op_grouped | op_grouped)
+_dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
+multi = OM(_dot_segment_guarded | _dot_segment | _dot_recursive | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | _nop_op_grouped | op_grouped)
 invert = Opt(L('-').set_parse_action(el.Invert))
 dotted = invert + dotted_top + ZM(multi)
 

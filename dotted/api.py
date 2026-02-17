@@ -504,6 +504,50 @@ def remove_multi(obj, iterable, keys_only=True, mutable=True):
     return remove_if_multi(obj, iterable, keys_only=False, pred=None, mutable=mutable)
 
 
+def _match_ops(pats, keys, partial):
+    """
+    Recursive match of pattern ops against key ops.
+    Returns list of match values on success, None on failure.
+    Handles Recursive ops which can consume variable-length key segments.
+    """
+    if not pats:
+        if not keys:
+            return []
+        if partial:
+            return []
+        return None
+
+    pop = pats[0]
+    rest_pats = pats[1:]
+
+    # Non-recursive op: consume exactly one key segment
+    if not pop.is_recursive():
+        if not keys:
+            return None
+        kop = keys[0]
+        m = pop.match(kop, specials=True)
+        if not m:
+            return None
+        rest_result = _match_ops(rest_pats, keys[1:], partial)
+        if rest_result is None:
+            return None
+        if isinstance(m, (tuple, list)):
+            return [_m.val for _m in m] + rest_result
+        return [m.val] + rest_result
+
+    # Recursive op: try consuming 1, 2, ... N key segments via backtracking
+    for n in range(1, len(keys) + 1):
+        kop = keys[n - 1]
+        key_val = getattr(getattr(kop, 'op', kop), 'value', kop)
+        matched = any(True for _ in pop.inner.matches((key_val,)))
+        if not matched:
+            break  # chain-following: stop extending once a segment fails
+        rest_result = _match_ops(rest_pats, keys[n:], partial)
+        if rest_result is not None:
+            return list(keys[:n]) + rest_result
+    return None
+
+
 def match(pattern, key, groups=False, partial=True):
     """
     Returns `key` if `pattern` matches; otherwise `None`
@@ -525,9 +569,20 @@ def match(pattern, key, groups=False, partial=True):
     def returns(r, matches):
         return (r, tuple(matches)) if groups else r
 
-    _matches = []
     pats = parse(pattern)
     keys = parse(key)
+
+    # Check if any pattern op is Recursive — use new recursive matcher
+    has_recursive = any(op.is_recursive() for op in pats)
+
+    if has_recursive:
+        result = _match_ops(list(pats), list(keys), partial)
+        if result is None:
+            return returns(None, [])
+        return returns(key, result)
+
+    # Original non-recursive match logic
+    _matches = []
     for idx,(pop,kop) in enumerate(zip(pats, keys)):
         # this means we have more pattern constraints than key items
         if kop is None:

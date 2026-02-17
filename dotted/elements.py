@@ -38,6 +38,18 @@ def _has_any(gen):
     return any(True for _ in gen)
 
 
+def is_mapping(node):
+    return hasattr(node, 'keys') and callable(node.keys)
+
+
+def is_list_like(node):
+    return hasattr(node, '__getitem__') and not isinstance(node, (str, bytes)) and not is_mapping(node)
+
+
+def is_terminal(node):
+    return not is_mapping(node) and not is_list_like(node)
+
+
 class Match:
     def __init__(self, val):
         self.val = val
@@ -61,6 +73,8 @@ class Op:
         return self.__class__ == op.__class__ and self.args == op.args
     def scrub(self, node):
         return node
+    def is_recursive(self):
+        return False
     def is_slice(self):
         return False
 
@@ -2366,6 +2380,9 @@ class ValueGuard(_WalkMixin, Wrap):
     def is_pattern(self):
         return self.inner.is_pattern()
 
+    def is_recursive(self):
+        return self.inner.is_recursive()
+
     def default(self):
         return self.inner.default()
 
@@ -2415,6 +2432,277 @@ class ValueGuard(_WalkMixin, Wrap):
         except TypeError:
             return self.inner.match(op)
 
+    def walk(self, ops, node, paths):
+        # Recursive inner: delegate walk, filter yielded values by guard
+        if self.inner.is_recursive():
+            for path, val in self.inner.walk(ops, node, paths):
+                if path is _CUT_SENTINEL:
+                    yield (path, val)
+                elif self._guard_matches(val):
+                    yield (path, val)
+            return
+        # Default: use _WalkMixin.walk via items()
+        yield from _WalkMixin.walk(self, ops, node, paths)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop):
+        if self.inner.is_recursive():
+            return self.inner._update_recursive(
+                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches)
+        return _WalkMixin.do_update(self, ops, node, val, has_defaults, _path, nop)
+
+    def do_remove(self, ops, node, val, nop):
+        if self.inner.is_recursive():
+            return self.inner._remove_recursive(
+                ops, node, val, nop, guard=self._guard_matches)
+        return _WalkMixin.do_remove(self, ops, node, val, nop)
+
+
+class Recursive(CmdOp):
+    """
+    Recursive traversal operator. Matches a pattern at each level and recurses
+    into matched values. Handles type detection and iteration directly.
+
+    *key    = follow key chains (inner = Word('key'))
+    **      = recursive wildcard (inner = Wildcard())
+    */re/   = recursive regex (inner = Regex('re'))
+    """
+
+    def __init__(self, inner, *args, depth_start=None, depth_stop=None, depth_step=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inner = inner          # Pattern op: Wildcard, Word, Regex, etc.
+        self.depth_start = depth_start
+        self.depth_stop = depth_stop
+        self.depth_step = depth_step
+
+    def __repr__(self):
+        if isinstance(self.inner, Wildcard):
+            return f'**'
+        return f'*{self.inner!r}'
+
+    def __hash__(self):
+        return hash(('recursive', self.inner, self.depth_start, self.depth_stop, self.depth_step, self.filters))
+
+    def __eq__(self, other):
+        return (isinstance(other, Recursive) and self.inner == other.inner
+                and self.depth_start == other.depth_start
+                and self.depth_stop == other.depth_stop
+                and self.depth_step == other.depth_step
+                and self.filters == other.filters)
+
+    def is_pattern(self):
+        return True
+
+    def is_recursive(self):
+        return True
+
+    def operator(self, top=False):
+        if isinstance(self.inner, Wildcard):
+            s = '**'
+        else:
+            s = f'*{quote(self.inner.value)}'
+        # Depth slice
+        if self.depth_start is not None or self.depth_stop is not None or self.depth_step is not None:
+            s += ':' + ('' if self.depth_start is None else str(self.depth_start))
+            if self.depth_stop is not None or self.depth_step is not None:
+                s += ':' + ('' if self.depth_stop is None else str(self.depth_stop))
+            if self.depth_step is not None:
+                s += ':' + str(self.depth_step)
+        # Filters
+        for f in self.filters:
+            s += f'&{f!r}'
+        if not top:
+            s = '.' + s
+        return s
+
+    def match(self, op, specials=False):
+        return self.inner.matchable(op, specials=specials)
+
+    def _has_negative_depth(self):
+        return ((self.depth_start is not None and self.depth_start < 0) or
+                (self.depth_stop is not None and self.depth_stop < 0))
+
+    def in_depth_range(self, depth, max_dtl=0):
+        """Check if depth is within the configured depth range.
+
+        Args:
+            depth: current depth (0-based from first keys)
+            max_dtl: max depth to leaf (0 = leaf, 1 = parent of leaf, etc.)
+        """
+        start = self.depth_start
+        stop = self.depth_stop
+        step = self.depth_step
+
+        # No depth params: all depths
+        if start is None and stop is None and step is None:
+            return True
+
+        # Convert negative indices using max_dtl
+        # -1 = leaf (max_dtl == 0), -2 = penultimate (max_dtl == 1), -N = max_dtl == N-1
+        if start is not None and start < 0:
+            if max_dtl != abs(start) - 1:
+                return False
+            # For exact negative (no stop), just check this one
+            if stop is None and step is None:
+                return True
+            start = depth  # matches, so convert to positive for range check
+
+        if stop is not None and stop < 0:
+            # negative stop: check max_dtl <= abs(stop) - 1
+            if max_dtl > abs(stop) - 1:
+                return False
+            stop = None  # effectively no upper bound on depth
+
+        # Exact depth (only start specified)
+        if stop is None and step is None:
+            return depth == start
+
+        # Range check
+        eff_start = start if start is not None else 0
+        if step is not None:
+            if stop is not None:
+                return depth in range(eff_start, stop + 1, step)
+            # No stop with step: check start and step
+            return depth >= eff_start and (depth - eff_start) % step == 0
+        # No step
+        if stop is not None:
+            return eff_start <= depth <= stop
+        return depth >= eff_start
+
+    def _matching_keys(self, node):
+        """Yield (key, value) pairs for keys matching inner pattern in a mapping."""
+        for k in self.inner.matches(node.keys()):
+            yield k, node[k]
+
+    def _max_depth_to_leaf(self, node):
+        """Compute max depth to leaf from this node (structural, ignores filters/depth range)."""
+        if is_mapping(node):
+            child_depths = [self._max_depth_to_leaf(v) for k, v in self._matching_keys(node)]
+            if child_depths:
+                return max(child_depths) + 1
+        elif is_list_like(node):
+            child_depths = [self._max_depth_to_leaf(item) for item in node]
+            if child_depths:
+                return max(child_depths) + 1
+        return 0
+
+    def _walk_recursive(self, ops, node, paths, depth=0):
+        if is_mapping(node):
+            iterable = self._matching_keys(node)
+            matched = True
+            concrete = Key.concrete
+        elif is_list_like(node):
+            iterable = enumerate(node)
+            matched = any(True for _ in self.inner.matches(range(len(node))))
+            concrete = Slot.concrete
+        else:
+            return
+
+        for k, v in iterable:
+            if not matched or not any(True for _ in self.filtered((v,))):
+                yield from self._walk_recursive(ops, v, paths, depth + 1)
+                continue
+            max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
+            if not self.in_depth_range(depth, max_dtl):
+                yield from self._walk_recursive(ops, v, paths, depth + 1)
+                continue
+            if not ops:
+                yield ((concrete(k),) if paths else None, v)
+            else:
+                for sub_path, sub_val in walk(ops, v, paths):
+                    if sub_path is _CUT_SENTINEL:
+                        yield (_CUT_SENTINEL, None)
+                        return
+                    cp = (concrete(k),) + sub_path if paths else None
+                    yield (cp, sub_val)
+            # Always recurse into children
+            yield from self._walk_recursive(ops, v, paths, depth + 1)
+
+    def walk(self, ops, node, paths):
+        yield from self._walk_recursive(ops, node, paths)
+
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None):
+        if is_mapping(node):
+            iterable = list(self._matching_keys(node))
+            matched = True
+        elif is_list_like(node):
+            iterable = list(enumerate(node))
+            matched = any(True for _ in self.inner.matches(range(len(node))))
+        else:
+            return node
+
+        for k, v in iterable:
+            # Recurse first (bottom-up)
+            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard)
+            node[k] = v
+            if not matched:
+                continue
+            if not any(True for _ in self.filtered((v,))):
+                continue
+            max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
+            if not self.in_depth_range(depth, max_dtl):
+                continue
+            if guard and not guard(v):
+                continue
+            if ops:
+                node[k] = updates(ops, v, val, has_defaults, _path + [(self, k)], nop)
+            elif not nop:
+                node[k] = val
+        return node
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop)
+
+    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None):
+        if is_mapping(node):
+            iterable = list(self._matching_keys(node))
+            matched = True
+        elif is_list_like(node):
+            iterable = list(enumerate(node))
+            matched = any(True for _ in self.inner.matches(range(len(node))))
+        else:
+            return node
+
+        to_remove = []
+        for k, v in iterable:
+            # Recurse first (bottom-up)
+            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard)
+            node[k] = v
+            if not matched:
+                continue
+            if not any(True for _ in self.filtered((v,))):
+                continue
+            max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
+            if not self.in_depth_range(depth, max_dtl):
+                continue
+            if guard and not guard(v):
+                continue
+            if ops:
+                node[k] = removes(ops, v, val, nop=False)
+            elif not nop:
+                to_remove.append(k)
+        for k in reversed(to_remove):
+            del node[k]
+        return node
+
+    def do_remove(self, ops, node, val, nop):
+        return self._remove_recursive(ops, node, val, nop)
+
+
+class RecursiveFirst(Recursive):
+    """First-match variant of Recursive -- yields only the first result."""
+
+    def __repr__(self):
+        return super().__repr__() + '?'
+
+    def operator(self, top=False):
+        s = super().operator(top)
+        # Insert ? before filters if present, otherwise append
+        return s + '?'
+
+    def walk(self, ops, node, paths):
+        for pair in self._walk_recursive(ops, node, paths):
+            yield pair
+            return
 
 
 #
