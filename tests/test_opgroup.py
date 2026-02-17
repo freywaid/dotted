@@ -458,6 +458,24 @@ def test_get_opgroup_not_missing_key():
     assert set(r) == {2, 3}
 
 
+def test_expand_opgroup_first():
+    """
+    Test expand with OpGroupFirst - expands only the first matching branch.
+    """
+    d = {'a': {'b': 1, 'c': 2}}
+    r = dotted.expand(d, 'a(.b,.c)?')
+    assert r == ('a.b',)
+
+
+def test_expand_opgroup_first_fallback():
+    """
+    Test expand with OpGroupFirst - falls back to second branch.
+    """
+    d = {'a': {'c': 2}}
+    r = dotted.expand(d, 'a(.b,.c)?')
+    assert r == ('a.c',)
+
+
 def test_expand_opgroup_not():
     """
     Test expand with OpGroupNot.

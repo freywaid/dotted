@@ -45,6 +45,18 @@ def test_invert_expand():
     assert r == ('-hello.there',)
 
 
+def test_invert_expand_single():
+    """expand with invert at leaf level."""
+    r = dotted.expand({'a': 1, 'b': 2}, '-*')
+    assert set(r) == {'-a', '-b'}
+
+
+def test_invert_pluck():
+    """pluck with invert prefix."""
+    r = dotted.pluck({'hello': {'there': 'foo'}}, '-*.*')
+    assert r == (('-hello.there', 'foo'),)
+
+
 def test_invert_assemble():
     r = dotted.assemble(('-hello', 'there'))
     assert r == '-hello.there'

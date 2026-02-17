@@ -675,8 +675,17 @@ def pluck_multi(obj, patterns, default=None):
     (('hello', 7), ('a.b', 'seven'))
     """
     out = ()
-    for field in expand_multi(obj, patterns):
-        out += ((field, get(obj, field, default=default)),)
+    seen = {}
+    for pattern in patterns:
+        ops = parse(pattern)
+        for path, val in el.walk(ops, obj, paths=True):
+            if path is el._CUT_SENTINEL:
+                break
+            field = el.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
+            if field in seen:
+                continue
+            seen[field] = None
+            out += ((field, val),)
     return out
 
 

@@ -250,6 +250,45 @@ def test_get_slot_cut_second_branch():
 
 
 # -----------------------------------------------------------------------------
+# Expand with cut
+# -----------------------------------------------------------------------------
+
+def test_expand_cut_first_branch_matches():
+    """expand with (a#, b): when a matches, only a is expanded."""
+    d = {'a': 1, 'b': 2}
+    r = dotted.expand(d, '(a#, b)')
+    assert r == ('a',)
+
+
+def test_expand_cut_first_branch_misses():
+    """expand with (a#, b): when a missing, b is expanded."""
+    d = {'b': 2}
+    r = dotted.expand(d, '(a#, b)')
+    assert r == ('b',)
+
+
+def test_expand_cut_no_cut():
+    """expand with (a, b) without cut: both expanded."""
+    d = {'a': 1, 'b': 2}
+    r = dotted.expand(d, '(a, b)')
+    assert set(r) == {'a', 'b'}
+
+
+def test_pluck_cut_first_branch_matches():
+    """pluck with (a#, b): when a matches, only a is plucked."""
+    d = {'a': 1, 'b': 2}
+    r = dotted.pluck(d, '(a#, b)')
+    assert r == (('a', 1),)
+
+
+def test_pluck_cut_first_branch_misses():
+    """pluck with (a#, b): when a missing, b is plucked."""
+    d = {'b': 2}
+    r = dotted.pluck(d, '(a#, b)')
+    assert r == (('b', 2),)
+
+
+# -----------------------------------------------------------------------------
 # Assemble: cut appears as # in path
 # -----------------------------------------------------------------------------
 

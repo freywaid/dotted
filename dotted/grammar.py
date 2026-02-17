@@ -216,7 +216,7 @@ def _op_group_from_parse(t):
         out.append(branch)
         if len(item) >= 2 and item[1] == '#':
             out.append(el._BRANCH_CUT)
-    return el.OpGroup(*out)
+    return el.OpGroupOr(*out)
 op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(_op_group_from_parse)
 op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(
     lambda t: el.OpGroupFirst(*_op_group_from_parse(t).branches))
