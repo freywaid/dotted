@@ -752,7 +752,9 @@ Use `**?` to get only the first match:
 <a id="depth-slicing"></a>
 ### Depth slicing
 
-Control which depths are visited using slice notation. Depth 0 is the values of
+Control which depths are visited using slice notation: `**:start`, `**:start:stop`,
+or `**:::step`. Note the leading `:` — depth slicing looks a little different from
+regular Python slicing since it follows the `**` operator. Depth 0 is the values of
 the first-level keys. Lists increment depth (their elements are one level deeper).
 
     >>> d = {'a': {'x': 1}, 'b': {'y': {'z': 2}}}
