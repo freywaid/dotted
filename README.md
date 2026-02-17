@@ -408,7 +408,7 @@ Apply transforms to values in an object in-place.
 <a id="assemble"></a>
 ### Assemble
 
-Build a dotted notation string from a list of keys.
+Build a dotted notation string from a list of path segments.
 
     >>> import dotted
     >>> dotted.assemble(['a', 'b', 'c'])
@@ -524,7 +524,7 @@ Dotted slicing works like python slicing and all that entails.
 <a id="dot-notation-for-sequence-indexing"></a>
 ### Dot notation for sequence indexing
 
-Numeric keys work as indices when accessing sequences (lists, tuples, strings):
+Numeric path segments work as indices when accessing sequences (lists, tuples, strings):
 
     >>> import dotted
     >>> data = {'items': [10, 20, 30]}
@@ -700,15 +700,15 @@ To chain through the items, use a pattern instead:
 <a id="recursive-traversal"></a>
 ## Recursive Traversal
 
-The recursive operator `*` traverses nested data structures by following keys
-that match a pattern at successive levels.
+The recursive operator `*` traverses nested data structures by following path
+segments that match a pattern at successive levels.
 
 <a id="the-recursive-operator-"></a>
 ### The recursive operator `*`
 
-`*pattern` recurses into values whose keys match the pattern. It follows chains
-of matching keys — at each level, if a key matches, its value is yielded and
-the traversal continues into that value:
+`*pattern` recurses into values whose path segments match the pattern. It follows
+chains of matching segments — at each level, if a segment matches, its value is
+yielded and the traversal continues into that value:
 
     >>> import dotted
     >>> d = {'b': {'b': {'c': 1}}}
@@ -732,8 +732,8 @@ The inner pattern can be any key pattern — a literal key, a wildcard, or a reg
 <a id="recursive-wildcard-"></a>
 ### Recursive wildcard `**`
 
-`**` is the recursive wildcard — it matches all keys and visits every value at
-every depth:
+`**` is the recursive wildcard — it matches all path segments and visits every
+value at every depth:
 
     >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
     >>> dotted.get(d, '**')
@@ -755,7 +755,7 @@ Use `**?` to get only the first match:
 Control which depths are visited using slice notation: `**:start`, `**:start:stop`,
 or `**:::step`. Note the leading `:` — depth slicing looks a little different from
 regular Python slicing since it follows the `**` operator. Depth 0 is the values of
-the first-level keys. Lists increment depth (their elements are one level deeper).
+the first-level path segments. Lists increment depth (their elements are one level deeper).
 
     >>> d = {'a': {'x': 1}, 'b': {'y': {'z': 2}}}
     >>> dotted.get(d, '**:0')

@@ -655,7 +655,7 @@ def match_multi(pattern, iterable, groups=False, partial=True):
 
 def assemble_multi(keys_list):
     """
-    Given a list of a list of keys assemble into a full dotted string
+    Given a list of a list of path segments assemble into a full dotted path
     >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
     ('hello.there', 'a.1.c')
     """
@@ -668,7 +668,7 @@ def assemble_multi(keys_list):
 
 def assemble(keys):
     """
-    Given a list of keys assemble into a full dotted string
+    Given a list of path segments assemble into a full dotted path
     >>> assemble(['hello', 'there'])
     'hello.there'
     >>> assemble(['hello', '[*]', 'there'])
