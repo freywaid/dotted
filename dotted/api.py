@@ -218,6 +218,14 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     (1,)
     >>> get({'b': 2}, '(a#, b)')           # a missing, so try b
     (2,)
+
+    Recursive traversal with ** (all depths) and *key (chain-following):
+    >>> get({'a': {'b': {'c': 1}}, 'x': {'b': {'c': 2}}}, '**.c')
+    (1, 2)
+    >>> get({'b': {'b': {'c': 1}}}, '*b.c')
+    (1,)
+    >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
+    (7,)
     """
     ops = parse(key)
     vals = el.iter_until_cut(el.gets(ops, obj))
@@ -381,6 +389,10 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
     >>> update({'name': {}}, '(name.~first, name.first)?', 'bob')
     {'name': {'first': 'bob'}}
 
+    Recursive update with value guard:
+    >>> update({'a': {'b': 7, 'c': 3}, 'd': 7}, '**=7', 99)
+    {'a': {'b': 99, 'c': 3}, 'd': 99}
+
     Use mutable=False to prevent mutation of the original object:
     >>> d = {'a': 1}
     >>> result = update(d, 'a', 2, mutable=False)
@@ -480,6 +492,10 @@ def remove(obj, key, val=ANY, mutable=True):
     >>> remove({}, '-hello.there', [2])
     {'hello': {'there': [2]}}
 
+    Recursive remove with value guard:
+    >>> remove({'a': {'b': 7, 'c': 3}, 'd': 7}, '**=7')
+    {'a': {'c': 3}}
+
     Use mutable=False to prevent mutation of the original object:
     >>> d = {'a': 1, 'b': 2}
     >>> result = remove(d, 'a', mutable=False)
@@ -504,6 +520,50 @@ def remove_multi(obj, iterable, keys_only=True, mutable=True):
     return remove_if_multi(obj, iterable, keys_only=False, pred=None, mutable=mutable)
 
 
+def _match_ops(pats, keys, partial):
+    """
+    Recursive match of pattern ops against key ops.
+    Returns list of match values on success, None on failure.
+    Handles Recursive ops which can consume variable-length key segments.
+    """
+    if not pats:
+        if not keys:
+            return []
+        if partial:
+            return []
+        return None
+
+    pop = pats[0]
+    rest_pats = pats[1:]
+
+    # Non-recursive op: consume exactly one key segment
+    if not pop.is_recursive():
+        if not keys:
+            return None
+        kop = keys[0]
+        m = pop.match(kop, specials=True)
+        if not m:
+            return None
+        rest_result = _match_ops(rest_pats, keys[1:], partial)
+        if rest_result is None:
+            return None
+        if isinstance(m, (tuple, list)):
+            return [_m.val for _m in m] + rest_result
+        return [m.val] + rest_result
+
+    # Recursive op: try consuming 1, 2, ... N key segments via backtracking
+    for n in range(1, len(keys) + 1):
+        kop = keys[n - 1]
+        key_val = getattr(getattr(kop, 'op', kop), 'value', kop)
+        matched = any(True for _ in pop.inner.matches((key_val,)))
+        if not matched:
+            break  # chain-following: stop extending once a segment fails
+        rest_result = _match_ops(rest_pats, keys[n:], partial)
+        if rest_result is not None:
+            return list(keys[:n]) + rest_result
+    return None
+
+
 def match(pattern, key, groups=False, partial=True):
     """
     Returns `key` if `pattern` matches; otherwise `None`
@@ -521,13 +581,31 @@ def match(pattern, key, groups=False, partial=True):
     ('hello.there.bye', ('hello.there.bye',))
     >>> match('hello.*', 'hello.there.bye', groups=True)
     ('hello.there.bye', ('hello', 'there.bye'))
+
+    Recursive patterns:
+    >>> match('**.c', 'a.b.c')
+    'a.b.c'
+    >>> match('*b', 'b.b.b')
+    'b.b.b'
+    >>> match('*b', 'a.b.c')
     """
     def returns(r, matches):
         return (r, tuple(matches)) if groups else r
 
-    _matches = []
     pats = parse(pattern)
     keys = parse(key)
+
+    # Check if any pattern op is Recursive — use new recursive matcher
+    has_recursive = any(op.is_recursive() for op in pats)
+
+    if has_recursive:
+        result = _match_ops(list(pats), list(keys), partial)
+        if result is None:
+            return returns(None, [])
+        return returns(key, result)
+
+    # Original non-recursive match logic
+    _matches = []
     for idx,(pop,kop) in enumerate(zip(pats, keys)):
         # this means we have more pattern constraints than key items
         if kop is None:
@@ -577,7 +655,7 @@ def match_multi(pattern, iterable, groups=False, partial=True):
 
 def assemble_multi(keys_list):
     """
-    Given a list of a list of keys assemble into a full dotted string
+    Given a list of a list of path segments assemble into a full dotted path
     >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
     ('hello.there', 'a.1.c')
     """
@@ -590,7 +668,7 @@ def assemble_multi(keys_list):
 
 def assemble(keys):
     """
-    Given a list of keys assemble into a full dotted string
+    Given a list of path segments assemble into a full dotted path
     >>> assemble(['hello', 'there'])
     'hello.there'
     >>> assemble(['hello', '[*]', 'there'])

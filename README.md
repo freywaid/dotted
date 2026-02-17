@@ -39,6 +39,13 @@ helps you do that.
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
+- [Recursive Traversal](#recursive-traversal)
+  - [The recursive operator `*`](#the-recursive-operator-)
+  - [Recursive wildcard `**`](#recursive-wildcard-)
+  - [Depth slicing](#depth-slicing)
+  - [Recursive with value guard](#recursive-with-value-guard)
+  - [Recursive update and remove](#recursive-update-and-remove)
+  - [Recursive match](#recursive-match)
 - [Grouping](#grouping)
   - [Operation grouping](#operation-grouping)
   - [Path grouping](#path-grouping)
@@ -401,7 +408,7 @@ Apply transforms to values in an object in-place.
 <a id="assemble"></a>
 ### Assemble
 
-Build a dotted notation string from a list of keys.
+Build a dotted notation string from a list of path segments.
 
     >>> import dotted
     >>> dotted.assemble(['a', 'b', 'c'])
@@ -517,7 +524,7 @@ Dotted slicing works like python slicing and all that entails.
 <a id="dot-notation-for-sequence-indexing"></a>
 ### Dot notation for sequence indexing
 
-Numeric keys work as indices when accessing sequences (lists, tuples, strings):
+Numeric path segments work as indices when accessing sequences (lists, tuples, strings):
 
     >>> import dotted
     >>> data = {'items': [10, 20, 30]}
@@ -689,6 +696,120 @@ To chain through the items, use a pattern instead:
     ('alice', 'bob', 'alice')
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
+
+<a id="recursive-traversal"></a>
+## Recursive Traversal
+
+The recursive operator `*` traverses nested data structures by following path
+segments that match a pattern at successive levels.
+
+<a id="the-recursive-operator-"></a>
+### The recursive operator `*`
+
+`*pattern` recurses into values whose path segments match the pattern. It follows
+chains of matching segments — at each level, if a segment matches, its value is
+yielded and the traversal continues into that value:
+
+    >>> import dotted
+    >>> d = {'b': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ({'b': {'c': 1}}, {'c': 1})
+    >>> dotted.get(d, '*b.c')
+    (1,)
+
+The chain stops when the key no longer matches:
+
+    >>> d = {'a': {'b': {'c': 1}}}
+    >>> dotted.get(d, '*b')
+    ()
+
+The inner pattern can be any key pattern — a literal key, a wildcard, or a regex:
+
+    >>> d = {'x1': {'x2': 1}, 'y': 2}
+    >>> dotted.get(d, '*/x.*/')
+    ({'x2': 1}, 1)
+
+<a id="recursive-wildcard-"></a>
+### Recursive wildcard `**`
+
+`**` is the recursive wildcard — it matches all path segments and visits every
+value at every depth:
+
+    >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
+    >>> dotted.get(d, '**')
+    ({'b': {'c': 1}}, {'c': 1}, 1, {'y': 2}, 2)
+
+Use `**` with continuation to find a key at any depth:
+
+    >>> dotted.get(d, '**.c')
+    (1,)
+
+Use `**?` to get only the first match:
+
+    >>> dotted.get(d, '**?')
+    ({'b': {'c': 1}},)
+
+<a id="depth-slicing"></a>
+### Depth slicing
+
+Control which depths are visited using slice notation: `**:start`, `**:start:stop`,
+or `**:::step`. Note the leading `:` — depth slicing looks a little different from
+regular Python slicing since it follows the `**` operator. Depth 0 is the values of
+the first-level path segments. Lists increment depth (their elements are one level deeper).
+
+    >>> d = {'a': {'x': 1}, 'b': {'y': {'z': 2}}}
+    >>> dotted.get(d, '**:0')
+    ({'x': 1}, {'y': {'z': 2}})
+    >>> dotted.get(d, '**:1')
+    (1, {'z': 2})
+
+Use negative indices to count from the leaf. `**:-1` returns leaves only,
+`**:-2` returns the penultimate level:
+
+    >>> dotted.get(d, '**:-1')
+    (1, 2)
+
+Range slicing works like Python slices: `**:start:stop` and `**:::step`:
+
+    >>> dotted.get(d, '**:0:1')
+    ({'x': 1}, 1, {'y': {'z': 2}}, {'z': 2})
+
+<a id="recursive-with-value-guard"></a>
+### Recursive with value guard
+
+Combine `**` with value guards to find specific values at any depth:
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': {'e': 7}}
+    >>> dotted.get(d, '**=7')
+    (7, 7)
+    >>> dotted.get(d, '**!=7')
+    ({'b': 7, 'c': 3}, 3, {'e': 7})
+
+<a id="recursive-update-and-remove"></a>
+### Recursive update and remove
+
+Recursive operators work with `update` and `remove`:
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': 7}
+    >>> dotted.update(d, '**=7', 99)
+    {'a': {'b': 99, 'c': 3}, 'd': 99}
+
+    >>> d = {'a': {'b': 7, 'c': 3}, 'd': 7}
+    >>> dotted.remove(d, '**=7')
+    {'a': {'c': 3}}
+
+<a id="recursive-match"></a>
+### Recursive match
+
+Recursive patterns work with `match`. `**` matches any key path, `*key` matches
+chains of a specific key:
+
+    >>> dotted.match('**.c', 'a.b.c')
+    'a.b.c'
+    >>> dotted.match('*b', 'b.b.b')
+    'b.b.b'
+    >>> dotted.match('*b', 'a.b.c') is None
+    True
 
 <a id="grouping"></a>
 ## Grouping

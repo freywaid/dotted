@@ -30,3 +30,33 @@ def test_slice_match():
 
     m = dotted.match('hello[]', 'hello[:2]')
     assert m == 'hello[:2]'
+
+
+# Immutable sequence (tuple) operations
+
+def test_tuple_update_empty():
+    assert dotted.update((), '[]', (1, 2, 3)) == (1, 2, 3)
+
+def test_tuple_update_index():
+    assert dotted.update((1, 2), '[0]', 9) == (9, 2)
+
+def test_tuple_update_slice():
+    assert dotted.update((1, 2, 3), '[1:]', (8, 9)) == (1, 8, 9)
+
+def test_tuple_update_whole():
+    assert dotted.update((1, 2), '[]', (3, 4, 5)) == (3, 4, 5)
+
+def test_tuple_remove_index():
+    assert dotted.remove((1, 2, 3), '[0]') == (2, 3)
+
+def test_tuple_remove_negative_index():
+    assert dotted.remove((1, 2, 3), '[-1]') == (1, 2)
+
+def test_tuple_remove_whole():
+    assert dotted.remove((1, 2, 3), '[]') == ()
+
+def test_tuple_remove_slice():
+    assert dotted.remove((1, 2, 3), '[1:]') == (1,)
+
+def test_tuple_remove_by_value():
+    assert dotted.remove((1, 2, 3), '[*]', 2) == (1, 3)
