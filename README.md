@@ -117,6 +117,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
 | Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
 | Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
+| Recursive traversal (`**`, `*key`) | ✅ | ✅ | ✅ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
@@ -126,6 +127,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Pattern matching with wildcards (`*`) and regex (`/pattern/`)
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
+- Recursive traversal with `**` (any depth) and `*key` (chain-following), with Python-style depth slicing
 - Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
 - **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(**:-2(.*, [])##, *)` for "recurse into containers, fall back to `*` for the rest"
