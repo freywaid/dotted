@@ -37,6 +37,7 @@ helps you do that.
   - [Numeric types](#numeric-types)
   - [Quoting](#quoting)
   - [The numericize `#` operator](#the-numericize--operator)
+  - [Container types](#container-types)
 - [Patterns](#patterns)
   - [Wildcards](#wildcards)
   - [Regular expressions](#regular-expressions)
@@ -702,6 +703,36 @@ This will coerce to a numeric type (e.g. float).
     'fooled you'
     >>> dotted.get(d, 'a.#"1.2"')
     'hello'
+
+<a id="container-types"></a>
+### Container types
+
+Container literals express list, dict, set, tuple, and frozenset values inline. They
+appear in two contexts: as [filter values / value guards](#container-filter-values)
+(with pattern support) and as [transform arguments](#container-transform-arguments)
+(concrete values only).
+
+| Syntax | Type | Notes |
+|--------|------|-------|
+| `[1, 2, 3]` | list or tuple | Unprefixed matches both |
+| `l[1, 2, 3]` | list | Strict: list only |
+| `t[1, 2, 3]` | tuple | Strict: tuple only |
+| `{"a": 1}` | dict | Unprefixed matches dict-like |
+| `d{"a": 1}` | dict | Strict: dict only (isinstance) |
+| `{1, 2, 3}` | set or frozenset | Unprefixed matches both |
+| `s{1, 2, 3}` | set | Strict: set only |
+| `fs{1, 2, 3}` | frozenset | Strict: frozenset only |
+
+Empty containers: `[]` (empty list/tuple), `{}` (empty dict), `s{}` (empty set),
+`fs{}` (empty frozenset), `l[]`, `t[]`, `d{}`.
+
+Without a [type prefix](#type-prefixes), brackets match loosely: `[]` matches any
+list or tuple, `{v, v}` matches any set or frozenset, `{}` matches dict (following
+Python convention where `{}` is a dict literal, not a set).
+
+In filter context, containers support patterns (`*`, `...`, `/regex/`) inside — see
+[Container filter values](#container-filter-values). In transform argument context,
+only concrete scalar values are allowed.
 
 <a id="patterns"></a>
 ## Patterns
