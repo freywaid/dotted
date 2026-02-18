@@ -14,6 +14,7 @@ helps you do that.
   - [Remove](#remove)
   - [Match](#match)
   - [Expand](#expand)
+  - [Overlaps](#overlaps)
   - [Has](#has)
   - [Mutable](#mutable)
   - [Setdefault](#setdefault)
@@ -47,14 +48,15 @@ helps you do that.
   - [Recursive update and remove](#recursive-update-and-remove)
   - [Recursive match](#recursive-match)
 - [Grouping](#grouping)
-  - [Operation grouping](#operation-grouping)
   - [Path grouping](#path-grouping)
+  - [Operation grouping](#operation-grouping)
 - [Operators](#operators)
   - [The append `+` operator](#the-append--operator)
   - [The append-unique `+?` operator](#the-append-unique--operator)
   - [The invert `-` operator](#the-invert---operator)
   - [The NOP `~` operator](#the-nop--operator)
   - [The cut `#` operator](#the-cut--operator)
+  - [The soft cut `##` operator](#the-soft-cut--operator)
   - [The numericize `#` operator](#the-numericize--operator-1)
 - [Filters](#filters)
   - [The key-value filter](#the-key-value-filter)
@@ -114,7 +116,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
 | Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
-| Cut (#) short-circuit disjunction | ✅ | ❌ | ❌ | ❌ |
+| Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -124,6 +126,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
 - Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
+- **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(**:-2(.*, [])##, *)` for "recurse into containers, fall back to `*` for the rest"
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
 
 <a id="breaking-changes"></a>
@@ -312,6 +315,23 @@ You may wish to _expand_ all fields that match a pattern in an object.
     ('hello.there[0]', 'hello.there[1]', 'hello.there[2]')
     >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
+
+<a id="overlaps"></a>
+### Overlaps
+
+Test whether two dotted paths overlap—i.e. one is a prefix of the other, or they
+are identical. Used internally by [soft cut (`##`)](#the-soft-cut--operator) to
+decide which later-branch results to suppress.
+
+    >>> import dotted
+    >>> dotted.overlaps('a', 'a.b.c')
+    True
+    >>> dotted.overlaps('a.b.c', 'a')
+    True
+    >>> dotted.overlaps('a.b', 'a.b')
+    True
+    >>> dotted.overlaps('a.b', 'a.c')
+    False
 
 <a id="has"></a>
 ### Has
@@ -814,6 +834,28 @@ chains of a specific key:
 <a id="grouping"></a>
 ## Grouping
 
+<a id="path-grouping"></a>
+### Path grouping
+
+Use parentheses to group keys that share a common prefix or suffix:
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+
+    # Group keys
+    >>> dotted.get(d, '(a,b)')
+    (1, 2)
+
+    # With a shared suffix
+    >>> d = {'x': {'val': 1}, 'y': {'val': 2}}
+    >>> dotted.get(d, '(x,y).val')
+    (1, 2)
+
+Path grouping is syntactic sugar for [operation grouping](#operation-grouping)
+where each branch is a single key—`(a,b).c` is equivalent to `(.a,.b).c`. All
+operators (disjunction, conjunction, negation, cut `#`, soft cut `##`,
+first-match `?`) work the same way; see operation grouping for full details.
+
 <a id="operation-grouping"></a>
 ### Operation grouping
 
@@ -877,6 +919,27 @@ else append" in lists. Example with slot grouping:
 First branch matches items where `email="alice@x.com"` and updates them (then cut);
 if none match, the `+` branch appends the new dict.
 
+#### Soft cut (`##`) in disjunction
+
+Hard cut (`#`) stops all later branches when the cut branch matches. Soft cut (`##`)
+is more selective: later branches still run, but skip any paths that overlap with
+what the soft-cut branch already yielded. Use soft cut when a branch handles some
+keys and you want a fallback branch to handle the rest.
+
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
+    >>> dotted.pluck(d, '(**:-2(.*, [])##, *)')
+    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+
+Here `**:-2(.*, [])` recurses into containers (dicts and lists) and yields their
+leaf containers. The `##` means: for keys that recursion covered (like `a` and `x`),
+don't try the `*` fallback. But `extra` was not covered by the recursive branch,
+so `*` picks it up.
+
+Compare with hard cut (`#`), which would lose `extra` entirely:
+
+    >>> dotted.pluck(d, '(**:-2(.*, [])#, *)')
+    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]))
+
 #### Conjunction (AND)
 
 Use `&` for all-or-nothing behavior. Returns values only if ALL branches exist:
@@ -930,60 +993,6 @@ Updates and removes apply to all non-matching keys:
     {'a': {'x': 1}}
 
 **Note**: For De Morgan's law with filter expressions, see the Filters section below.
-
-<a id="path-grouping"></a>
-### Path grouping
-
-Path grouping is syntactic sugar for operation grouping where each branch is a
-single key. `(a,b).c` is equivalent to `(.a,.b).c`.
-
-    >>> import dotted
-    >>> d = {'a': 1, 'b': 2, 'c': 3}
-
-    # Group keys
-    >>> dotted.get(d, '(a,b)')
-    (1, 2)
-
-    # With a shared suffix
-    >>> d = {'x': {'val': 1}, 'y': {'val': 2}}
-    >>> dotted.get(d, '(x,y).val')
-    (1, 2)
-
-Path groups support the same operators as operation groups:
-
-| Syntax | Meaning | Behavior |
-|--------|---------|----------|
-| `(a,b)` | Disjunction (OR) | Returns all values that exist |
-| `(a#, b)` | Disjunction with **cut** | First branch that matches wins; later branches not tried |
-| `(a&b)` | Conjunction (AND) | Returns values only if ALL keys exist |
-| `(!a)` | Negation (NOT) | Returns values for keys NOT matching |
-
-    >>> d = {'a': 1, 'b': 2, 'c': 3}
-    >>> dotted.get(d, '(a,b)')      # OR: both
-    (1, 2)
-    >>> dotted.get(d, '(a&b)')      # AND: both must exist
-    (1, 2)
-    >>> dotted.get(d, '(a&x)')      # AND: x missing, fails
-    ()
-    >>> sorted(dotted.get(d, '(!a)'))  # NOT: all except a
-    [2, 3]
-
-Use `?` suffix for first-match:
-
-    >>> dotted.get(d, '(x,a,b)?')   # first that exists
-    (1,)
-
-#### Cut (`#`) in disjunction
-
-Suffix a branch with `#` to commit to it—if that branch matches, its results are
-returned and later branches are not tried. If it doesn't match, the next branch
-is tried. Example: ``(a#, b)`` returns ``(1,)`` when ``a`` exists; when ``a`` is
-missing, it tries ``b`` and returns ``(2,)``.
-
-    >>> dotted.get({'a': 1, 'b': 2}, '(a#, b)')
-    (1,)
-    >>> dotted.get({'b': 2}, '(a#, b)')
-    (2,)
 
 <a id="operators"></a>
 ## Operators
@@ -1077,6 +1086,38 @@ This is especially useful for "update if exists, else create" patterns:
     >>> data = {'emails': [{'email': 'other@x.com'}]}
     >>> dotted.update(data, 'emails[(*&email="alice@x.com"#, +)]', {'email': 'alice@x.com', 'verified': True})
     {'emails': [{'email': 'other@x.com'}, {'email': 'alice@x.com', 'verified': True}]}
+
+<a id="the-soft-cut--operator"></a>
+### The soft cut `##` operator
+
+Soft cut is a gentler version of cut. Where `#` stops all later branches when the
+cut branch matches, `##` only suppresses later branches for paths that overlap with
+what the soft-cut branch yielded. Later branches still run for non-overlapping paths.
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2}
+    >>> dotted.get(d, '(a##, *)')     # a covers 'a'; * still yields 'b'
+    (1, 2)
+    >>> dotted.get(d, '(a#, *)')      # hard cut: a matches, * never runs
+    (1,)
+
+This is especially useful with recursive patterns where one branch handles nested
+structures and a fallback handles the rest:
+
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
+    >>> dotted.pluck(d, '(**:-2(.*, [])##, *)')
+    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+
+The recursive branch covers `a` and `x`, so `*` skips those. But `extra` was not
+covered, so `*` picks it up. With hard cut, `extra` would be lost entirely.
+
+Two paths "overlap" if one is a prefix of the other (e.g. `a` and `a.b.c` overlap,
+but `a.b` and `a.c` do not). You can test this directly:
+
+    >>> dotted.overlaps('a', 'a.b.c')
+    True
+    >>> dotted.overlaps('a.b', 'a.c')
+    False
 
 <a id="the-numericize--operator-1"></a>
 ### The numericize `#` operator

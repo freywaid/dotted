@@ -149,8 +149,9 @@ slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
     lambda t: el.NopWrap(el.Slice(*t[1:])) if t and t[0] == '~' else el.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
 
-# Cut marker: branch suffix # means "if this branch matches, don't try later branches" (per-horn cut)
-cut_marker = L('#')
+# Cut markers: ## = soft cut, # = hard cut (try ## first so ## isn't parsed as # + #)
+softcut_marker = L('##')
+cut_marker = softcut_marker | L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
 _slot_item_plain = _slotguts.copy().set_parse_action(el.Slot)
@@ -282,7 +283,9 @@ def _op_group_from_parse(t):
         # Unwrap so branch is always tuple of elements, never raw ParseResults
         branch = tuple(b) if isinstance(b, (list, tuple, pp.ParseResults)) else (b,)
         out.append(branch)
-        if len(item) >= 2 and item[1] == '#':
+        if len(item) >= 2 and item[1] == '##':
+            out.append(el._BRANCH_SOFTCUT)
+        elif len(item) >= 2 and item[1] == '#':
             out.append(el._BRANCH_CUT)
     return el.OpGroupOr(*out)
 op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(_op_group_from_parse)
