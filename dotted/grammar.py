@@ -4,6 +4,7 @@ import decimal
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
 from . import elements as el
+from . import containers as ct
 
 S = pp.Suppress
 L = pp.Literal
@@ -33,7 +34,7 @@ none = pp.Literal('None').set_parse_action(el.NoneValue)
 true = pp.Literal('True').set_parse_action(el.Boolean)
 false = pp.Literal('False').set_parse_action(el.Boolean)
 
-reserved = '.[]*:|+?/=,@&()!~#'  # # is cut in path/op groups; also used in numeric_quoted
+reserved = '.[]*:|+?/=,@&()!~#{}' # {} added for container syntax
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
@@ -63,7 +64,228 @@ slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
 
 _common_pats = wildcard_first | wildcard | regex_first | regex
 _commons = string | _common_pats | numeric_quoted
-value = string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
+
+
+# ---------------------------------------------------------------------------
+# Container grammar — pattern containers (for value/filter context)
+# ---------------------------------------------------------------------------
+
+# Comma with optional surrounding whitespace for container interiors
+_ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).suppress()
+
+# Forward for recursive container values
+container_value = pp.Forward()
+
+# Scalar atoms usable inside containers (same as value atoms minus containers)
+_val_atoms = string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
+
+# Glob inside containers: ... with optional /regex/ then optional count
+# Regex pattern for glob (unsuppressed slashes handled inline)
+_glob_regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).set_parse_action(el.Regex)
+
+# Count forms: min:max, min:, max (single number)
+_glob_count_full = integer + S(':') + integer       # min:max
+_glob_count_min = integer + S(':')                   # min:
+_glob_count_max = integer.copy()                     # max
+
+# Glob: ...  with optional /regex/ then optional count
+_ellipsis = S(L('.') + L('.') + L('.'))
+
+def _make_glob_action(has_regex, has_count):
+    """
+    Build a parse action for a glob form.
+    """
+    def action(t):
+        t = list(t)
+        i = 0
+        pattern = None
+        min_count = 0
+        max_count = None
+        if has_regex:
+            pattern = t[i]
+            i += 1
+        if has_count == 'full':
+            min_count = t[i]
+            max_count = t[i + 1]
+        elif has_count == 'min':
+            min_count = t[i]
+        elif has_count == 'max':
+            max_count = t[i]
+        return ct.Glob(pattern=pattern, min_count=min_count, max_count=max_count)
+    return action
+
+# Glob variants — most specific first
+_glob_re_full = (_ellipsis + _glob_regex + _glob_count_full).set_parse_action(_make_glob_action(True, 'full'))
+_glob_re_min = (_ellipsis + _glob_regex + _glob_count_min).set_parse_action(_make_glob_action(True, 'min'))
+_glob_re_max = (_ellipsis + _glob_regex + _glob_count_max).set_parse_action(_make_glob_action(True, 'max'))
+_glob_re_bare = (_ellipsis + _glob_regex).set_parse_action(_make_glob_action(True, None))
+_glob_bare_full = (_ellipsis + _glob_count_full).set_parse_action(_make_glob_action(False, 'full'))
+_glob_bare_min = (_ellipsis + _glob_count_min).set_parse_action(_make_glob_action(False, 'min'))
+_glob_bare_max = (_ellipsis + _glob_count_max).set_parse_action(_make_glob_action(False, 'max'))
+_glob_bare = _ellipsis.copy().set_parse_action(lambda: [ct.Glob()])
+
+container_glob = (
+    _glob_re_full | _glob_re_min | _glob_re_max | _glob_re_bare |
+    _glob_bare_full | _glob_bare_min | _glob_bare_max | _glob_bare
+)
+
+# Container element: can be a nested container, glob, or scalar/pattern atom
+_container_elem = container_value | container_glob | _val_atoms
+
+# List: [elem, elem, ...]
+_container_list_inner = _container_elem + ZM(_ccomma + _container_elem)
+_container_list_body = S('[') + Opt(_container_list_inner) + S(']')
+
+def _make_container_list(prefix):
+    """
+    Parse action for container list with given type prefix.
+    """
+    def action(t):
+        return ct.ContainerList(*t, type_prefix=prefix)
+    return action
+
+# Unprefixed: [...]
+container_list = _container_list_body.copy().set_parse_action(_make_container_list(None))
+
+# Prefixed: l[...], t[...]
+container_list_l = (S(L('l')) + _container_list_body.copy()).set_parse_action(_make_container_list('l'))
+container_list_t = (S(L('t')) + _container_list_body.copy()).set_parse_action(_make_container_list('t'))
+
+# Dict entry: key_pattern : val_pattern
+_dict_key = _container_elem
+_dict_val = _container_elem
+_dict_entry = (_dict_key + S(':') + pp.Optional(pp.White()).suppress() + _dict_val).set_parse_action(lambda t: [(t[0], t[1])])
+
+# Dict glob entry: glob : val_pattern  (glob on key side)
+_dict_glob_entry = (container_glob + S(':') + pp.Optional(pp.White()).suppress() + _container_elem).set_parse_action(
+    lambda t: [ct.DictGlobEntry(t[0], t[1])])
+# Dict glob entry bare: glob alone (no value constraint)
+_dict_glob_entry_bare = container_glob.copy().set_parse_action(
+    lambda t: [ct.DictGlobEntry(t[0], None)])
+
+_dict_any_entry = _dict_glob_entry | _dict_glob_entry_bare | _dict_entry
+_container_dict_inner = _dict_any_entry + ZM(_ccomma + _dict_any_entry)
+_container_dict_body = S('{') + _container_dict_inner + S('}')
+
+def _make_container_dict(prefix):
+    """
+    Parse action for container dict with given type prefix.
+    """
+    def action(t):
+        return ct.ContainerDict(*t, type_prefix=prefix)
+    return action
+
+# Unprefixed: {...: ...}
+container_dict = _container_dict_body.copy().set_parse_action(_make_container_dict(None))
+
+# Prefixed: d{...}
+container_dict_d = (S(L('d')) + _container_dict_body.copy()).set_parse_action(_make_container_dict('d'))
+
+# Set: {elem, elem, ...} — no colons (disambiguated from dict by trying dict first)
+_container_set_inner = _container_elem + ZM(_ccomma + _container_elem)
+_container_set_body = S('{') + _container_set_inner + S('}')
+
+def _make_container_set(prefix):
+    """
+    Parse action for container set with given type prefix.
+    """
+    def action(t):
+        return ct.ContainerSet(*t, type_prefix=prefix)
+    return action
+
+# Unprefixed: {elem, ...}
+container_set = _container_set_body.copy().set_parse_action(_make_container_set(None))
+
+# Prefixed: s{...}, fs{...}
+container_set_s = (S(L('s')) + _container_set_body.copy()).set_parse_action(_make_container_set('s'))
+container_set_fs = (S(L('fs')) + _container_set_body.copy()).set_parse_action(_make_container_set('fs'))
+
+# Empty containers
+_empty_list_body = S('[') + S(']')
+container_empty_list = _empty_list_body.copy().set_parse_action(lambda: [ct.ContainerList(type_prefix=None)])
+container_empty_list_l = (S(L('l')) + _empty_list_body.copy()).set_parse_action(lambda: [ct.ContainerList(type_prefix='l')])
+container_empty_list_t = (S(L('t')) + _empty_list_body.copy()).set_parse_action(lambda: [ct.ContainerList(type_prefix='t')])
+
+_empty_brace_body = S('{') + S('}')
+container_empty_dict = _empty_brace_body.copy().set_parse_action(lambda: [ct.ContainerDict(type_prefix=None)])
+container_empty_dict_d = (S(L('d')) + _empty_brace_body.copy()).set_parse_action(lambda: [ct.ContainerDict(type_prefix='d')])
+container_empty_set_s = (S(L('s')) + _empty_brace_body.copy()).set_parse_action(lambda: [ct.ContainerSet(type_prefix='s')])
+container_empty_set_fs = (S(L('fs')) + _empty_brace_body.copy()).set_parse_action(lambda: [ct.ContainerSet(type_prefix='fs')])
+
+# Resolve forward: try prefixed before unprefixed, empties before non-empty, dict before set
+container_value <<= (
+    container_list_l | container_list_t |
+    container_empty_list_l | container_empty_list_t | container_empty_list |
+    container_list |
+    container_dict_d |
+    container_empty_dict_d | container_empty_dict |
+    container_empty_set_fs | container_empty_set_s |
+    container_set_fs | container_set_s |
+    container_dict | container_set
+)
+
+
+# ---------------------------------------------------------------------------
+# Concrete containers (for transform args — no patterns/globs allowed)
+# ---------------------------------------------------------------------------
+
+_concrete_atoms = quoted.copy().set_parse_action(lambda t: [t[0]]) | ppc.number | none | true | false
+
+# Forward for recursive concrete values
+concrete_value = pp.Forward()
+_concrete_elem = concrete_value | _concrete_atoms
+
+# Concrete list: [elem, ...]
+_concrete_list_inner = _concrete_elem + ZM(_ccomma + _concrete_elem)
+_concrete_list_body = S('[') + Opt(_concrete_list_inner) + S(']')
+
+concrete_list = _concrete_list_body.copy().set_parse_action(lambda t: [list(t)])
+concrete_list_t = (S(L('t')) + _concrete_list_body.copy()).set_parse_action(lambda t: [tuple(t)])
+concrete_list_l = (S(L('l')) + _concrete_list_body.copy()).set_parse_action(lambda t: [list(t)])
+
+# Concrete dict entry: scalar : scalar
+_concrete_dict_entry = (_concrete_elem + S(':') + pp.Optional(pp.White()).suppress() + _concrete_elem).set_parse_action(lambda t: [(t[0], t[1])])
+_concrete_dict_inner = _concrete_dict_entry + ZM(_ccomma + _concrete_dict_entry)
+_concrete_dict_body = S('{') + _concrete_dict_inner + S('}')
+
+concrete_dict = _concrete_dict_body.copy().set_parse_action(lambda t: [dict(t.as_list())])
+concrete_dict_d = (S(L('d')) + _concrete_dict_body.copy()).set_parse_action(lambda t: [dict(t.as_list())])
+
+# Concrete set: {elem, ...}
+_concrete_set_inner = _concrete_elem + ZM(_ccomma + _concrete_elem)
+_concrete_set_body = S('{') + _concrete_set_inner + S('}')
+
+concrete_set = _concrete_set_body.copy().set_parse_action(lambda t: [set(t)])
+concrete_set_s = (S(L('s')) + _concrete_set_body.copy()).set_parse_action(lambda t: [set(t)])
+concrete_set_fs = (S(L('fs')) + _concrete_set_body.copy()).set_parse_action(lambda t: [frozenset(t)])
+
+# Concrete empties
+_concrete_empty_list = (S('[') + S(']')).set_parse_action(lambda: [[]])
+_concrete_empty_list_l = (S(L('l')) + S('[') + S(']')).set_parse_action(lambda: [[]])
+_concrete_empty_list_t = (S(L('t')) + S('[') + S(']')).set_parse_action(lambda: [()])
+_concrete_empty_dict = (S('{') + S('}') ).set_parse_action(lambda: [{}])
+_concrete_empty_dict_d = (S(L('d')) + S('{') + S('}')).set_parse_action(lambda: [{}])
+_concrete_empty_set_s = (S(L('s')) + S('{') + S('}')).set_parse_action(lambda: [set()])
+_concrete_empty_set_fs = (S(L('fs')) + S('{') + S('}')).set_parse_action(lambda: [frozenset()])
+
+# Resolve forward: try prefixed before unprefixed, empties before non-empty, dict before set
+concrete_value <<= (
+    concrete_list_l | concrete_list_t |
+    _concrete_empty_list_l | _concrete_empty_list_t | _concrete_empty_list |
+    concrete_list |
+    concrete_dict_d |
+    _concrete_empty_dict_d | _concrete_empty_dict |
+    _concrete_empty_set_fs | _concrete_empty_set_s |
+    concrete_set_fs | concrete_set_s |
+    concrete_dict | concrete_set
+)
+
+
+# ---------------------------------------------------------------------------
+# value and key (updated to include containers)
+# ---------------------------------------------------------------------------
+
+value = container_value | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
 key = _commons | non_integer | numeric_key | word
 
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
@@ -319,7 +541,7 @@ multi = OM(_dot_segment_guarded | _dot_segment | _dot_recursive | attrcmd | slot
 invert = Opt(L('-').set_parse_action(el.Invert))
 dotted = invert + dotted_top + ZM(multi)
 
-targ = quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = pp.Group(transform_name.copy() + ZM(param))
 transforms = ZM(pipe + transform)
