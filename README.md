@@ -118,6 +118,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
 | Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
 | Recursive traversal (`**`, `*key`) | ✅ | ✅ | ✅ | ❌ |
+| Depth slicing (`**:-1`, `**2:`) | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
