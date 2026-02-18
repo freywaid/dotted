@@ -37,6 +37,7 @@ helps you do that.
   - [Numeric types](#numeric-types)
   - [Quoting](#quoting)
   - [The numericize `#` operator](#the-numericize--operator)
+  - [Container types](#container-types)
 - [Patterns](#patterns)
   - [Wildcards](#wildcards)
   - [Regular expressions](#regular-expressions)
@@ -68,10 +69,13 @@ helps you do that.
   - [Filter negation and not-equals](#filter-negation-and-not-equals)
   - [Boolean and None filter values](#boolean-and-none-filter-values)
   - [Value guard](#value-guard)
+  - [Container filter values](#container-filter-values)
+  - [Type prefixes](#type-prefixes)
   - [Dotted filter keys](#dotted-filter-keys)
   - [Slice notation in filter keys](#slice-notation-in-filter-keys)
 - [Transforms](#transforms)
   - [Built-in Transforms](#built-in-transforms)
+  - [Container transform arguments](#container-transform-arguments)
   - [Custom Transforms](#custom-transforms)
 - [Constants and Exceptions](#constants-and-exceptions)
 - [FAQ](#faq)
@@ -120,6 +124,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Depth slicing (`**:-1`, `**:2`) | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
+| Container filter values (`[1, ...]`, `{k: v}`) | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -135,6 +140,11 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
+
+### v0.31.0
+- **`{` and `}` are now reserved characters**: Curly braces are used for container
+  filter values (dict and set patterns). If you have keys containing literal `{` or `}`,
+  quote them: `"my{key}"`.
 
 ### v0.30.0
 - **`update_if` pred now gates on incoming value, not current value**: Previously,
@@ -693,6 +703,36 @@ This will coerce to a numeric type (e.g. float).
     'fooled you'
     >>> dotted.get(d, 'a.#"1.2"')
     'hello'
+
+<a id="container-types"></a>
+### Container types
+
+Container literals express list, dict, set, tuple, and frozenset values inline. They
+appear in two contexts: as [filter values / value guards](#container-filter-values)
+(with pattern support) and as [transform arguments](#container-transform-arguments)
+(concrete values only).
+
+| Syntax | Type | Notes |
+|--------|------|-------|
+| `[1, 2, 3]` | list or tuple | Unprefixed matches both |
+| `l[1, 2, 3]` | list | Strict: list only |
+| `t[1, 2, 3]` | tuple | Strict: tuple only |
+| `{"a": 1}` | dict | Unprefixed matches dict-like |
+| `d{"a": 1}` | dict | Strict: dict only (isinstance) |
+| `{1, 2, 3}` | set or frozenset | Unprefixed matches both |
+| `s{1, 2, 3}` | set | Strict: set only |
+| `fs{1, 2, 3}` | frozenset | Strict: frozenset only |
+
+Empty containers: `[]` (empty list/tuple), `{}` (empty dict), `s{}` (empty set),
+`fs{}` (empty frozenset), `l[]`, `t[]`, `d{}`.
+
+Without a [type prefix](#type-prefixes), brackets match loosely: `[]` matches any
+list or tuple, `{v, v}` matches any set or frozenset, `{}` matches dict (following
+Python convention where `{}` is a dict literal, not a set).
+
+In filter context, containers support patterns (`*`, `...`, `/regex/`) inside — see
+[Container filter values](#container-filter-values). In transform argument context,
+only concrete scalar values are allowed.
 
 <a id="patterns"></a>
 ## Patterns
@@ -1366,7 +1406,8 @@ For lists of primitive values, use `[*]=value`:
     >>> dotted.get(data, '[0]=1')
     1
 
-Guards support all value types: numbers, `None`, `True`/`False`, strings, regex, and `*`:
+Guards support all value types: numbers, `None`, `True`/`False`, strings, regex, `*`,
+and [container patterns](#container-filter-values) (`[1, ...]`, `{"a": 1, ...: *}`, `{1, 2, ...}`):
 
     >>> dotted.get([None, 1, 2], '[*]=None')
     (None,)
@@ -1395,6 +1436,164 @@ the item values directly. For primitive lists, use `[*]=value`.
 
     >>> dotted.get([True, 1, False, 0], '[*]=True')
     (True, True, 1)
+
+<a id="container-filter-values"></a>
+### Container filter values
+
+Filter values and value guards can use **container patterns** to match against lists,
+dicts, and sets structurally. Container patterns support wildcards (`*`), globs (`...`),
+regex, and full nesting.
+
+#### List patterns
+
+`[elements]` matches list and tuple values element by element:
+
+    >>> import dotted
+    >>> d = {'items': [1, 2, 3], 'name': 'test', 'pair': (1, 2)}
+
+    # Exact match
+    >>> dotted.get(d, '*=[1, 2, 3]')
+    ([1, 2, 3],)
+
+    # Wildcard: * matches exactly one element
+    >>> dotted.get(d, '*=[1, *, 3]')
+    ([1, 2, 3],)
+
+    # Glob: ... matches zero or more elements
+    >>> dotted.get(d, '*=[1, ...]')
+    ([1, 2, 3],)
+
+    # Empty list matches any empty list or tuple
+    >>> dotted.get({'a': [], 'b': [1]}, '*=[]')
+    ([],)
+
+Unprefixed `[]` matches both list and tuple. See [Type prefixes](#type-prefixes)
+for strict type matching.
+
+#### Dict patterns
+
+`{key: value}` matches dict values by key-value pairs:
+
+    >>> d = [{'cfg': {'a': 1, 'b': 2}}, {'cfg': {'a': 1}}]
+
+    # Exact match — no extra keys allowed
+    >>> dotted.get(d, '[*&cfg={"a": 1}]')
+    ({'cfg': {'a': 1}},)
+
+    # Partial match — ...: * allows extra entries
+    >>> dotted.get(d, '[*&cfg={"a": 1, ...: *}]')
+    ({'cfg': {'a': 1, 'b': 2}}, {'cfg': {'a': 1}})
+
+    # Any dict: {...: *}
+    >>> dotted.get({'x': {'a': 1}, 'y': 42}, '*={...: *}')
+    ({'a': 1},)
+
+#### Set patterns
+
+`{elements}` (comma-separated, no colons) matches set and frozenset values:
+
+    >>> d = {'tags': {1, 2, 3}, 'name': 'test'}
+
+    # Exact match
+    >>> dotted.get(d, '*={1, 2, 3}')
+    ({1, 2, 3},)
+
+    # Partial match — ... allows extra members
+    >>> dotted.get(d, '*={1, ...}')
+    ({1, 2, 3},)
+
+Unprefixed `{v, v}` matches both set and frozenset. See [Type prefixes](#type-prefixes)
+for strict type matching.
+
+#### The `...` glob element
+
+Inside containers, `...` matches zero or more elements. It supports optional regex
+patterns and count constraints:
+
+| Form | Meaning |
+|------|---------|
+| `...` | 0 or more, anything |
+| `...5` | 0 to 5 |
+| `...2:5` | 2 to 5 |
+| `...2:` | 2 or more |
+| `.../regex/` | 0 or more, each matching regex |
+| `.../regex/2:5` | 2 to 5, each matching regex |
+
+Examples:
+
+    >>> d = {'nums': [1, 2, 3, 4, 5]}
+
+    # Glob with count: at most 3 elements
+    >>> dotted.get(d, '*=[...3]')
+    ()
+    >>> dotted.get({'nums': [1, 2, 3]}, '*=[...3]')
+    ([1, 2, 3],)
+
+    # Glob with regex: all elements must be digits
+    >>> dotted.get(d, '*=[.../\\d+/]')
+    ([1, 2, 3, 4, 5],)
+
+In dicts, `...` appears on the key side:
+
+    >>> d = {'user_a': 1, 'user_b': 2, 'admin': 3}
+    >>> dotted.get({'x': d}, 'x={.../user_.*/: *, ...: *}')
+    ({'user_a': 1, 'user_b': 2, 'admin': 3},)
+
+#### Nested containers
+
+Patterns nest fully:
+
+    >>> d = {'data': {'a': [1, 2, 3], 'b': {'x': 10}}}
+    >>> dotted.get(d, '*={"a": [1, ...], ...: *}')
+    ({'a': [1, 2, 3], 'b': {'x': 10}},)
+
+#### Filters with container values
+
+Container patterns work in filter expressions too:
+
+    >>> data = [{'tags': [1, 2, 3]}, {'tags': [4, 5]}, {'tags': [1]}]
+    >>> dotted.get(data, '[*&tags=[1, ...]]')
+    ({'tags': [1, 2, 3]}, {'tags': [1]})
+
+<a id="type-prefixes"></a>
+### Type prefixes
+
+Container patterns support type prefixes for strict type matching. Without a prefix,
+matching is loose (e.g., `[]` matches both list and tuple). With a prefix, only the
+specified type matches.
+
+| Prefix | Type | Bracket |
+|--------|------|---------|
+| `l` | list | `l[...]` |
+| `t` | tuple | `t[...]` |
+| `d` | dict | `d{...}` |
+| `s` | set | `s{...}` |
+| `fs` | frozenset | `fs{...}` |
+
+Examples:
+
+    >>> d = {'a': [1, 2], 'b': (1, 2)}
+
+    # Unprefixed: matches both
+    >>> dotted.get(d, '*=[1, 2]')
+    ([1, 2], (1, 2))
+
+    # Prefixed: strict type
+    >>> dotted.get(d, '*=l[1, 2]')
+    ([1, 2],)
+    >>> dotted.get(d, '*=t[1, 2]')
+    ((1, 2),)
+
+Empty containers with prefixes:
+
+    >>> d = {'a': set(), 'b': frozenset(), 'c': []}
+    >>> dotted.get(d, '*=s{}')
+    (set(),)
+    >>> dotted.get(d, '*=fs{}')
+    (frozenset(),)
+
+**Note**: Unprefixed `{}` matches dict (Python convention — `{}` is a dict, not a set).
+Use `s{}` for empty set, `fs{}` for empty frozenset.
 
 <a id="dotted-filter-keys"></a>
 ### Dotted filter keys
@@ -1476,6 +1675,35 @@ returning the original value:
     Traceback (most recent call last):
     ...
     ValueError: invalid literal for int() with base 10: 'hello'
+
+<a id="container-transform-arguments"></a>
+### Container transform arguments
+
+Transform parameters accept container literals in addition to scalars. These produce
+raw Python values — no patterns (`*`, `...`, `/regex/`) allowed in this context.
+
+    >>> import dotted
+    >>> @dotted.transform('lookup')
+    ... def lookup(val, table):
+    ...     return table.get(val)
+    >>> dotted.get({'code': 'a'}, 'code|lookup:{"a": 1, "b": 2}')
+    1
+
+Container arguments support [type prefixes](#type-prefixes):
+
+| Syntax | Produces |
+|--------|----------|
+| `[1, 2, 3]` | `list` |
+| `t[1, 2, 3]` | `tuple` |
+| `{"a": 1}` | `dict` |
+| `{1, 2, 3}` | `set` |
+| `fs{1, 2}` | `frozenset` |
+| `[]` | `[]` (empty list) |
+| `t[]` | `()` (empty tuple) |
+| `{}` | `{}` (empty dict) |
+| `s{}` | `set()` (empty set) |
+
+Containers nest: `{"a": [1, 2], "b": t[3, 4]}` produces `{'a': [1, 2], 'b': (3, 4)}`.
 
 <a id="custom-transforms"></a>
 ### Custom Transforms

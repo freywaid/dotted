@@ -53,16 +53,10 @@ def _has_any(gen):
     return any(True for _ in gen)
 
 
-def is_mapping(node):
-    return hasattr(node, 'keys') and callable(node.keys)
+from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
-
-def is_list_like(node):
-    return hasattr(node, '__getitem__') and not isinstance(node, (str, bytes)) and not is_mapping(node)
-
-
-def is_terminal(node):
-    return not is_mapping(node) and not is_list_like(node)
+# Back-compat alias
+is_mapping = is_dict_like
 
 
 class Match:
