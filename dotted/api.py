@@ -323,65 +323,39 @@ def setdefault_multi(obj, keyvalues, apply_transforms=True):
         yield setdefault(obj, k, v, apply_transforms=apply_transforms)
 
 
-def update_if(obj, key, val, pred=lambda val: val is None, mutable=True, apply_transforms=True):
+def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True):
     """
-    Update when the path is missing or when pred(current_value) is true.
-    Always updates when there is nothing at the key (path missing); the predicate
-    only gates updates when the path exists. Default pred is lambda val: val is None,
-    so by default we fill missing or None slots and do not overwrite existing non-None.
+    Update only when pred(val) is true.  Default pred skips None values.
+    Use pred=None for unconditional update (same as update).
 
-    Equivalent using path expressions only (no pred): update_if with default pred
-    is the same as update with path "( (name&first=None).first, name.~first, name.first )?"
-    (if first is None -> update; if first exists with value -> NOP; if missing -> create).
-    Note that path expressions can use the ``~`` operator to match but not update (NOP).
-    >>> path = '( (name&first=None).first, name.~first, name.first )?'
-    >>> update_if({'name': {}}, 'name.first', 'hello')
-    {'name': {'first': 'hello'}}
-    >>> update({'name': {}}, path, 'hello')
-    {'name': {'first': 'hello'}}
-    >>> update_if({'name': {'first': 'Alice'}}, 'name.first', 'hello')
-    {'name': {'first': 'Alice'}}
-    >>> update({'name': {'first': 'Alice'}}, path, 'hello')
-    {'name': {'first': 'Alice'}}
-    >>> update_if({'name': {'first': None}}, 'name.first', 'hello')
-    {'name': {'first': 'hello'}}
-    >>> update({'name': {'first': None}}, path, 'hello')
-    {'name': {'first': 'hello'}}
+    >>> update_if({}, 'a', 1)
+    {'a': 1}
+    >>> update_if({}, 'a', None)
+    {}
+    >>> update_if({}, 'a', 0)
+    {'a': 0}
+    >>> update_if({}, 'a', '', pred=bool)
+    {}
     """
     if obj is AUTO:
         obj = _auto_root_from_key(key)
-    dummy = object()
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True
 
-    if pred is None:
-        ops = parse(key)
-        return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
-
-    if not is_pattern(key):
-        ops = parse(key)
-        current = get(obj, key, dummy, dummy, apply_transforms=False)
-        if current is dummy or pred(current):
-            obj = el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
+    if pred is not None and not pred(val):
         return obj
 
-    paths = expand(obj, key)
-    for path in paths:
-        ops = parse(path)
-        current = get(obj, ops, dummy, dummy, apply_transforms=False)
-        if current is dummy or pred(current):
-            obj = el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
-    return obj
+    ops = parse(key)
+    return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
 
 
-def update_if_multi(obj, items, pred=lambda val: val is None, mutable=True, apply_transforms=True):
+def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True):
     """
-    Update multiple keys with per-item or default predicate. items: iterable of
-    (key, val) or (key, val, pred). (key, val) uses the method pred; (key, val, p)
-    uses p when p is not None else method pred.
-    >>> update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2)])
-    {'a': 99, 'b': 2}
+    Update multiple keys, skipping items where pred(val) is false.
+    items: iterable of (key, val) or (key, val, pred).
+    >>> update_if_multi({}, [('a', 1), ('b', None), ('c', 3)])
+    {'a': 1, 'c': 3}
     """
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
@@ -455,15 +429,15 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
     return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms)
 
 
-def remove_if(obj, key, pred=lambda val: val is None, val=ANY, mutable=True):
+def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True):
     """
-    Remove when the path is missing or when pred(current_value) is true.
-    Always removes when there is nothing at the key; the predicate only gates
-    removal when the path exists. Default pred is lambda val: val is None.
-    >>> remove_if({'a': 1, 'b': None}, 'b')
+    Remove only when pred(key) is true.  Default pred skips None keys.
+    Use pred=None for unconditional remove (same as remove).
+
+    >>> remove_if({'a': 1}, 'a')
+    {}
+    >>> remove_if({'a': 1}, None)
     {'a': 1}
-    >>> remove_if({'a': 1, 'b': 2}, 'b')
-    {'a': 1, 'b': 2}
     """
     if obj is AUTO:
         obj = _auto_root_from_key(key)
@@ -471,34 +445,18 @@ def remove_if(obj, key, pred=lambda val: val is None, val=ANY, mutable=True):
         obj = copy.deepcopy(obj)
         mutable = True
 
-    if pred is None:
-        return el.removes(parse(key), obj, val)
-
-    dummy = object()
-    if not is_pattern(key):
-        ops = parse(key)
-        current = get(obj, key, dummy, dummy, apply_transforms=False)
-        if current is dummy or pred(current):
-            return el.removes(ops, obj, val)
+    if pred is not None and not pred(key):
         return obj
 
-    paths = expand(obj, key)
-    for path in paths:
-        ops = parse(path)
-        current = get(obj, ops, dummy, dummy, apply_transforms=False)
-        if current is dummy or pred(current):
-            obj = el.removes(ops, obj, val)
-    return obj
+    return el.removes(parse(key), obj, val)
 
 
-def remove_if_multi(obj, items, keys_only=True, pred=lambda val: val is None, mutable=True):
+def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None, mutable=True):
     """
-    Remove by keys or (key, val, pred). When keys_only=True,
-    items is an iterable of keys and pred is used for each (default: remove when
-    value is None). When keys_only=False, items is (key, val) or (key, val, pred),
-    matching update_if_multi's (key, val, pred?) arrangement.
-    >>> remove_if_multi({'a': 1, 'b': None, 'c': 2}, ['b'])
-    {'a': 1, 'c': 2}
+    Remove by keys or (key, val, pred), skipping items where pred(key) is false.
+    Default pred skips None keys.
+    >>> remove_if_multi({'a': 1, 'b': 2}, ['a', None, 'b'])
+    {}
     """
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)

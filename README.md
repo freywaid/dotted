@@ -134,6 +134,20 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.30.0
+- **`update_if` pred now gates on incoming value, not current value**: Previously,
+  `update_if(obj, key, val)` checked `pred(current_value_at_path)`. Now it checks
+  `pred(val)`. Default pred changed from `lambda val: val is None` to
+  `lambda val: val is not None` — meaning None values are skipped.
+  Use path expressions with NOP (`~`) and cut (`#`) for conditional updates based on
+  existing values.
+- **`remove_if` pred now gates on key, not current value**: Previously,
+  `remove_if(obj, key)` checked `pred(current_value_at_path)`. Now it checks
+  `pred(key)`. Default pred is `lambda key: key is not None` — meaning None keys
+  are skipped.
+- **`update_if_multi` / `remove_if_multi`**: Same pred changes as their single
+  counterparts.
+
 ### v0.28.0
 - **`[*=value]` on primitive lists no longer works** — use `[*]=value` (value guard) instead.
   `[*=value]` is a SliceFilter that tests *keys* of dict-like items; primitives have no keys,
@@ -221,21 +235,18 @@ immutable containers (e.g., a tuple inside a dict).
 
 #### Update if
 
-`update_if` updates only when the path is missing or when `pred(current_value)` is true.
-It always updates when there is nothing at the key; the predicate only gates updates
-when the path exists. Default pred is `lambda val: val is None` (fill missing or None
-slots, don't overwrite existing non-None). Use `pred=None` for unconditional update
-(same as `update`):
+`update_if` updates only when `pred(val)` is true. Default pred is
+`lambda val: val is not None`, so None values are skipped. Use `pred=None`
+for unconditional update (same as `update`):
 
     >>> import dotted
-    >>> dotted.update_if({'name': {}}, 'name.first', 'hello')
-    {'name': {'first': 'hello'}}
-    >>> dotted.update_if({'name': {'first': 'Alice'}}, 'name.first', 'hello')  # no change
-    {'name': {'first': 'Alice'}}
-    >>> dotted.update_if({'name': {'first': None}}, 'name.first', 'hello')
-    {'name': {'first': 'hello'}}
+    >>> dotted.update_if({}, 'a', 1)
+    {'a': 1}
+    >>> dotted.update_if({}, 'a', None)
+    {}
+    >>> dotted.update_if({}, 'a', '', pred=bool)
+    {}
 
-The same behavior can be achieved with path expressions using the NOP operator (see below).
 Use `update_if_multi` for batch updates with per-item `(key, val)` or `(key, val, pred)`.
 
 #### Update with NOP (~)
@@ -270,17 +281,17 @@ well, only the matched patterns that also match the value will be removed.
 
 #### Remove if
 
-`remove_if` removes only when the path is missing or when `pred(current_value)` is true.
-Default pred is `lambda val: val is None` (remove only when value is missing or None).
-Use `pred=None` for unconditional remove (same as `remove`):
+`remove_if` removes only when `pred(key)` is true. Default pred is
+`lambda key: key is not None`, so None keys are skipped. Use `pred=None`
+for unconditional remove (same as `remove`):
 
     >>> import dotted
-    >>> dotted.remove_if({'a': 1, 'b': None, 'c': 2}, 'b')
-    {'a': 1, 'c': 2}
-    >>> dotted.remove_if({'a': 1, 'b': 2, 'c': 3}, 'b')  # no change
-    {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.remove_if({'a': 1, 'b': 2}, 'a')
+    {'b': 2}
+    >>> dotted.remove_if({'a': 1}, None)
+    {'a': 1}
 
-Use `remove_if_multi` for batch removal with per-item pred or `(key, val, pred)`.
+Use `remove_if_multi` for batch removal with per-item `(key, val, pred)`.
 
 <a id="match"></a>
 ### Match
@@ -502,10 +513,10 @@ Most operations have `*_multi` variants for batch processing:
     [1, 2]
     >>> d
     {'a': 1, 'b': 2}
-    >>> dotted.update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2)])  # (key, val) or (key, val, pred)
-    {'a': 99, 'b': 2}
-    >>> dotted.remove_if_multi({'a': 1, 'b': None, 'c': 2}, ['b'])  # keys_only=True, default pred
-    {'a': 1, 'c': 2}
+    >>> dotted.update_if_multi({}, [('a', 1), ('b', None), ('c', 3)])  # skips None vals
+    {'a': 1, 'c': 3}
+    >>> dotted.remove_if_multi({'a': 1, 'b': 2}, ['a', None, 'b'])  # skips None keys
+    {}
 
 Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `remove_multi`,
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,

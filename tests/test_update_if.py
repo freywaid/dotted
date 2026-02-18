@@ -1,143 +1,143 @@
 """
 Tests for update_if, update_if_multi, remove_if, remove_if_multi.
+
+update_if: pred gates on the incoming val (default: skip None).
+remove_if: pred gates on the key (default: skip None keys).
 """
 import copy
 import dotted
-import pytest
 
 
 # update_if
 
-def test_update_if_missing():
-    """Always updates when path is missing."""
-    r = dotted.update_if({}, 'a.b', 7)
-    assert r == {'a': {'b': 7}}
+def test_update_if_non_none():
+    """Default pred: updates when val is not None."""
+    r = dotted.update_if({}, 'a', 1)
+    assert r == {'a': 1}
 
 
-def test_update_if_present_pred_true_default():
-    """Default pred is lambda val: val is None; updates when value is None."""
-    r = dotted.update_if({'a': {'b': None}}, 'a.b', 7)
-    assert r == {'a': {'b': 7}}
+def test_update_if_none_skipped():
+    """Default pred: skips when val is None."""
+    r = dotted.update_if({}, 'a', None)
+    assert r == {}
 
 
-def test_update_if_present_pred_false_default():
-    """Does not update when value is not None (default pred)."""
-    r = dotted.update_if({'a': {'b': 5}}, 'a.b', 7)
-    assert r == {'a': {'b': 5}}
+def test_update_if_zero_not_skipped():
+    """Default pred: 0 is not None, so update proceeds."""
+    r = dotted.update_if({}, 'a', 0)
+    assert r == {'a': 0}
 
 
-def test_update_if_present_pred_true_explicit():
-    """Explicit pred: update when pred(current) is true."""
-    r = dotted.update_if({'a': {'b': 2}}, 'a.b', 99, pred=lambda v: v < 5)
-    assert r == {'a': {'b': 99}}
+def test_update_if_empty_string_not_skipped():
+    """Default pred: '' is not None, so update proceeds."""
+    r = dotted.update_if({}, 'a', '')
+    assert r == {'a': ''}
 
 
-def test_update_if_present_pred_false_explicit():
-    """Explicit pred: no update when pred(current) is false."""
-    r = dotted.update_if({'a': {'b': 10}}, 'a.b', 99, pred=lambda v: v < 5)
-    assert r == {'a': {'b': 10}}
+def test_update_if_pred_bool():
+    """Custom pred=bool: skips falsy values."""
+    r = dotted.update_if({}, 'a', '', pred=bool)
+    assert r == {}
+    r = dotted.update_if({}, 'a', 0, pred=bool)
+    assert r == {}
+    r = dotted.update_if({}, 'a', 'hello', pred=bool)
+    assert r == {'a': 'hello'}
 
 
-def test_update_if_pattern_per_match():
-    """Per-match predicate: only update where pred holds."""
-    d = {'a': [{'x': 1}, {'x': 2}, {'x': 3}]}
-    r = dotted.update_if(d, 'a[*].x', 0, pred=lambda v: v < 3)
-    assert r == {'a': [{'x': 0}, {'x': 0}, {'x': 3}]}
+def test_update_if_pred_none_unconditional():
+    """pred=None: always updates, same as update."""
+    r = dotted.update_if({}, 'a', None, pred=None)
+    assert r == {'a': None}
+
+
+def test_update_if_existing_value():
+    """Updates existing value when pred passes."""
+    r = dotted.update_if({'a': 1}, 'a', 2)
+    assert r == {'a': 2}
 
 
 def test_update_if_mutable_false():
     """mutable=False returns a copy and does not mutate original."""
-    orig = {'a': None}
-    r = dotted.update_if(orig, 'a', 1, mutable=False)
-    assert orig == {'a': None}
-    assert r == {'a': 1}
+    orig = {'a': 1}
+    r = dotted.update_if(orig, 'a', 2, mutable=False)
+    assert orig == {'a': 1}
+    assert r == {'a': 2}
 
 
-def test_update_if_equivalent_to_path_expression():
-    """update_if with default pred matches update with path ( (name&first=None).first, name.~first, name.first )?."""
-    path = '( (name&first=None).first, name.~first, name.first )?'
-    assert dotted.update_if({'name': {}}, 'name.first', 'hello') == dotted.update({'name': {}}, path, 'hello')
-    assert dotted.update_if({'name': {'first': 'Alice'}}, 'name.first', 'hello') == dotted.update({'name': {'first': 'Alice'}}, path, 'hello')
-    assert dotted.update_if({'name': {'first': None}}, 'name.first', 'hello') == dotted.update({'name': {'first': None}}, path, 'hello')
-
-
-# remove_if
-
-def test_remove_if_missing():
-    """Remove when path missing: no-op (nothing to remove)."""
-    r = dotted.remove_if({'a': 1}, 'b')
-    assert r == {'a': 1}
-
-
-def test_remove_if_present_pred_true_default():
-    """Default pred: remove when value is None."""
-    r = dotted.remove_if({'a': 1, 'b': None}, 'b')
-    assert r == {'a': 1}
-
-
-def test_remove_if_present_pred_false_default():
-    """Default pred: do not remove when value is not None."""
-    r = dotted.remove_if({'a': 1, 'b': 2}, 'b')
-    assert r == {'a': 1, 'b': 2}
-
-
-def test_remove_if_pattern_per_match():
-    """Per-match predicate: only remove where pred holds."""
-    d = {'a': [{'x': 1}, {'x': 2}, {'x': 3}]}
-    r = dotted.remove_if(d, 'a[*].x', pred=lambda v: v < 3)
-    assert dotted.get(r, 'a[*].x') == (3,)
+def test_update_if_nested():
+    """Works with nested paths."""
+    r = dotted.update_if({}, 'a.b.c', 7)
+    assert r == {'a': {'b': {'c': 7}}}
 
 
 # update_if_multi
 
-def test_update_if_multi():
-    """Multiple (key, val, pred); pred None uses default."""
-    r = dotted.update_if_multi({'a': 1}, [('a', 99, lambda v: v == 1), ('b', 2, None)])
-    assert r == {'a': 99, 'b': 2}
+def test_update_if_multi_skips_none():
+    """Default pred: skips None values."""
+    r = dotted.update_if_multi({}, [('a', 1), ('b', None), ('c', 3)])
+    assert r == {'a': 1, 'c': 3}
 
 
-def test_update_if_multi_partial():
-    """Only some keys updated when pred blocks others."""
-    r = dotted.update_if_multi(
-        {'x': 1, 'y': 2},
-        [('x', 10, lambda v: v == 1), ('y', 20, lambda v: v == 99)]
-    )
-    assert r == {'x': 10, 'y': 2}
+def test_update_if_multi_custom_pred():
+    """Per-item pred overrides default."""
+    r = dotted.update_if_multi({}, [
+        ('a', 1),
+        ('b', 0, bool),      # 0 is falsy, skip
+        ('c', 'hi', bool),   # truthy, proceed
+    ])
+    assert r == {'a': 1, 'c': 'hi'}
+
+
+def test_update_if_multi_pred_none_unconditional():
+    """pred=None in tuple: unconditional update."""
+    r = dotted.update_if_multi({}, [('a', None, None)])
+    assert r == {'a': None}
+
+
+# remove_if
+
+def test_remove_if_non_none_key():
+    """Default pred: removes when key is not None."""
+    r = dotted.remove_if({'a': 1, 'b': 2}, 'a')
+    assert r == {'b': 2}
+
+
+def test_remove_if_none_key_skipped():
+    """Default pred: skips when key is None."""
+    r = dotted.remove_if({'a': 1}, None)
+    assert r == {'a': 1}
+
+
+def test_remove_if_pred_none_unconditional():
+    """pred=None: always removes, same as remove."""
+    r = dotted.remove_if({'a': 1}, 'a', pred=None)
+    assert r == {}
+
+
+def test_remove_if_custom_pred():
+    """Custom pred on key."""
+    # Only remove keys starting with underscore
+    r = dotted.remove_if({'_private': 1, 'public': 2}, '_private', pred=lambda k: k.startswith('_'))
+    assert r == {'public': 2}
+    r = dotted.remove_if({'_private': 1, 'public': 2}, 'public', pred=lambda k: k.startswith('_'))
+    assert r == {'_private': 1, 'public': 2}
 
 
 # remove_if_multi
 
-def test_remove_if_multi_keys_only():
-    """keys_only=True: remove listed keys (pred always true)."""
-    r = dotted.remove_if_multi({'a': 1, 'b': None, 'c': 2}, ['b'])
-    assert r == {'a': 1, 'c': 2}
+def test_remove_if_multi_skips_none():
+    """Default pred: skips None keys."""
+    r = dotted.remove_if_multi({'a': 1, 'b': 2}, ['a', None, 'b'])
+    assert r == {}
 
 
-def test_remove_if_multi_with_pred():
-    """keys_only=False: (key, val, pred) like update_if_multi."""
-    d = {'a': 1, 'b': None, 'c': 2}
-    r = dotted.remove_if_multi(d, [('b', dotted.ANY, lambda v: v is None), ('c', dotted.ANY, lambda v: v == 2)], keys_only=False)
+def test_remove_if_multi_all_none():
+    """All None keys: nothing removed."""
+    r = dotted.remove_if_multi({'a': 1}, [None, None])
     assert r == {'a': 1}
 
 
-def test_remove_if_multi_keys_only_custom_pred():
-    """keys_only=True with explicit pred: only remove where pred(value) is true."""
-    d = {'a': 0, 'b': 1, 'c': 0}
-    r = dotted.remove_if_multi(d, ['a', 'b', 'c'], keys_only=True, pred=lambda v: v == 0)
-    assert r == {'b': 1}
-
-
-def test_remove_if_pred_none_equals_always_true():
-    """pred=None and pred=lambda _: True both mean unconditional remove."""
-    d = {'a': 1, 'b': 2, 'c': 3}
-    r_none = dotted.remove_if(copy.deepcopy(d), 'b', pred=None)
-    r_true = dotted.remove_if(copy.deepcopy(d), 'b', pred=lambda _: True)
-    assert r_none == r_true == {'a': 1, 'c': 3}
-
-
-def test_remove_if_multi_pred_none_equals_always_true():
-    """pred=None and pred=lambda _: True both mean unconditional remove (remove_multi behavior)."""
-    d = {'a': 1, 'b': 2, 'c': 3}
-    r_none = dotted.remove_if_multi(copy.deepcopy(d), ['a', 'c'], keys_only=True, pred=None)
-    r_true = dotted.remove_if_multi(copy.deepcopy(d), ['a', 'c'], keys_only=True, pred=lambda _: True)
-    assert r_none == r_true == {'b': 2}
+def test_remove_if_multi_pred_none():
+    """pred=None: unconditional remove."""
+    r = dotted.remove_if_multi({'a': 1, 'b': 2}, ['a'], pred=None)
+    assert r == {'b': 2}
