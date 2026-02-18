@@ -28,6 +28,7 @@ Building & Plucking
 -------------------
 build(obj, key)         Build default structure for key
 pluck(obj, pattern)     Extract field-value pairs
+unpack(obj)             Extract to dotted normal form
 
 Transforms
 ----------
@@ -39,12 +40,17 @@ Append transforms with |: 'field|int', 'field|str:fmt'
 register(name, fn)      Register custom transform
 transform(name)         Decorator for custom transforms
 
+Constants
+---------
+ANY                     Match any value (for remove)
+AUTO                    Auto-infer root container type ({} or []) from first key
+
 For full documentation including all options and flags:
     $ pydoc dotted.api
     or see README.md
 """
 from .api import \
-    parse, is_pattern, is_inverted, mutable, quote, ANY, \
+    parse, is_pattern, is_inverted, mutable, quote, ANY, AUTO, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -55,7 +61,7 @@ from .api import \
     has, setdefault, setdefault_multi, \
     update, update_multi, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
-    pluck, pluck_multi
+    pluck, pluck_multi, unpack
 
 __all__ = [
     # Core
@@ -65,11 +71,11 @@ __all__ = [
     # Pattern
     'match', 'match_multi', 'overlaps', 'expand', 'expand_multi',
     # Build/Pluck
-    'build', 'build_multi', 'pluck', 'pluck_multi',
+    'build', 'build_multi', 'pluck', 'pluck_multi', 'unpack',
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility
     'parse', 'assemble', 'assemble_multi', 'quote', 'is_pattern', 'is_inverted', 'mutable',
     # Constants
-    'ANY',
+    'ANY', 'AUTO',
 ]

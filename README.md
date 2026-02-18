@@ -19,10 +19,12 @@ helps you do that.
   - [Mutable](#mutable)
   - [Setdefault](#setdefault)
   - [Pluck](#pluck)
+  - [Unpack](#unpack)
   - [Build](#build)
   - [Apply](#apply)
   - [Assemble](#assemble)
   - [Quote](#quote)
+  - [AUTO](#auto)
   - [Multi Operations](#multi-operations)
 - [Paths](#paths)
   - [Key fields](#key-fields)
@@ -152,7 +154,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 Probably the easiest thing to do is pydoc the api layer.
 
-    $ pydoc dotted.api
+    $ pydoc dotted
 
 Parsed dotted paths are LRU-cached (after the first parse of a given path string), so repeated use of the same path string is cheap.
 
@@ -400,6 +402,20 @@ Extract (key, value) pairs from an object matching a pattern.
     >>> dotted.pluck(d, 'nested.*')
     (('nested.x', 10),)
 
+<a id="unpack"></a>
+### Unpack
+
+Recursively unpack a nested structure into `(path, value)` pairs — its dotted
+normal form. The result can be replayed with `update_multi` to reconstruct the
+original object. Use `AUTO` as the base object to infer the root container type.
+
+    >>> import dotted
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
+    >>> dotted.unpack(d)
+    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+    >>> dotted.update_multi(dotted.AUTO, dotted.unpack(d)) == d
+    True
+
 <a id="build"></a>
 ### Build
 
@@ -450,6 +466,22 @@ Properly quote a key for use in dotted notation.
     '"has.dot"'
     >>> dotted.quote(7.5)
     "#'7.5'"
+
+<a id="auto"></a>
+### AUTO
+
+All write operations (`update`, `update_multi`, `build`, `setdefault`, etc.) accept
+`AUTO` as the base object. Instead of passing `{}` or `[]`, let dotted infer
+the root container type from the first key — dict keys produce `{}`, slot keys
+produce `[]`.
+
+    >>> import dotted
+    >>> dotted.update(dotted.AUTO, 'a.b', 1)
+    {'a': {'b': 1}}
+    >>> dotted.update(dotted.AUTO, '[0]', 'hello')
+    ['hello']
+    >>> dotted.update_multi(dotted.AUTO, [('a', 1), ('b', 2)])
+    {'a': 1, 'b': 2}
 
 <a id="multi-operations"></a>
 ### Multi Operations

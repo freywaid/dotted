@@ -9,6 +9,29 @@ from . import elements as el
 
 CACHE_SIZE = 300
 ANY = el.ANY
+AUTO = type('AUTO', (), {'__repr__': lambda self: 'AUTO'})()
+
+
+def _auto_root_from_key(key):
+    """
+    Infer root container type from a single key.
+    Returns [] if root is a sequence, {} otherwise.
+    """
+    ops = parse(key)
+    if ops.ops and isinstance(ops.ops[0], el.Slot):
+        return []
+    return {}
+
+
+def _auto_root(keyvalues):
+    """
+    Infer root container type from the first key in keyvalues.
+    Returns [] if root is a sequence, {} otherwise.
+    """
+    for item in keyvalues:
+        key = item[0] if isinstance(item, (list, tuple)) else item
+        return _auto_root_from_key(key)
+    return {}
 
 
 class ParseError(Exception):
@@ -186,6 +209,9 @@ def build_multi(obj, keys):
     >>> build_multi({}, ('hello.bye[]', 'hello.there', ))
     {'hello': {'bye': [], 'there': None}}
     """
+    keys = tuple(keys)
+    if obj is AUTO:
+        obj = _auto_root(((k, None) for k in keys))
     for key in keys:
         built = el.build(parse(key), obj)
         obj = update_multi(obj, pluck_multi(built, (key,)))
@@ -274,6 +300,8 @@ def setdefault(obj, key, val, apply_transforms=True):
     >>> setdefault({}, 'a.b.c', 7)
     7
     """
+    if obj is AUTO:
+        obj = _auto_root_from_key(key)
     if has(obj, key):
         return  get(obj, key, apply_transforms=apply_transforms)
     obj = update(obj, key, val, apply_transforms=apply_transforms)
@@ -320,6 +348,8 @@ def update_if(obj, key, val, pred=lambda val: val is None, mutable=True, apply_t
     >>> update({'name': {'first': None}}, path, 'hello')
     {'name': {'first': 'hello'}}
     """
+    if obj is AUTO:
+        obj = _auto_root_from_key(key)
     dummy = object()
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
@@ -408,14 +438,20 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
 
 def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
     """
-    Update obj with all keyvalues
+    Update obj with all keyvalues.  Pass AUTO as obj to infer the root
+    container type from the first key.
     >>> update_multi({}, [('hello.there', 7), ('my.my', 9)])
     {'hello': {'there': 7}, 'my': {'my': 9}}
     >>> update_multi({}, {'stuff.more.stuff': 'mine'})
     {'stuff': {'more': {'stuff': 'mine'}}}
+    >>> update_multi(AUTO, [('[0]', 'a'), ('[1]', 'b')])
+    ['a', 'b']
     """
     if hasattr(keyvalues, 'items') and callable(keyvalues.items):
         keyvalues = keyvalues.items()
+    if obj is AUTO:
+        keyvalues = list(keyvalues)
+        obj = _auto_root(keyvalues)
     return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms)
 
 
@@ -429,6 +465,8 @@ def remove_if(obj, key, pred=lambda val: val is None, val=ANY, mutable=True):
     >>> remove_if({'a': 1, 'b': 2}, 'b')
     {'a': 1, 'b': 2}
     """
+    if obj is AUTO:
+        obj = _auto_root_from_key(key)
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True
@@ -805,6 +843,21 @@ def pluck(obj, pattern, default=None):
     if is_pattern(pattern):
         return out
     return out[0]
+
+
+def unpack(obj):
+    """
+    Convert obj to dotted normal form.  A tuple of (path, value) pairs which
+    can be replayed to regenerate the obj.  Internally, this calls:
+         pluck(obj, '(**:-2(.*, [])##, *)')
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
+    >>> r = unpack(d)
+    >>> r
+    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+    >>> update_multi(AUTO, r) == d
+    True
+    """
+    return pluck(obj, '(**:-2(.*, [])##, *)')
 
 
 #
