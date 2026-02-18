@@ -107,17 +107,16 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 |---------|--------|------|----------|--------|
 | Safe traversal (no exceptions) | ✅ | ✅ | ✅ | ✅ |
 | Familiar dot notation | ✅ | ❌ (custom spec) | ❌ (JSON syntax) | ✅ |
-| Pattern matching (wildcards) | ✅ | ❌ | ✅ | ❌ |
+| Pattern matching (wildcards) | ✅ | ✅ | ❌ | ❌ |
 | Regex patterns | ✅ | ❌ | ❌ | ❌ |
 | In-place mutation | ✅ | ✅ | ❌ (read-only) | ✅ |
-| Attribute access (`@attr`) | ✅ | ✅ | ❌ | ❌ |
-| Transforms/coercion | ✅ | ✅ | ❌ | ✅ |
+| Attribute access (`@attr`) | ✅ | ✅ | ❌ | ✅ |
+| Transforms/coercion | ✅ | ✅ | ✅ | ❌ |
 | Slicing | ✅ | ❌ | ✅ | ❌ |
 | Filters | ✅ | ❌ | ✅ | ❌ |
 | AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
-| Path grouping `(a,b)` | ✅ | ❌ | ❌ | ❌ |
-| Operation grouping `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
-| Recursive traversal (`**`, `*key`) | ✅ | ✅ | ✅ | ❌ |
+| Grouping `(a,b)`, `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
+| Recursive traversal (`**`, `*key`) | ✅ | ✅ | ❌ | ❌ |
 | Depth slicing (`**:-1`, `**:2`) | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
