@@ -298,3 +298,58 @@ def test_assemble_path_cut():
     s = dotted.assemble(ops)
     assert '#' in s
     assert s.startswith('(') and 'a' in s and 'b' in s
+
+
+# -----------------------------------------------------------------------------
+# Nested cut containment: inner group cut must not leak to outer group
+# -----------------------------------------------------------------------------
+
+def test_get_nested_cut_does_not_leak():
+    """
+    (((a#, b)), c): inner cut between a and b should not suppress outer c.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '(((a#, b)), c)') == (1, 3)
+
+
+def test_get_nested_cut_inner_miss():
+    """
+    (((a#, b)), c): when a missing, inner group falls through to b; outer adds c.
+    """
+    d = {'b': 2, 'c': 3}
+    assert dotted.get(d, '(((a#, b)), c)') == (2, 3)
+
+
+def test_get_nested_single_branch_cut():
+    """
+    (((a#)&b), c): cut on single-branch inner group should not leak.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '(((a#)&b), c)') == (1, 3)
+
+
+def test_update_nested_cut_contained():
+    """
+    (((a#, b)), c): inner cut only affects inner group; c still updated.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.update(d, '(((a#, b)), c)', 99)
+    assert r == {'a': 99, 'b': 2, 'c': 99}
+
+
+def test_update_nested_nop_cut():
+    """
+    ((~a#, b), c): NOP a matches and cuts b in inner group; only c updated.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.update(d, '((~a#, b), c)', 99)
+    assert r == {'a': 1, 'b': 2, 'c': 99}
+
+
+def test_remove_nested_cut_contained():
+    """
+    (((a#, b)), c): inner cut removes a (not b); outer removes c.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.remove(d, '(((a#, b)), c)')
+    assert r == {'b': 2}

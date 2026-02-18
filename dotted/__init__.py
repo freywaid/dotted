@@ -49,7 +49,7 @@ from .api import \
     assemble, assemble_multi, \
     build, build_multi, \
     expand, expand_multi, \
-    match, match_multi, \
+    match, match_multi, overlaps, \
     apply, apply_multi, \
     get, get_multi, \
     has, setdefault, setdefault_multi, \
@@ -63,7 +63,7 @@ __all__ = [
     # Multi
     'get_multi', 'update_multi', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern
-    'match', 'match_multi', 'expand', 'expand_multi',
+    'match', 'match_multi', 'overlaps', 'expand', 'expand_multi',
     # Build/Pluck
     'build', 'build_multi', 'pluck', 'pluck_multi',
     # Transform

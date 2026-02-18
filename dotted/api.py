@@ -33,6 +33,8 @@ def parse(key):
     """
     if isinstance(key, el.Dotted):
         return key
+    if isinstance(key, tuple):
+        return el.Dotted({'ops': key, 'transforms': ()})
     return _parse(key)
 
 
@@ -651,6 +653,27 @@ def match_multi(pattern, iterable, groups=False, partial=True):
     if groups:
         return (m for m in matches if m[0])
     return (m for m in matches if m)
+
+
+def overlaps(a, b):
+    """
+    Return True if paths a and b overlap — i.e. one is a prefix of the other.
+
+    Accepts strings, pre-parsed Dotted objects, or op tuples.
+    >>> overlaps('a', 'a.b.c')
+    True
+    >>> overlaps('a.b.c', 'a')
+    True
+    >>> overlaps('a.b', 'a.b')
+    True
+    >>> overlaps('a.b', 'a.c')
+    False
+    >>> overlaps('a.b.c', 'a.b.d')
+    False
+    """
+    a = parse(a)
+    b = parse(b)
+    return el._path_overlaps([a.ops], b.ops)
 
 
 def assemble_multi(keys_list):
