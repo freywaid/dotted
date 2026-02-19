@@ -271,6 +271,28 @@ def test_sglob_multiple_vals():
 # StringGlob — integration with dotted API
 # ---------------------------------------------------------------------------
 
+def test_bglob_naked_str_suffix():
+    r = value.parse_string('b"hello"..."world"')[0]
+    assert isinstance(r, BytesGlob)
+    assert list(r.matches((b'hello beautiful world',))) == [b'hello beautiful world']
+
+
+def test_bglob_naked_str_prefix():
+    r = value.parse_string('"hello"...b"world"')[0]
+    assert isinstance(r, BytesGlob)
+    assert list(r.matches((b'hello beautiful world',))) == [b'hello beautiful world']
+
+
+def test_bglob_naked_str_middle():
+    r = value.parse_string('b"a"..."b"...b"c"')[0]
+    assert isinstance(r, BytesGlob)
+    assert list(r.matches((b'axbxc',))) == [b'axbxc']
+
+
+# ---------------------------------------------------------------------------
+# StringGlob — integration with dotted API
+# ---------------------------------------------------------------------------
+
 def test_sglob_value_guard_prefix():
     d = {'greeting': 'hello world', 'farewell': 'goodbye world', 'name': 'alice'}
     assert dotted.get(d, '*="hello"...') == ('hello world',)

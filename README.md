@@ -1671,21 +1671,29 @@ String globs only match `str` values — not `bytes`. For bytes matching, use
 <a id="bytes-glob-patterns"></a>
 ### Bytes glob patterns
 
-Bytes globs are the `bytes` counterpart to string globs. Prefix fragments with `b`
-to match `bytes` values:
+Bytes globs are the `bytes` counterpart to string globs. Use `b"..."` on any
+fragment to produce a bytes glob — all other quoted fragments are automatically
+encoded to bytes:
 
 | Form | Matches |
 |------|---------|
 | `b"hello"...` | Bytes starting with b"hello" |
 | `...b"world"` | Bytes ending with b"world" |
 | `b"hello"...b"world"` | Starts with b"hello", ends with b"world" |
+| `b"hello"..."world"` | Same — naked `"world"` auto-encoded to bytes |
+| `"hello"...b"world"` | Same — naked `"hello"` auto-encoded to bytes |
 | `b"hello"...5` | Starts with b"hello", at most 5 more bytes |
+
+If any fragment uses the `b` prefix, the entire glob becomes a bytes glob and
+naked quoted strings are encoded to bytes automatically.
 
 Examples:
 
     >>> import dotted
     >>> d = {'a': b'hello world', 'b': b'goodbye world'}
     >>> dotted.get(d, '*=b"hello"...')
+    (b'hello world',)
+    >>> dotted.get(d, '*=b"hello"..."world"')
     (b'hello world',)
 
 In filters:
@@ -1800,13 +1808,33 @@ decorator.
 | `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
 | `lowercase` | `raises` | Convert string to lowercase |
 | `uppercase` | `raises` | Convert string to uppercase |
-| `add` | `rhs` | Add value: `\|add:10` |
+| `add` | `rhs`, `raises` | Add value: `\|add:10` |
+| `sub` | `rhs`, `raises` | Subtract value: `\|sub:3` |
+| `mul` | `rhs`, `raises` | Multiply: `\|mul:2` |
+| `div` | `rhs`, `raises` | Divide: `\|div:4` |
+| `mod` | `rhs`, `raises` | Modulo: `\|mod:3` |
+| `pow` | `rhs`, `raises` | Power: `\|pow:2` |
+| `neg` | `raises` | Negate: `\|neg` |
+| `abs` | `raises` | Absolute value: `\|abs` |
+| `round` | `ndigits`, `raises` | Round: `\|round` or `\|round:2` |
+| `ceil` | `raises` | Ceiling: `\|ceil` |
+| `floor` | `raises` | Floor: `\|floor` |
+| `min` | `bound`, `raises` | Clamp to upper bound: `\|min:100` |
+| `max` | `bound`, `raises` | Clamp to lower bound: `\|max:0` |
+| `eq` | `rhs`, `raises` | Equal: `\|eq:5` → `True`/`False` |
+| `ne` | `rhs`, `raises` | Not equal: `\|ne:5` → `True`/`False` |
+| `gt` | `rhs`, `raises` | Greater than: `\|gt:5` → `True`/`False` |
+| `ge` | `rhs`, `raises` | Greater or equal: `\|ge:5` → `True`/`False` |
+| `lt` | `rhs`, `raises` | Less than: `\|lt:5` → `True`/`False` |
+| `le` | `rhs`, `raises` | Less or equal: `\|le:5` → `True`/`False` |
+| `in` | `rhs`, `raises` | Membership: `\|in:[1, 2, 3]` → `True`/`False` |
+| `not_in` | `rhs`, `raises` | Negative membership: `\|not_in:[1, 2, 3]` → `True`/`False` |
 | `list` | `raises` | Convert to list |
 | `tuple` | `raises` | Convert to tuple |
 | `set` | `raises` | Convert to set |
 
-The `raises` parameter causes the transform to raise an exception on failure instead of
-returning the original value:
+By default, transforms return the original value on error. The `raises` parameter
+causes the transform to raise an exception instead:
 
     >>> import dotted
     >>> dotted.get({'n': 'hello'}, 'n|int')      # fails silently
@@ -1815,6 +1843,20 @@ returning the original value:
     Traceback (most recent call last):
     ...
     ValueError: invalid literal for int() with base 10: 'hello'
+
+Math transforms can be chained for inline computation:
+
+    >>> dotted.get({'n': -3.14159}, 'n|abs|round:2')
+    3.14
+    >>> dotted.get({'n': 15}, 'n|max:0|min:10')
+    10
+
+Comparison and membership transforms return `True`/`False`:
+
+    >>> dotted.get({'n': 5}, 'n|gt:3')
+    True
+    >>> dotted.get({'n': 2}, 'n|in:[1, 2, 3]')
+    True
 
 <a id="container-transform-arguments"></a>
 ### Container transform arguments
