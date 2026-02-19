@@ -109,7 +109,8 @@ Or pick only what you need:
   - [File input](#file-input)
   - [Format conversion](#format-conversion)
   - [Path files](#path-files)
-  - [Projection and unpack](#projection-and-unpack)
+  - [Projection](#projection)
+  - [Unpack](#unpack)
   - [Pack](#pack)
 - [FAQ](#faq)
   - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
@@ -2066,13 +2067,16 @@ For update, each line has a path and value:
     a 42
     b.c "hello"
 
-<a id="projection-and-unpack"></a>
-### Projection and unpack
+<a id="projection"></a>
+### Projection
 
 Multiple paths produce a projection preserving nested structure:
 
     echo '{"a": {"x": 1, "y": 2}, "b": 3}' | dq -p a.x -p b
     # {"a": {"x": 1}, "b": 3}
+
+<a id="unpack"></a>
+### Unpack
 
 Use `--unpack` to flatten the result to dotted normal form. Lists of dicts
 are fully expanded with indexed paths:
