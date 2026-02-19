@@ -192,7 +192,368 @@ def test_add_strings():
     assert dotted.get('hello', '|add: world') == 'hello world'
 
 
-# chained transforms
+def test_add_non_numeric_returns_original():
+    assert dotted.get('hello', '|add:5') == 'hello'
+
+
+def test_add_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|add:5:raises')
+
+
+# sub transform
+
+def test_sub_numbers():
+    assert dotted.get(10, '|sub:3') == 7
+    assert dotted.get(5.5, '|sub:1.5') == 4.0
+
+
+def test_sub_non_numeric_returns_original():
+    assert dotted.get('hello', '|sub:5') == 'hello'
+
+
+def test_sub_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|sub:5:raises')
+
+
+# mul transform
+
+def test_mul_numbers():
+    assert dotted.get(6, '|mul:7') == 42
+    assert dotted.get(2.5, '|mul:4') == 10.0
+
+
+def test_mul_non_numeric_returns_original():
+    assert dotted.get(None, '|mul:5') == None
+
+
+def test_mul_raises():
+    with pytest.raises(TypeError):
+        dotted.get(None, '|mul:5:raises')
+
+
+# div transform
+
+def test_div_numbers():
+    assert dotted.get(10, '|div:4') == 2.5
+    assert dotted.get(9, '|div:3') == 3.0
+
+
+def test_div_by_zero_returns_original():
+    assert dotted.get(10, '|div:0') == 10
+
+
+def test_div_non_numeric_returns_original():
+    assert dotted.get('hello', '|div:5') == 'hello'
+
+
+def test_div_raises():
+    with pytest.raises(ZeroDivisionError):
+        dotted.get(10, '|div:0:raises')
+
+
+# mod transform
+
+def test_mod_numbers():
+    assert dotted.get(10, '|mod:3') == 1
+    assert dotted.get(7.5, '|mod:2.5') == 0.0
+
+
+def test_mod_by_zero_returns_original():
+    assert dotted.get(10, '|mod:0') == 10
+
+
+def test_mod_raises():
+    with pytest.raises(ZeroDivisionError):
+        dotted.get(10, '|mod:0:raises')
+
+
+# pow transform
+
+def test_pow_numbers():
+    assert dotted.get(2, '|pow:10') == 1024
+    assert dotted.get(9, '|pow:0.5') == 3.0
+
+
+def test_pow_non_numeric_returns_original():
+    assert dotted.get('hello', '|pow:2') == 'hello'
+
+
+def test_pow_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|pow:2:raises')
+
+
+# neg transform
+
+def test_neg_numbers():
+    assert dotted.get(42, '|neg') == -42
+    assert dotted.get(-3.5, '|neg') == 3.5
+
+
+def test_neg_non_numeric_returns_original():
+    assert dotted.get('hello', '|neg') == 'hello'
+
+
+def test_neg_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|neg:raises')
+
+
+# abs transform
+
+def test_abs_numbers():
+    assert dotted.get(-42, '|abs') == 42
+    assert dotted.get(42, '|abs') == 42
+    assert dotted.get(-3.14, '|abs') == 3.14
+
+
+def test_abs_non_numeric_returns_original():
+    assert dotted.get('hello', '|abs') == 'hello'
+
+
+def test_abs_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|abs:raises')
+
+
+# round transform
+
+def test_round_basic():
+    assert dotted.get(3.7, '|round') == 4
+    assert dotted.get(3.2, '|round') == 3
+
+
+def test_round_with_precision():
+    assert dotted.get(3.14159, '|round:2') == 3.14
+    assert dotted.get(3.14159, '|round:4') == 3.1416
+
+
+def test_round_non_numeric_returns_original():
+    assert dotted.get('hello', '|round') == 'hello'
+
+
+def test_round_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|round::raises')
+
+
+# ceil transform
+
+def test_ceil_basic():
+    assert dotted.get(3.2, '|ceil') == 4
+    assert dotted.get(-1.5, '|ceil') == -1
+
+
+def test_ceil_already_int():
+    assert dotted.get(5, '|ceil') == 5
+
+
+def test_ceil_non_numeric_returns_original():
+    assert dotted.get('hello', '|ceil') == 'hello'
+
+
+def test_ceil_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|ceil:raises')
+
+
+# floor transform
+
+def test_floor_basic():
+    assert dotted.get(3.7, '|floor') == 3
+    assert dotted.get(-1.5, '|floor') == -2
+
+
+def test_floor_already_int():
+    assert dotted.get(5, '|floor') == 5
+
+
+def test_floor_non_numeric_returns_original():
+    assert dotted.get('hello', '|floor') == 'hello'
+
+
+def test_floor_raises():
+    with pytest.raises(TypeError):
+        dotted.get('hello', '|floor:raises')
+
+
+# min transform
+
+def test_min_clamps():
+    assert dotted.get(10, '|min:5') == 5
+    assert dotted.get(3, '|min:5') == 3
+
+
+def test_min_non_numeric_returns_original():
+    assert dotted.get(None, '|min:5') == None
+
+
+def test_min_raises():
+    with pytest.raises(TypeError):
+        dotted.get(None, '|min:5:raises')
+
+
+# max transform
+
+def test_max_clamps():
+    assert dotted.get(3, '|max:5') == 5
+    assert dotted.get(10, '|max:5') == 10
+
+
+def test_max_non_numeric_returns_original():
+    assert dotted.get(None, '|max:5') == None
+
+
+def test_max_raises():
+    with pytest.raises(TypeError):
+        dotted.get(None, '|max:5:raises')
+
+
+# eq transform
+
+def test_eq_true():
+    assert dotted.get(5, '|eq:5') is True
+
+
+def test_eq_false():
+    assert dotted.get(5, '|eq:3') is False
+
+
+def test_eq_string():
+    assert dotted.get('hello', '|eq:hello') is True
+
+
+def test_eq_non_comparable_returns_original():
+    assert dotted.get(None, '|eq:5') is False
+
+
+# ne transform
+
+def test_ne_true():
+    assert dotted.get(5, '|ne:3') is True
+
+
+def test_ne_false():
+    assert dotted.get(5, '|ne:5') is False
+
+
+# gt transform
+
+def test_gt_true():
+    assert dotted.get(10, '|gt:5') is True
+
+
+def test_gt_false():
+    assert dotted.get(3, '|gt:5') is False
+
+
+def test_gt_equal():
+    assert dotted.get(5, '|gt:5') is False
+
+
+def test_gt_non_comparable_returns_original():
+    assert dotted.get(None, '|gt:5') is None
+
+
+def test_gt_raises():
+    with pytest.raises(TypeError):
+        dotted.get(None, '|gt:5:raises')
+
+
+# ge transform
+
+def test_ge_true():
+    assert dotted.get(10, '|ge:5') is True
+
+
+def test_ge_equal():
+    assert dotted.get(5, '|ge:5') is True
+
+
+def test_ge_false():
+    assert dotted.get(3, '|ge:5') is False
+
+
+# lt transform
+
+def test_lt_true():
+    assert dotted.get(3, '|lt:5') is True
+
+
+def test_lt_false():
+    assert dotted.get(10, '|lt:5') is False
+
+
+def test_lt_equal():
+    assert dotted.get(5, '|lt:5') is False
+
+
+# le transform
+
+def test_le_true():
+    assert dotted.get(3, '|le:5') is True
+
+
+def test_le_equal():
+    assert dotted.get(5, '|le:5') is True
+
+
+def test_le_false():
+    assert dotted.get(10, '|le:5') is False
+
+
+# in transform
+
+def test_in_list():
+    assert dotted.get(2, '|in:[1, 2, 3]') is True
+    assert dotted.get(5, '|in:[1, 2, 3]') is False
+
+
+def test_in_string():
+    assert dotted.get('el', '|in:hello') is True
+    assert dotted.get('xyz', '|in:hello') is False
+
+
+def test_in_non_iterable_returns_original():
+    assert dotted.get(1, '|in:5') == 1
+
+
+def test_in_raises():
+    with pytest.raises(TypeError):
+        dotted.get(1, '|in:5:raises')
+
+
+# not_in transform
+
+def test_not_in_list():
+    assert dotted.get(5, '|not_in:[1, 2, 3]') is True
+    assert dotted.get(2, '|not_in:[1, 2, 3]') is False
+
+
+def test_not_in_string():
+    assert dotted.get('xyz', '|not_in:hello') is True
+    assert dotted.get('el', '|not_in:hello') is False
+
+
+# chained transforms (math)
+
+def test_chain_abs_round():
+    assert dotted.get(-3.14159, '|abs|round:2') == 3.14
+
+
+def test_chain_mul_ceil():
+    assert dotted.get(3.2, '|mul:2|ceil') == 7
+
+
+def test_chain_clamp_range():
+    assert dotted.get(15, '|max:0|min:10') == 10
+    assert dotted.get(-5, '|max:0|min:10') == 0
+    assert dotted.get(5, '|max:0|min:10') == 5
+
+
+# chained transforms (general)
 
 def test_chain_multiple():
     assert dotted.get('  42  ', '|strip|int') == 42

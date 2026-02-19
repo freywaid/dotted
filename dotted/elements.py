@@ -2844,8 +2844,27 @@ class Dotted:
         return assemble(self, start, pedantic=pedantic)
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
+    @staticmethod
+    def _hashable(obj):
+        """
+        Recursively convert unhashable types to hashable equivalents.
+        """
+        if is_list_like(obj):
+            return tuple(Dotted._hashable(x) for x in obj)
+        if is_set_like(obj):
+            return frozenset(Dotted._hashable(x) for x in obj)
+        if is_dict_like(obj):
+            if hasattr(obj, 'items') and callable(obj.items):
+                iterable = obj.items()
+            else:
+                iterable = ((k, obj[k]) for k in obj)
+            return tuple(sorted((k, Dotted._hashable(v)) for k, v in iterable))
+        return obj
     def __hash__(self):
-        return hash((self.ops, self.transforms))
+        try:
+            return hash((self.ops, self.transforms))
+        except TypeError:
+            return hash((self.ops, Dotted._hashable(self.transforms)))
     def __len__(self):
         return len(self.ops)
     def __iter__(self):

@@ -2,6 +2,7 @@
 Default transforms
 """
 import decimal
+import math
 from .elements import transform
 
 
@@ -156,12 +157,321 @@ def transform_uppercase(val, *modes):
 
 
 @transform('add')
-def transform_add(val, rhs):
+def transform_add(val, rhs, *modes):
     """
     Add rhs to val
         <dotted>|add:<rhs>          add <rhs> to value
+        <dotted>|add:<rhs>:raises   add <rhs> to value or raises
     """
-    return val + rhs
+    try:
+        return val + rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('sub')
+def transform_sub(val, rhs, *modes):
+    """
+    Subtract rhs from val
+        <dotted>|sub:<rhs>          subtract <rhs> from value
+        <dotted>|sub:<rhs>:raises   subtract <rhs> from value or raises
+    """
+    try:
+        return val - rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('mul')
+def transform_mul(val, rhs, *modes):
+    """
+    Multiply val by rhs
+        <dotted>|mul:<rhs>          multiply value by <rhs>
+        <dotted>|mul:<rhs>:raises   multiply value by <rhs> or raises
+    """
+    try:
+        return val * rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('div')
+def transform_div(val, rhs, *modes):
+    """
+    Divide val by rhs
+        <dotted>|div:<rhs>          divide value by <rhs>
+        <dotted>|div:<rhs>:raises   divide value by <rhs> or raises
+    """
+    try:
+        return val / rhs
+    except (TypeError, ZeroDivisionError):
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('mod')
+def transform_mod(val, rhs, *modes):
+    """
+    Modulo val by rhs
+        <dotted>|mod:<rhs>          value modulo <rhs>
+        <dotted>|mod:<rhs>:raises   value modulo <rhs> or raises
+    """
+    try:
+        return val % rhs
+    except (TypeError, ZeroDivisionError):
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('pow')
+def transform_pow(val, rhs, *modes):
+    """
+    Raise val to the power of rhs
+        <dotted>|pow:<rhs>          value ** <rhs>
+        <dotted>|pow:<rhs>:raises   value ** <rhs> or raises
+    """
+    try:
+        return val ** rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('neg')
+def transform_neg(val, *modes):
+    """
+    Negate val
+        <dotted>|neg                -value
+        <dotted>|neg:raises         -value or raises
+    """
+    try:
+        return -val
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('abs')
+def transform_abs(val, *modes):
+    """
+    Absolute value
+        <dotted>|abs                abs(value)
+        <dotted>|abs:raises         abs(value) or raises
+    """
+    try:
+        return abs(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('round')
+def transform_round(val, ndigits=None, *modes):
+    """
+    Round val
+        <dotted>|round              round(value)
+        <dotted>|round:<n>          round(value, <n>)
+        <dotted>|round::raises      round(value) or raises
+    """
+    try:
+        if ndigits is None:
+            return round(val)
+        return round(val, ndigits)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('ceil')
+def transform_ceil(val, *modes):
+    """
+    Ceiling of val
+        <dotted>|ceil               math.ceil(value)
+        <dotted>|ceil:raises        math.ceil(value) or raises
+    """
+    try:
+        return math.ceil(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('floor')
+def transform_floor(val, *modes):
+    """
+    Floor of val
+        <dotted>|floor              math.floor(value)
+        <dotted>|floor:raises       math.floor(value) or raises
+    """
+    try:
+        return math.floor(val)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('min')
+def transform_min(val, bound, *modes):
+    """
+    Clamp val to upper bound
+        <dotted>|min:<bound>          min(value, <bound>)
+        <dotted>|min:<bound>:raises   min(value, <bound>) or raises
+    """
+    try:
+        return min(val, bound)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('max')
+def transform_max(val, bound, *modes):
+    """
+    Clamp val to lower bound
+        <dotted>|max:<bound>          max(value, <bound>)
+        <dotted>|max:<bound>:raises   max(value, <bound>) or raises
+    """
+    try:
+        return max(val, bound)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('eq')
+def transform_eq(val, rhs, *modes):
+    """
+    Equal comparison
+        <dotted>|eq:<rhs>           value == <rhs>
+        <dotted>|eq:<rhs>:raises    value == <rhs> or raises
+    """
+    try:
+        return val == rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('ne')
+def transform_ne(val, rhs, *modes):
+    """
+    Not-equal comparison
+        <dotted>|ne:<rhs>           value != <rhs>
+        <dotted>|ne:<rhs>:raises    value != <rhs> or raises
+    """
+    try:
+        return val != rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('gt')
+def transform_gt(val, rhs, *modes):
+    """
+    Greater-than comparison
+        <dotted>|gt:<rhs>           value > <rhs>
+        <dotted>|gt:<rhs>:raises    value > <rhs> or raises
+    """
+    try:
+        return val > rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('ge')
+def transform_ge(val, rhs, *modes):
+    """
+    Greater-than-or-equal comparison
+        <dotted>|ge:<rhs>           value >= <rhs>
+        <dotted>|ge:<rhs>:raises    value >= <rhs> or raises
+    """
+    try:
+        return val >= rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('lt')
+def transform_lt(val, rhs, *modes):
+    """
+    Less-than comparison
+        <dotted>|lt:<rhs>           value < <rhs>
+        <dotted>|lt:<rhs>:raises    value < <rhs> or raises
+    """
+    try:
+        return val < rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('le')
+def transform_le(val, rhs, *modes):
+    """
+    Less-than-or-equal comparison
+        <dotted>|le:<rhs>           value <= <rhs>
+        <dotted>|le:<rhs>:raises    value <= <rhs> or raises
+    """
+    try:
+        return val <= rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('in')
+def transform_in(val, rhs, *modes):
+    """
+    Membership test
+        <dotted>|in:<rhs>           value in <rhs>
+        <dotted>|in:<rhs>:raises    value in <rhs> or raises
+    """
+    try:
+        return val in rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('not_in')
+def transform_not_in(val, rhs, *modes):
+    """
+    Negative membership test
+        <dotted>|not_in:<rhs>           value not in <rhs>
+        <dotted>|not_in:<rhs>:raises    value not in <rhs> or raises
+    """
+    try:
+        return val not in rhs
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
 
 
 @transform('list')
