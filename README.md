@@ -1990,6 +1990,7 @@ Raised when dotted notation cannot be parsed:
 The `dq` command lets you query and transform nested data from the command line,
 similar to `jq` but using dotted notation.
 
+<a id="basic-usage"></a>
 ### Basic usage
 
     echo '{"a": {"b": 1}}' | dq 'a.b'
@@ -1998,6 +1999,7 @@ similar to `jq` but using dotted notation.
     echo '{"a": 1, "b": 2, "c": 3}' | dq -p a -p b
     # {"a": 1, "b": 2}
 
+<a id="operations"></a>
 ### Operations
 
 **get** (default) — extract values or project fields:
@@ -2018,6 +2020,7 @@ similar to `jq` but using dotted notation.
     echo '{"a": 1, "b": 2}' | dq remove -p a 1
     # {"b": 2}  (only removes if value is 1)
 
+<a id="file-input"></a>
 ### File input
 
 Read from a file instead of stdin with `-f`:
@@ -2031,6 +2034,7 @@ Use `-i` to override:
 
     dq -f data.txt -i json -p name
 
+<a id="format-conversion"></a>
 ### Format conversion
 
 Use `-i` and `-o` to specify input/output formats (`json`, `jsonl`, `yaml`, `toml`, `csv`):
@@ -2043,6 +2047,7 @@ a pure format converter:
 
     cat data.yaml | dq -i yaml -o json
 
+<a id="path-files"></a>
 ### Path files
 
 Load paths from a file with `-pf`:
@@ -2061,6 +2066,7 @@ For update, each line has a path and value:
     a 42
     b.c "hello"
 
+<a id="projection-and-unpack"></a>
 ### Projection and unpack
 
 Multiple paths produce a projection preserving nested structure:
@@ -2079,6 +2085,7 @@ are fully expanded with indexed paths:
     echo '{"a": {"x": 1}, "b": {"c": 2}}' | dq --unpack update -p a.x 99
     # {"a.x": 99, "b.c": 2}
 
+<a id="pack"></a>
 ### Pack
 
 Use `--pack` to rebuild nested structure from dotted normal form, including
@@ -2097,6 +2104,7 @@ example, removing an entire group without listing every key:
 <a id="faq"></a>
 ## FAQ
 
+<a id="why-do-i-get-a-tuple-for-my-get"></a>
 ### Why do I get a tuple for my get?
 
 `get()` returns a **single value** for a non-pattern path and a **tuple of values** for a pattern path. A path is a pattern if:
@@ -2108,6 +2116,7 @@ Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the pa
 
 For `update` and `remove` you usually don't care: the result is the (possibly mutated) object either way. For `get`, the return shape depends on pattern vs non-pattern. Use `dotted.is_pattern(path)` if you need to branch on it.
 
+<a id="how-do-i-craft-an-efficient-path"></a>
 ### How do I craft an efficient path?
 
 Same intent can be expressed in more or less efficient ways. Example: "match when name.first is None"
@@ -2119,6 +2128,7 @@ Same intent can be expressed in more or less efficient ways. Example: "match whe
 
 Prefer a concrete path when it expresses what you want; use pattern + `?` when you need multiple candidates but only care about the first match.
 
+<a id="why-do-i-get-a-runtimeerror-when-updating-with-a-slice-filter"></a>
 ### Why do I get a RuntimeError when updating with a slice filter?
 
 A slice filter like `[id=1]` returns the **filtered sublist** as a single value — it operates on the list itself, not on individual items. Updating that sublist in place is ambiguous: the matching items may be at non-contiguous indices, so there's no clean way to splice a replacement back into the original.
