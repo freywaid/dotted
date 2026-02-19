@@ -147,6 +147,17 @@ class String(Const):
         return f'{repr(self.value)}'
 
 
+class Bytes(Const):
+    """
+    Byte string literal: b"..." or b'...'
+    """
+    @property
+    def value(self):
+        return self.args[0].encode() if isinstance(self.args[0], str) else self.args[0]
+    def __repr__(self):
+        return repr(self.value)
+
+
 class Boolean(Const):
     """
     Wrapper for True/False in filter values

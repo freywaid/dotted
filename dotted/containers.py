@@ -7,6 +7,9 @@ Container classes for pattern matching in filters and value guards:
   ContainerList  — [elements] pattern (prefix: l=list, t=tuple)
   ContainerDict  — {k: v, ...} pattern (prefix: d=dict)
   ContainerSet   — {v, v, ...} pattern (prefix: s=set, fs=frozenset)
+  StringGlob     — "prefix"..."suffix" string pattern matching
+  BytesGlob      — b"prefix"...b"suffix" bytes pattern matching
+  ValueGroup     — (val1, val2) value disjunction
 
 Type prefix semantics:
   Unprefixed = loose matching:
@@ -21,6 +24,7 @@ Type prefix semantics:
     s{...}    set only
     fs{...}   frozenset only
 """
+import re
 from itertools import combinations
 
 from .elements import Op, Const, Wildcard, Regex
@@ -34,25 +38,11 @@ from .utils import is_dict_like, is_list_like, is_set_like
 def _element_matches(pattern, val):
     """
     Check if a single value matches a pattern element.
-
-    pattern can be:
-      Wildcard         — matches anything
-      Regex            — fullmatch against str(val)
-      Const            — equality check via .value
-      Container*       — recursive container match
-      None             — matches anything (unconstrained glob)
+    None means unconstrained (bare glob). Everything else delegates to matches().
     """
     if pattern is None:
         return True
-    if isinstance(pattern, Wildcard):
-        return True
-    if isinstance(pattern, Regex):
-        return any(True for _ in pattern.matches((val,)))
-    if isinstance(pattern, Const):
-        return pattern.value == val
-    if isinstance(pattern, (ContainerList, ContainerDict, ContainerSet)):
-        return any(True for _ in pattern.matches((val,)))
-    return False
+    return any(True for _ in pattern.matches((val,)))
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +295,187 @@ class ContainerSet(Op):
     def __repr__(self):
         prefix = self.type_prefix or ''
         return prefix + '{' + ', '.join(repr(e) for e in self.elements) + '}'
+
+
+# ---------------------------------------------------------------------------
+# StringGlob — "prefix"..."suffix" string pattern
+# ---------------------------------------------------------------------------
+
+class StringGlob(Op):
+    """
+    String glob pattern: quoted fragments with ... between them.
+
+    Forms:
+      "hello"...           starts with "hello"
+      ..."world"           ends with "world"
+      "hello"..."world"    starts with "hello", ends with "world"
+      "a"..."b"..."c"      contains substrings in order
+      "hello"...5          prefix + at most 5 more chars
+      "hello"...2:5"world" 2-5 chars between fragments
+    """
+
+    def __init__(self, *parts, **kwargs):
+        self.parts = tuple(parts)
+        self._pattern = self._compile()
+        super().__init__(**kwargs)
+        self.args = self.parts
+
+    def _compile(self):
+        """
+        Build compiled regex from parts.
+        """
+        regex_parts = []
+        for p in self.parts:
+            if isinstance(p, str):
+                regex_parts.append(re.escape(p))
+            elif isinstance(p, Glob):
+                if p.pattern is not None and isinstance(p.pattern, Regex):
+                    char_pat = p.pattern.args[0]
+                else:
+                    char_pat = '.'
+                lo = p.min_count
+                hi = p.max_count
+                if lo == 0 and hi is None:
+                    regex_parts.append(f'{char_pat}*')
+                elif lo == 0:
+                    regex_parts.append(f'{char_pat}{{0,{hi}}}')
+                elif hi is None:
+                    regex_parts.append(f'{char_pat}{{{lo},}}')
+                else:
+                    regex_parts.append(f'{char_pat}{{{lo},{hi}}}')
+        return re.compile('^' + ''.join(regex_parts) + '$')
+
+    def matches(self, vals):
+        """
+        Yield str vals matching the glob pattern.
+        """
+        for v in vals:
+            if isinstance(v, str) and self._pattern.fullmatch(v):
+                yield v
+
+    def matchable(self, op, specials=False):
+        """
+        StringGlob can match against Const values.
+        """
+        return isinstance(op, Const)
+
+    def __repr__(self):
+        parts = []
+        for p in self.parts:
+            if isinstance(p, str):
+                parts.append(repr(p))
+            else:
+                parts.append(repr(p))
+        return ''.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# BytesGlob — b"prefix"...b"suffix" bytes pattern
+# ---------------------------------------------------------------------------
+
+class BytesGlob(Op):
+    """
+    Bytes glob pattern: byte-string fragments with ... between them.
+
+    Forms:
+      b"hello"...            starts with b"hello"
+      ...b"world"            ends with b"world"
+      b"hello"...b"world"    starts with b"hello", ends with b"world"
+      b"a"...b"b"...b"c"     contains substrings in order
+      b"hello"...5           prefix + at most 5 more bytes
+      b"hello"...2:5b"world" 2-5 bytes between fragments
+    """
+
+    def __init__(self, *parts, **kwargs):
+        self.parts = tuple(parts)
+        self._pattern = self._compile()
+        super().__init__(**kwargs)
+        self.args = self.parts
+
+    def _compile(self):
+        """
+        Build compiled bytes regex from parts.
+        """
+        regex_parts = []
+        for p in self.parts:
+            if isinstance(p, bytes):
+                regex_parts.append(re.escape(p))
+            elif isinstance(p, Glob):
+                if p.pattern is not None and isinstance(p.pattern, Regex):
+                    char_pat = p.pattern.args[0].encode()
+                else:
+                    char_pat = b'.'
+                lo = p.min_count
+                hi = p.max_count
+                if lo == 0 and hi is None:
+                    regex_parts.append(char_pat + b'*')
+                elif lo == 0:
+                    regex_parts.append(char_pat + b'{0,' + str(hi).encode() + b'}')
+                elif hi is None:
+                    regex_parts.append(char_pat + b'{' + str(lo).encode() + b',}')
+                else:
+                    regex_parts.append(char_pat + b'{' + str(lo).encode() + b',' + str(hi).encode() + b'}')
+        return re.compile(b'^' + b''.join(regex_parts) + b'$')
+
+    def matches(self, vals):
+        """
+        Yield bytes vals matching the glob pattern.
+        """
+        for v in vals:
+            if isinstance(v, bytes) and self._pattern.fullmatch(v):
+                yield v
+
+    def matchable(self, op, specials=False):
+        """
+        BytesGlob can match against Const values.
+        """
+        return isinstance(op, Const)
+
+    def __repr__(self):
+        parts = []
+        for p in self.parts:
+            if isinstance(p, bytes):
+                parts.append(repr(p))
+            else:
+                parts.append(repr(p))
+        return ''.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# ValueGroup — (val1, val2) value disjunction
+# ---------------------------------------------------------------------------
+
+class ValueGroup(Op):
+    """
+    Value group: (val1, val2, ...) — matches any alternative.
+
+    Alternatives can be any value pattern: String, Regex, Wildcard,
+    Container*, StringGlob, scalars.
+    """
+
+    def __init__(self, *alternatives, **kwargs):
+        self.alternatives = tuple(alternatives)
+        super().__init__(**kwargs)
+        self.args = self.alternatives
+
+    def matches(self, vals):
+        """
+        Yield vals matching any alternative.
+        """
+        for v in vals:
+            for alt in self.alternatives:
+                if any(True for _ in alt.matches((v,))):
+                    yield v
+                    break
+
+    def matchable(self, op, specials=False):
+        """
+        ValueGroup can match against Const values.
+        """
+        return isinstance(op, Const)
+
+    def __repr__(self):
+        return '(' + ', '.join(repr(a) for a in self.alternatives) + ')'
 
 
 # ---------------------------------------------------------------------------

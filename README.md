@@ -38,6 +38,7 @@ helps you do that.
   - [Quoting](#quoting)
   - [The numericize `#` operator](#the-numericize--operator)
   - [Container types](#container-types)
+  - [Bytes literals](#bytes-literals)
 - [Patterns](#patterns)
   - [Wildcards](#wildcards)
   - [Regular expressions](#regular-expressions)
@@ -71,6 +72,9 @@ helps you do that.
   - [Value guard](#value-guard)
   - [Container filter values](#container-filter-values)
   - [Type prefixes](#type-prefixes)
+  - [String glob patterns](#string-glob-patterns)
+  - [Bytes glob patterns](#bytes-glob-patterns)
+  - [Value groups](#value-groups)
   - [Dotted filter keys](#dotted-filter-keys)
   - [Slice notation in filter keys](#slice-notation-in-filter-keys)
 - [Transforms](#transforms)
@@ -125,6 +129,9 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
 | Container filter values (`[1, ...]`, `{k: v}`) | ✅ | ❌ | ❌ | ❌ |
+| String/bytes glob patterns (`"pre"..."suf"`) | ✅ | ❌ | ❌ | ❌ |
+| Value groups (`(val1, val2)`) | ✅ | ❌ | ❌ | ❌ |
+| Bytes literal support (`b"..."`) | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -137,6 +144,8 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
 - **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(**:-2(.*, [])##, *)` for "recurse into containers, fall back to `*` for the rest"
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
+- **String/bytes glob patterns**—match by prefix, suffix, or substring: `*="user_"...`, `*=b"header"...b"footer"`
+- **Value groups**—disjunction over filter values: `*=(1, 2, 3)`, `[*&status=("active", "pending")]`
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
@@ -733,6 +742,25 @@ Python convention where `{}` is a dict literal, not a set).
 In filter context, containers support patterns (`*`, `...`, `/regex/`) inside — see
 [Container filter values](#container-filter-values). In transform argument context,
 only concrete scalar values are allowed.
+
+<a id="bytes-literals"></a>
+### Bytes literals
+
+Prefix a quoted string with `b` to create a bytes literal: `b"hello"` or `b'hello'`.
+Bytes literals produce `bytes` values and only match `bytes` — never `str`:
+
+    >>> import dotted
+    >>> d = {'a': b'hello', 'b': b'world', 'c': 'hello'}
+    >>> dotted.get(d, '*=b"hello"')
+    (b'hello',)
+
+Use in filters:
+
+    >>> data = [{'data': b'yes'}, {'data': b'no'}, {'data': 'yes'}]
+    >>> dotted.get(data, '[*&data=b"yes"]')
+    ({'data': b'yes'},)
+
+Note that `b"hello"` does not match the string `'hello'` — types must match exactly.
 
 <a id="patterns"></a>
 ## Patterns
@@ -1594,6 +1622,118 @@ Empty containers with prefixes:
 
 **Note**: Unprefixed `{}` matches dict (Python convention — `{}` is a dict, not a set).
 Use `s{}` for empty set, `fs{}` for empty frozenset.
+
+<a id="string-glob-patterns"></a>
+### String glob patterns
+
+String globs match string values by prefix, suffix, or substring using `...` between
+quoted fragments. They work in filter values and value guards:
+
+| Form | Matches |
+|------|---------|
+| `"hello"...` | Strings starting with "hello" |
+| `..."world"` | Strings ending with "world" |
+| `"hello"..."world"` | Starts with "hello", ends with "world" |
+| `"a"..."b"..."c"` | Contains substrings in order |
+| `"hello"...5` | Starts with "hello", at most 5 more chars |
+| `"a"...2:5"b"` | 2-5 chars between "a" and "b" |
+
+Examples:
+
+    >>> import dotted
+    >>> d = {'greeting': 'hello world', 'farewell': 'goodbye world', 'name': 'alice'}
+
+    # Prefix match
+    >>> dotted.get(d, '*="hello"...')
+    ('hello world',)
+
+    # Suffix match
+    >>> dotted.get(d, '*=..."world"')
+    ('hello world', 'goodbye world')
+
+    # Prefix + suffix
+    >>> dotted.get(d, '*="hello"..."world"')
+    ('hello world',)
+
+In filters:
+
+    >>> data = [{'name': 'user_alice'}, {'name': 'admin_bob'}, {'name': 'user_carol'}]
+    >>> dotted.get(data, '[*&name="user_"...]')
+    ({'name': 'user_alice'}, {'name': 'user_carol'})
+
+    # Negated
+    >>> dotted.get(data, '[*&name!="user_"...]')
+    ({'name': 'admin_bob'},)
+
+String globs only match `str` values — not `bytes`. For bytes matching, use
+[bytes glob patterns](#bytes-glob-patterns).
+
+<a id="bytes-glob-patterns"></a>
+### Bytes glob patterns
+
+Bytes globs are the `bytes` counterpart to string globs. Prefix fragments with `b`
+to match `bytes` values:
+
+| Form | Matches |
+|------|---------|
+| `b"hello"...` | Bytes starting with b"hello" |
+| `...b"world"` | Bytes ending with b"world" |
+| `b"hello"...b"world"` | Starts with b"hello", ends with b"world" |
+| `b"hello"...5` | Starts with b"hello", at most 5 more bytes |
+
+Examples:
+
+    >>> import dotted
+    >>> d = {'a': b'hello world', 'b': b'goodbye world'}
+    >>> dotted.get(d, '*=b"hello"...')
+    (b'hello world',)
+
+In filters:
+
+    >>> data = [{'data': b'user_alice'}, {'data': b'admin_bob'}]
+    >>> dotted.get(data, '[*&data=b"user_"...]')
+    ({'data': b'user_alice'},)
+
+Bytes globs only match `bytes` values — never `str`.
+
+<a id="value-groups"></a>
+### Value groups
+
+Value groups express disjunction (OR) over filter values. Use `(val1, val2, ...)`
+to match any of several alternatives:
+
+    >>> import dotted
+    >>> d = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+    >>> dotted.get(d, '*=(1, 3)')
+    (1, 3)
+
+Alternatives can be any value type — strings, numbers, regex, string globs, `*`,
+`None`, `True`/`False`, or containers:
+
+    >>> data = [
+    ...     {'name': 'user_alice'},
+    ...     {'name': 'admin_bob'},
+    ...     {'name': 'guest_carol'},
+    ... ]
+    >>> dotted.get(data, '[*&name=("user_"..., /admin_.*/)]')
+    ({'name': 'user_alice'}, {'name': 'admin_bob'})
+
+Use `!=` for negation — matches values not in the group:
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+    >>> dotted.get(d, '*!=(1, 3)')
+    (2, 4)
+
+In filters:
+
+    >>> data = [{'status': 1}, {'status': 2}, {'status': 3}]
+    >>> dotted.get(data, '[*&status=(1, 2)]')
+    ({'status': 1}, {'status': 2})
+    >>> dotted.get(data, '[*&status!=(1, 2)]')
+    ({'status': 3},)
+
+**Note**: Value groups `(val1, val2)` in value position are different from path
+grouping `(a,b)` in path position. Value groups appear after `=` or `!=`.
 
 <a id="dotted-filter-keys"></a>
 ### Dotted filter keys

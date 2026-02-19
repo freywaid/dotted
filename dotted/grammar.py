@@ -54,6 +54,7 @@ non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(el.Word
 nameop = name.copy().set_parse_action(el.Word)
 
 string = quoted.copy().set_parse_action(el.String)
+bytes_literal = (S(L('b')) + quoted).set_parse_action(el.Bytes)
 wildcard = pp.Literal('*').set_parse_action(el.Wildcard)
 wildcard_first = pp.Literal('*?').set_parse_action(el.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
@@ -63,7 +64,7 @@ slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
 _common_pats = wildcard_first | wildcard | regex_first | regex
-_commons = string | _common_pats | numeric_quoted
+_commons = bytes_literal | string | _common_pats | numeric_quoted
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@ _ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).s
 container_value = pp.Forward()
 
 # Scalar atoms usable inside containers (same as value atoms minus containers)
-_val_atoms = string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
+_val_atoms = bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
@@ -129,8 +130,30 @@ container_glob = (
     _glob_bare_full | _glob_bare_min | _glob_bare_max | _glob_bare
 )
 
-# Container element: can be a nested container, glob, or scalar/pattern atom
-_container_elem = container_value | container_glob | _val_atoms
+# String glob: "prefix"..."suffix", ..."suffix", "prefix"..., etc.
+# Must have at least one string AND one glob (otherwise it's a plain string or bare glob).
+_sglob_str = quoted.copy()  # raw string value, no el.String parse action
+_sglob_part = _sglob_str | container_glob
+_string_glob_a = _sglob_str + container_glob + ZM(_sglob_part)  # starts with string
+_string_glob_b = container_glob + _sglob_str + ZM(_sglob_part)  # starts with glob
+string_glob = (_string_glob_a | _string_glob_b).set_parse_action(lambda t: [ct.StringGlob(*t)])
+
+# Bytes glob: b"prefix"...b"suffix", ...b"suffix", b"prefix"..., etc.
+# Like string_glob but with bytes_literal parts → BytesGlob.
+_bglob_bytes = bytes_literal.copy()  # produces el.Bytes
+_bglob_part = _bglob_bytes | container_glob
+_bytes_glob_a = _bglob_bytes + container_glob + ZM(_bglob_part)  # starts with bytes
+_bytes_glob_b = container_glob + _bglob_bytes + ZM(_bglob_part)  # starts with glob
+def _make_bytes_glob(t):
+    """
+    Convert parsed tokens to BytesGlob, extracting .value from Bytes elements.
+    """
+    parts = tuple(p.value if isinstance(p, el.Bytes) else p for p in t)
+    return ct.BytesGlob(*parts)
+bytes_glob = (_bytes_glob_a | _bytes_glob_b).set_parse_action(lambda t: [_make_bytes_glob(t)])
+
+# Container element: can be a nested container, glob, bytes glob, string glob, or scalar/pattern atom
+_container_elem = container_value | bytes_glob | string_glob | container_glob | _val_atoms
 
 # List: [elem, elem, ...]
 _container_list_inner = _container_elem + ZM(_ccomma + _container_elem)
@@ -285,7 +308,11 @@ concrete_value <<= (
 # value and key (updated to include containers)
 # ---------------------------------------------------------------------------
 
-value = container_value | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
+# value is a Forward to allow value_group to reference it recursively
+value = pp.Forward()
+_value_group_inner = value + OM(_ccomma + value)
+value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
+value <<= value_group | container_value | bytes_glob | string_glob | bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
 key = _commons | non_integer | numeric_key | word
 
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
