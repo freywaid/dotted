@@ -48,6 +48,16 @@ numeric_quoted = _numeric_quoted.set_parse_action(el.NumericQuoted)
 numeric_key = integer.copy().set_parse_action(el.Numeric)
 numeric_slot = ppc.number.copy().set_parse_action(el.Numeric)
 
+# Extended numeric literals: scientific (1e10), underscore (1_000), hex (0x1F), octal (0o17), binary (0b1010)
+_numeric_extended_re = pp.Regex(
+    r'[-]?0[xX][0-9a-fA-F]+'        # hex
+    r'|[-]?0[oO][0-7]+'             # octal
+    r'|[-]?0[bB][01]+'              # binary
+    r'|[-]?[0-9][0-9_]*[eE][+-]?[0-9]+'  # scientific notation
+    r'|[-]?[0-9]+(?:_[0-9]+)+'      # underscore separators
+)
+numeric_extended = _numeric_extended_re.copy().set_parse_action(el.NumericExtended)
+
 # Exclude whitespace so "first )" parses as key "first", not "first "
 word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(el.Word)
 non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(el.Word)
@@ -78,7 +88,7 @@ _ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).s
 container_value = pp.Forward()
 
 # Scalar atoms usable inside containers (same as value atoms minus containers)
-_val_atoms = bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
+_val_atoms = bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
@@ -314,14 +324,14 @@ concrete_value <<= (
 value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
-value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_key
-key = _commons | non_integer | numeric_key | word
+value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+key = _commons | numeric_extended | non_integer | numeric_key | word
 
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
 # Dot introduces a key part only; slot/slice directly after key. Try slice before slot so [:] parses as slice.
-_filter_key_part = string | _common_pats | non_integer | numeric_key | word
+_filter_key_part = string | _common_pats | numeric_extended | non_integer | numeric_key | word
 filter_key_slice = (lb + slice + rb).set_parse_action(lambda t: el.Slice(*t))
-filter_key_slot = (lb + (_commons | numeric_slot) + rb).set_parse_action(lambda t: el.Slot(t[0]))
+filter_key_slot = (lb + (_commons | numeric_extended | numeric_slot) + rb).set_parse_action(lambda t: el.Slot(t[0]))
 _filter_key_segment = _filter_key_part | filter_key_slice | filter_key_slot
 filter_key = pp.Group(
     _filter_key_segment + ZM(filter_key_slice | filter_key_slot | (dot + _filter_key_part))
@@ -368,7 +378,7 @@ keycmd_guarded = (key + ZM(amp + filters) + _guard_eq).set_parse_action(
 
 keycmd = (key + ZM(amp + filters)).set_parse_action(el.Key)
 
-_slotguts = (_commons | numeric_slot) + ZM(amp + filters)
+_slotguts = (_commons | numeric_extended | numeric_slot) + ZM(amp + filters)
 
 def _slotcmd_guarded_action(negate):
     def action(t):
@@ -466,7 +476,7 @@ def _make_recursive(t, first=False):
 
 # ** and *pattern base expressions (no parse actions — shared by guarded/first/plain variants)
 _rec_dstar_prefix = S(L('*') + L('*'))
-_rec_inner = string | regex_first | regex | numeric_quoted | non_integer | numeric_key | word
+_rec_inner = string | regex_first | regex | numeric_quoted | numeric_extended | non_integer | numeric_key | word
 _rec_pat_prefix = S(L('*'))
 
 def _dstar_body():

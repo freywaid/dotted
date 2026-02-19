@@ -9,20 +9,66 @@ import dotted
 
 def test_quote_string():
     assert dotted.quote('hello') == 'hello'
-    # spaces and dots don't require quoting
-    assert dotted.quote('has space') == 'has space'
-    assert dotted.quote('has.dot') == 'has.dot'
+    # spaces and reserved chars require quoting
+    assert dotted.quote('has space') == "'has space'"
+    assert dotted.quote('has.dot') == "'has.dot'"
+    assert dotted.quote('a[0]') == "'a[0]'"
+    assert dotted.quote('') == "''"
 
 
 def test_quote_numeric():
     assert dotted.quote(7) == '7'
     assert dotted.quote(7.2) == "#'7.2'"
     assert dotted.quote(7.2, as_key=False) == '7.2'
+    # floats whose str() has no dot are bare
+    assert dotted.quote(1e100) == '1e+100'
+    assert dotted.quote(1e-12) == '1e-12'
+    # floats whose str() has a dot need #'...'
+    assert dotted.quote(1e12) == "#'1000000000000.0'"
+    assert dotted.quote(7.0) == "#'7.0'"
 
 
 def test_quote_string_numeric():
-    # string that looks numeric needs quoting
-    assert dotted.quote('7') == "'7'"
+    # quote leaves numeric strings bare — use normalize() for type-preserving round-trips
+    assert dotted.quote('7') == '7'
+    assert dotted.quote('007') == '007'
+
+
+def test_quote_numeric_prefix():
+    # extended numeric literals are handled by the grammar
+    assert dotted.quote('1e10') == '1e10'
+    assert dotted.quote('1e+10') == '1e+10'
+    assert dotted.quote('1_000') == '1_000'
+    assert dotted.quote('-1e5') == '-1e5'
+    assert dotted.quote('0x1F') == '0x1F'
+    assert dotted.quote('0o17') == '0o17'
+    assert dotted.quote('0b1010') == '0b1010'
+    # other digit-prefixed strings need quoting to avoid partial numeric parse
+    assert dotted.quote('1abc') == "'1abc'"
+    assert dotted.quote('3rd') == "'3rd'"
+
+
+# normalize
+
+def test_normalize_string():
+    assert dotted.normalize('hello') == 'hello'
+    assert dotted.normalize('has space') == "'has space'"
+    assert dotted.normalize('has.dot') == "'has.dot'"
+    assert dotted.normalize('a[0]') == "'a[0]'"
+    assert dotted.normalize('') == "''"
+
+
+def test_normalize_numeric_string():
+    # numeric strings are quoted to preserve string type on round-trip
+    assert dotted.normalize('7') == "'7'"
+    assert dotted.normalize('0') == "'0'"
+    assert dotted.normalize('-1') == "'-1'"
+
+
+def test_normalize_int():
+    # actual ints stay bare
+    assert dotted.normalize(7) == '7'
+    assert dotted.normalize(0) == '0'
 
 
 # is_inverted

@@ -21,4 +21,18 @@ setuptools.setup(
     ],
     python_requires='>=3.6',
     install_requires=['pyparsing>=3.0'],
+    entry_points={
+        'console_scripts': [
+            'dq=dotted.cli.main:main',
+        ],
+    },
+    extras_require={
+        'yaml': ['PyYAML>=5.0'],
+        'toml': ['tomli>=1.0;python_version<"3.11"', 'tomli_w>=1.0'],
+        'all': [
+            'PyYAML>=5.0',
+            'tomli>=1.0;python_version<"3.11"',
+            'tomli_w>=1.0',
+        ],
+    },
 )

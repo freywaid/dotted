@@ -183,9 +183,8 @@ def test_pluck_numeric_key():
 
 
 def test_pluck_quoted_key():
-    # Note: expand returns unquoted key, so subsequent get fails
-    # This is a known limitation - see issue for quoted key handling
     d = {'a.b': 'dotted', 'normal': 'x'}
-    # Currently returns ('a.b', None) because get('a.b') != get('"a.b"')
     r = dotted.pluck(d, '"a.b"')
-    assert r[0] == 'a.b'  # key is unquoted
+    assert r[0] == "'a.b'"  # key is quoted so it round-trips through get
+    assert r[1] == 'dotted'
+    assert dotted.get(d, r[0]) == 'dotted'

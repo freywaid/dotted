@@ -130,6 +130,26 @@ class Numeric(Const):
         return f'{self.value}'
 
 
+class NumericExtended(Numeric):
+    """
+    Numeric from extended literal forms: scientific notation (1e10, 1e-12),
+    underscore separators (1_000), hex (0x1F), octal (0o17), binary (0b1010).
+    Stores the converted numeric value (int when possible, float otherwise).
+    """
+    def __init__(self, *args, **kwargs):
+        if len(args) == 3 and isinstance(args[2], pp.ParseResults):
+            raw = args[2][0]
+            stripped = raw.lstrip('-')
+            if len(stripped) > 1 and stripped[0] == '0' and stripped[1] in 'xXoObB':
+                val = int(raw, 0)
+            else:
+                f = float(raw.replace('_', ''))
+                val = int(f) if f == int(f) else f
+            super().__init__(args[0], args[1], pp.ParseResults([val]), **kwargs)
+        else:
+            super().__init__(*args, **kwargs)
+
+
 class NumericQuoted(Numeric):
     def __repr__(self):
         if self.is_int():
@@ -1725,7 +1745,8 @@ class Key(CmdOp):
         return '.'.join(repr(a) for a in self.args)
 
     def operator(self, top=False):
-        iterable = itertools.chain((quote(self.op.value),), (repr(f) for f in self.filters))
+        q = normalize(self.op.value) if isinstance(self.op, (Word, String)) else repr(self.op)
+        iterable = itertools.chain((q,), (repr(f) for f in self.filters))
         s = '.'.join(iterable)
         if top:
             return s
@@ -1852,7 +1873,8 @@ class Attr(Key):
         return '@' + '.'.join(repr(a) for a in self.args)
 
     def operator(self, top=False):
-        iterable = itertools.chain((quote(self.op.value),), (repr(f) for f in self.filters))
+        q = normalize(self.op.value) if isinstance(self.op, (Word, String)) else repr(self.op)
+        iterable = itertools.chain((q,), (repr(f) for f in self.filters))
         return '@' + '.'.join(iterable)
 
     def _items(self, node, keys):
@@ -1961,7 +1983,13 @@ class Slot(Key):
     def operator(self, top=False):
         iterable = (repr(a) for a in self.filters)
         if self.op is not None:
-            iterable = itertools.chain((quote(self.op.value, as_key=False),), iterable)
+            if isinstance(self.op, (Word, String)):
+                q = normalize(self.op.value, as_key=False)
+            elif isinstance(self.op, (Numeric, NumericQuoted)):
+                q = repr(self.op)
+            else:
+                q = self.op.value
+            iterable = itertools.chain((q,), iterable)
         return '[' + '.'.join(iterable) + ']'
 
     def items(self, node):
@@ -2603,7 +2631,8 @@ class Recursive(CmdOp):
         if isinstance(self.inner, Wildcard):
             s = '**'
         else:
-            s = f'*{quote(self.inner.value)}'
+            q = normalize(self.inner.value) if isinstance(self.inner, (Word, String, Numeric, NumericQuoted)) else repr(self.inner)
+            s = f'*{q}'
         # Depth slice
         if self.depth_start is not None or self.depth_stop is not None or self.depth_step is not None:
             s += ':' + ('' if self.depth_start is None else str(self.depth_start))
@@ -2882,25 +2911,91 @@ class Dotted:
 Dotted.registry.__doc__ = rdoc()
 
 
+_RESERVED = frozenset('.[]*:|+?/=,@&()!~#{}')
+_NEEDS_QUOTE = _RESERVED | frozenset(' \t\n\r')
+
+
+_NUMERIC_RE = re.compile(
+    r'[-]?0[xX][0-9a-fA-F]+$'           # hex
+    r'|[-]?0[oO][0-7]+$'                # octal
+    r'|[-]?0[bB][01]+$'                 # binary
+    r'|[-]?[0-9][0-9_]*[eE][+-]?[0-9]+$' # scientific notation
+    r'|[-]?[0-9]+(?:_[0-9]+)+$'         # underscore separators
+    r'|[-]?[0-9]+$'                     # plain integers
+)
+
+
+def _needs_quoting(s):
+    """
+    Return True if a string key must be quoted in dotted notation.
+    """
+    if not s:
+        return True
+    # Numeric forms (integers, scientific notation, underscore separators)
+    # are handled by the grammar and don't need quoting, even if they
+    # contain reserved characters like '+' in '1e+10'.
+    if s[0].isdigit() or (len(s) > 1 and s[0] == '-' and s[1].isdigit()):
+        return not _NUMERIC_RE.match(s)
+    if any(c in _NEEDS_QUOTE for c in s):
+        return True
+    return False
+
+
+def _is_numeric_str(s):
+    """
+    Return True if s is a string that parses as an integer.
+    """
+    try:
+        int(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def _quote_str(s):
+    """
+    Wrap a string in single quotes, escaping backslashes and single quotes.
+    """
+    s = s.replace('\\', '\\\\').replace("'", "\\'")
+    return f"'{s}'"
+
+
 def quote(key, as_key=True):
+    """
+    Quote a key for use in a dotted notation path string.
+
+    For raw string keys, wraps in double quotes if the key contains
+    reserved characters or whitespace.
+    """
     if isinstance(key, str):
-        try:
-            int(key)
-            s = repr(key)
-        except ValueError:
-            s = key
+        if _needs_quoting(key):
+            return _quote_str(key)
+        return key
     elif isinstance(key, int):
-        s = str(key)
+        return str(key)
     elif isinstance(key, float):
+        s = str(key)
+        if '.' not in s:
+            return s
         if as_key:
-            s = f"#'{key}'"
-        else:
-            s = str(key)
+            return f"#'{s}'"
+        return s
     elif isinstance(key, Op):
         return str(key)
     else:
         raise NotImplementedError
-    return s
+
+
+def normalize(key, as_key=True):
+    """
+    Convert a raw Python key to its dotted normal form representation.
+
+    Like quote(), but also quotes string keys that look numeric so they
+    round-trip correctly through pack/unpack (preserving string vs int type).
+    """
+    if isinstance(key, str) and _is_numeric_str(key):
+        return _quote_str(key)
+    return quote(key, as_key=as_key)
 
 
 def assemble(ops, start=0, pedantic=False):

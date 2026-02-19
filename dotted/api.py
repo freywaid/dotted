@@ -63,7 +63,8 @@ def parse(key):
 
 def quote(key, as_key=True):
     """
-    How to quote a key
+    Quote a key for use in a dotted path.  Wraps in single quotes if
+    the key contains reserved characters or whitespace.
     >>> quote('hello')
     'hello'
     >>> quote(7)
@@ -75,9 +76,28 @@ def quote(key, as_key=True):
     >>> quote(7.2, as_key=False)
     '7.2'
     >>> quote('7')
-    "'7'"
+    '7'
+    >>> quote('a.b')
+    "'a.b'"
     """
     return el.quote(key, as_key=as_key)
+
+
+def normalize(key, as_key=True):
+    """
+    Convert a raw Python key to dotted normal form.  Like quote(), but
+    also quotes string keys that look numeric so they round-trip correctly
+    through pack/unpack (preserving string vs int key type).
+    >>> normalize('hello')
+    'hello'
+    >>> normalize(7)
+    '7'
+    >>> normalize('7')
+    "'7'"
+    >>> normalize('a.b')
+    "'a.b'"
+    """
+    return el.normalize(key, as_key=as_key)
 
 
 @functools.lru_cache(CACHE_SIZE)
@@ -679,7 +699,7 @@ def assemble_multi(keys_list):
     ('hello.there', 'a.1.c')
     """
     def _assemble(keys):
-        keys = ([k] if isinstance(k, el.Op) else parse(quote(k)) for k in keys)
+        keys = ([k] if isinstance(k, el.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
         iterable = itertools.chain.from_iterable(keys)
         return el.assemble(iterable)
     return tuple(_assemble(keys) for keys in keys_list)

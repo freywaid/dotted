@@ -3,6 +3,28 @@
 Sometimes you want to fetch data from a deeply nested data structure. Dotted notation
 helps you do that.
 
+## Installation
+
+    pip install dotted-notation
+
+The [`dq` CLI](#cli-dq) supports several data formats:
+
+| Format | Status   |
+|--------|----------|
+| JSON   | included |
+| JSONL  | included |
+| CSV    | included |
+| YAML   | optional |
+| TOML   | optional |
+
+To install optional format support:
+
+    pip install dotted-notation[all]
+
+Or pick only what you need:
+
+    pip install dotted-notation[yaml,toml]
+
 ## Table of Contents
 
 - [Safe Traversal (Optional Chaining)](#safe-traversal-optional-chaining)
@@ -24,6 +46,7 @@ helps you do that.
   - [Apply](#apply)
   - [Assemble](#assemble)
   - [Quote](#quote)
+  - [Normalize](#normalize)
   - [AUTO](#auto)
   - [Multi Operations](#multi-operations)
 - [Paths](#paths)
@@ -82,6 +105,12 @@ helps you do that.
   - [Container transform arguments](#container-transform-arguments)
   - [Custom Transforms](#custom-transforms)
 - [Constants and Exceptions](#constants-and-exceptions)
+- [CLI (`dq`)](#cli-dq)
+  - [File input](#file-input)
+  - [Format conversion](#format-conversion)
+  - [Path files](#path-files)
+  - [Projection and unpack](#projection-and-unpack)
+  - [Pack](#pack)
 - [FAQ](#faq)
   - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
   - [How do I craft an efficient path?](#how-do-i-craft-an-efficient-path)
@@ -489,15 +518,45 @@ Build a dotted notation string from a list of path segments.
 <a id="quote"></a>
 ### Quote
 
-Properly quote a key for use in dotted notation.
+Quote a key for use in a dotted path. Wraps in single quotes if the key
+contains reserved characters or whitespace.
 
     >>> import dotted
     >>> dotted.quote('hello')
     'hello'
     >>> dotted.quote('has.dot')
-    '"has.dot"'
-    >>> dotted.quote(7.5)
-    "#'7.5'"
+    "'has.dot'"
+    >>> dotted.quote('has space')
+    "'has space'"
+    >>> dotted.quote(7)
+    '7'
+    >>> dotted.quote('7')
+    '7'
+
+<a id="normalize"></a>
+### Normalize
+
+Convert a raw Python key to dotted normal form. Like `quote()`, but also
+quotes string keys that look numeric so they round-trip correctly through
+`unpack`/`update_multi` (preserving string vs int key type).
+
+    >>> import dotted
+    >>> dotted.normalize('hello')
+    'hello'
+    >>> dotted.normalize('has.dot')
+    "'has.dot'"
+    >>> dotted.normalize(7)
+    '7'
+    >>> dotted.normalize('7')
+    "'7'"
+
+`unpack` uses `normalize` internally, so dotted normal form paths always
+round-trip correctly:
+
+    >>> d = {'7': 'seven', 'a.b': 'dotted', 'hello': 'world'}
+    >>> flat = dict(dotted.unpack(d))
+    >>> dotted.update_multi(dotted.AUTO, flat.items()) == d
+    True
 
 <a id="auto"></a>
 ### AUTO
@@ -1924,6 +1983,116 @@ Raised when dotted notation cannot be parsed:
     Traceback (most recent call last):
     ...
     dotted.api.ParseError: Expected ']' at pos 8: '[invalid'
+
+<a id="cli-dq"></a>
+## CLI (`dq`)
+
+The `dq` command lets you query and transform nested data from the command line,
+similar to `jq` but using dotted notation.
+
+### Basic usage
+
+    echo '{"a": {"b": 1}}' | dq 'a.b'
+    # 1
+
+    echo '{"a": 1, "b": 2, "c": 3}' | dq -p a -p b
+    # {"a": 1, "b": 2}
+
+### Operations
+
+**get** (default) — extract values or project fields:
+
+    echo '{"a": 1, "b": 2}' | dq -p a
+    echo '{"a": 1, "b": 2}' | dq get -p a
+
+**update** — set values (each `-p` takes a path and value):
+
+    echo '{"a": 1, "b": 2}' | dq update -p a 42 -p b 43
+    # {"a": 42, "b": 43}
+
+**remove** — delete paths (optionally conditional on value):
+
+    echo '{"a": 1, "b": 2}' | dq remove -p a
+    # {"b": 2}
+
+    echo '{"a": 1, "b": 2}' | dq remove -p a 1
+    # {"b": 2}  (only removes if value is 1)
+
+### File input
+
+Read from a file instead of stdin with `-f`:
+
+    dq -f data.json -p name
+    dq -f config.yaml -o json
+
+When `-f` is used, the input format is auto-detected from the file extension
+(`.json`, `.jsonl`, `.ndjson`, `.yaml`, `.yml`, `.toml`, `.csv`).
+Use `-i` to override:
+
+    dq -f data.txt -i json -p name
+
+### Format conversion
+
+Use `-i` and `-o` to specify input/output formats (`json`, `jsonl`, `yaml`, `toml`, `csv`):
+
+    cat data.yaml | dq -i yaml -o json -p name -p age
+    printf '{"a":1}\n{"a":2}\n' | dq -i jsonl -o csv -p a
+
+Output format defaults to the input format. Without any paths, `dq` acts as
+a pure format converter:
+
+    cat data.yaml | dq -i yaml -o json
+
+### Path files
+
+Load paths from a file with `-pf`:
+
+    echo '{"a": 1, "b": 2}' | dq -pf paths.txt
+
+Path file format (one path per line, `#` comments supported):
+
+    # paths.txt
+    a
+    b.c
+
+For update, each line has a path and value:
+
+    # updates.txt
+    a 42
+    b.c "hello"
+
+### Projection and unpack
+
+Multiple paths produce a projection preserving nested structure:
+
+    echo '{"a": {"x": 1, "y": 2}, "b": 3}' | dq -p a.x -p b
+    # {"a": {"x": 1}, "b": 3}
+
+Use `--unpack` to flatten the result to dotted normal form. Lists of dicts
+are fully expanded with indexed paths:
+
+    echo '{"users": [{"name": "alice", "age": 30}, {"name": "bob", "age": 25}]}' | dq --unpack
+    # {"users[0].name": "alice", "users[0].age": 30, "users[1].name": "bob", "users[1].age": 25}
+
+`--unpack` works with any operation:
+
+    echo '{"a": {"x": 1}, "b": {"c": 2}}' | dq --unpack update -p a.x 99
+    # {"a.x": 99, "b.c": 2}
+
+### Pack
+
+Use `--pack` to rebuild nested structure from dotted normal form, including
+indexed lists:
+
+    echo '{"users[0].name": "alice", "users[0].age": 30, "users[1].name": "bob"}' | dq --pack
+    # {"users": [{"name": "alice", "age": 30}, {"name": "bob"}]}
+
+`--pack` and `--unpack` compose — pack rebuilds structure on input, unpack
+flattens on output. This lets you use nested operations on dotted normal form. For
+example, removing an entire group without listing every key:
+
+    echo '{"db.host": "localhost", "db.port": 5432, "app.debug": true}' | dq --pack --unpack remove -p db
+    # {"app.debug": true}
 
 <a id="faq"></a>
 ## FAQ
