@@ -7,7 +7,7 @@ helps you do that.
 
     pip install dotted-notation
 
-The [`dq` CLI](#cli-dq) supports several data formats:
+Includes the [**`dq`** command-line tool](#cli-dq) with support for several data formats:
 
 | Format | Status   |
 |--------|----------|
