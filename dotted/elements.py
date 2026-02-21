@@ -56,9 +56,6 @@ def _has_any(gen):
 
 from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
-# Back-compat alias
-is_mapping = is_dict_like
-
 
 class MatchResult:
     def __init__(self, val):
@@ -2551,7 +2548,7 @@ class Recursive(BaseOp):
         """
         Compute max depth to leaf from this node (structural, ignores filters/depth range).
         """
-        if is_mapping(node):
+        if is_dict_like(node):
             child_depths = [self._max_depth_to_leaf(v) for k, v in self._matching_keys(node)]
             if child_depths:
                 return max(child_depths) + 1
@@ -2568,7 +2565,7 @@ class Recursive(BaseOp):
         Traverses the tree depth-first, yielding matches at each level
         before recursing into children (parent-before-children ordering).
         """
-        if is_mapping(node):
+        if is_dict_like(node):
             iterable = self._matching_keys(node)
             matched = True
             concrete = Key.concrete
@@ -2598,7 +2595,7 @@ class Recursive(BaseOp):
         return ()
 
     def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None):
-        if is_mapping(node):
+        if is_dict_like(node):
             iterable = list(self._matching_keys(node))
             matched = True
         elif is_list_like(node):
@@ -2630,7 +2627,7 @@ class Recursive(BaseOp):
         return self._update_recursive(ops, node, val, has_defaults, _path, nop)
 
     def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None):
-        if is_mapping(node):
+        if is_dict_like(node):
             iterable = list(self._matching_keys(node))
             matched = True
         elif is_list_like(node):
