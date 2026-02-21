@@ -1454,8 +1454,7 @@ def _path_to_opgroup_first(parsed_result):
     """
     Parse action: convert path grouping (a,b)? to OpGroupFirst.
     """
-    opgroup = _path_to_opgroup(parsed_result)
-    return OpGroupFirst(*opgroup.branches)
+    return OpGroupFirst(*_path_to_opgroup(parsed_result).branches)
 
 
 def _slot_to_opgroup(parsed_result):
