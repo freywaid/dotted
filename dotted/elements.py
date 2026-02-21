@@ -129,28 +129,28 @@ class DepthStack:
     OpGroups push a new level for branch isolation; simple ops push
     onto the current level.
     """
-    __slots__ = ('_stacks', '_pos')
+    __slots__ = ('_stacks', 'level')
 
     def __init__(self):
         self._stacks = collections.defaultdict(collections.deque)
-        self._pos = 0
+        self.level = 0
 
     def push(self, frame):
-        self._stacks[self._pos].append(frame)
+        self._stacks[self.level].append(frame)
 
     def pop(self):
-        return self._stacks[self._pos].pop()
+        return self._stacks[self.level].pop()
 
     def push_level(self):
-        self._pos += 1
+        self.level += 1
 
     def pop_level(self):
-        del self._stacks[self._pos]
-        self._pos -= 1
+        del self._stacks[self.level]
+        self.level -= 1
 
     @property
     def current(self):
-        return self._stacks[self._pos]
+        return self._stacks[self.level]
 
     def __bool__(self):
         return bool(self._stacks)
@@ -1057,21 +1057,28 @@ class OpGroupOr(OpGroup):
             return nxt
         return None
 
-    def walk(self, ops, node, paths):
+    def push_children(self, stack, frame, paths):
+        """
+        Process branches sequentially via DepthStack levels.
+        Handles cut, softcut, and path overlap filtering.
+        """
         br = self.branches
         softcut_paths = []
+        results = []
         for i in range(len(br)):
             item = br[i]
             if item in (_BRANCH_CUT, _BRANCH_SOFTCUT):
                 continue
-            branch_ops = list(item) + list(ops)
+            branch_ops = list(item) + list(frame.ops)
             if not branch_ops:
                 continue
             marker = self._next_marker(i)
             is_softcut = marker is _BRANCH_SOFTCUT
             use_paths = paths or bool(softcut_paths) or is_softcut
+            stack.push_level()
+            stack.push(Frame(branch_ops, frame.node, frame.prefix))
             found = False
-            for path, val in walk(branch_ops, node, use_paths):
+            for path, val in _process(stack, use_paths):
                 if path is _CUT_SENTINEL:
                     break
                 if softcut_paths and path and _path_overlaps(softcut_paths, path):
@@ -1079,12 +1086,14 @@ class OpGroupOr(OpGroup):
                 found = True
                 if is_softcut and path:
                     softcut_paths.append(path)
-                yield (path if paths else None, val)
+                results.append((path if paths else None, val))
+            stack.pop_level()
             if not found:
                 continue
             if marker is _BRANCH_CUT:
-                yield (_CUT_SENTINEL, None)
-                return
+                results.append((_CUT_SENTINEL, None))
+                return results
+        return results
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         matched_any = False
@@ -1162,14 +1171,21 @@ class OpGroupFirst(OpGroup):
         branch_strs = [''.join(op.operator(top=(i == 0)) for i, op in enumerate(b)) for b in _branches_only(self.branches)]
         return '(' + ','.join(branch_strs) + ')?'
 
-    def walk(self, ops, node, paths):
+    def push_children(self, stack, frame, paths):
+        """
+        Try branches in order, return first result found.
+        """
         for branch in _branches_only(self.branches):
-            branch_ops = list(branch) + list(ops)
+            branch_ops = list(branch) + list(frame.ops)
             if not branch_ops:
                 continue
-            for pair in walk(branch_ops, node, paths):
-                yield pair
-                return
+            stack.push_level()
+            stack.push(Frame(branch_ops, frame.node, frame.prefix))
+            for pair in _process(stack, paths):
+                stack.pop_level()
+                return [pair]
+            stack.pop_level()
+        return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         for branch in _branches_only(self.branches):
@@ -1206,17 +1222,24 @@ class OpGroupAnd(OpGroup):
             branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
         return '(' + '&'.join(branch_strs) + ')'
 
-    def walk(self, ops, node, paths):
+    def push_children(self, stack, frame, paths):
+        """
+        All branches must match. Collect results per branch;
+        if any branch is empty, return nothing.
+        """
         all_results = []
         for branch in self.branches:
-            branch_ops = list(branch) + list(ops)
+            branch_ops = list(branch) + list(frame.ops)
             if not branch_ops:
                 continue
-            branch_results = list(walk(branch_ops, node, paths))
+            stack.push_level()
+            stack.push(Frame(branch_ops, frame.node, frame.prefix))
+            branch_results = list(_process(stack, paths))
+            stack.pop_level()
             if not branch_results:
-                return
+                return ()
             all_results.extend(branch_results)
-        yield from all_results
+        return all_results
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         for branch in self.branches:
@@ -1245,6 +1268,33 @@ class OpGroupAnd(OpGroup):
         return node
 
 
+def _leaf_op(op):
+    """
+    Find the leaf traversal op from a (possibly nested) OpGroup.
+
+    For simple ops (Key, Slot, Attr), returns the op itself.
+    For OpGroupOr/OpGroupFirst, recurses into the first branch.
+    """
+    if isinstance(op, (OpGroupOr, OpGroupFirst)):
+        for branch in _branches_only(op.branches):
+            if branch:
+                return _leaf_op(branch[0])
+    return op
+
+
+def _excluded_keys(op, node):
+    """
+    Collect the set of keys excluded by a negation pattern's first op.
+    """
+    if isinstance(op, (OpGroupOr, OpGroupFirst)):
+        excluded = set()
+        for branch in _branches_only(op.branches):
+            if branch:
+                excluded.update(_excluded_keys(branch[0], node))
+        return excluded
+    return set(op.keys(node))
+
+
 class OpGroupNot(OpGroup):
     """
     Negation of operation sequences - returns values from paths NOT matching the inner pattern.
@@ -1253,8 +1303,11 @@ class OpGroupNot(OpGroup):
         a(!.b)       - from a, get all keys except b
         a(!(.b,.c))  - from a, get all keys except b and c
 
-    Works by getting all keys at the current level, then excluding those that match
-    the negated pattern.
+    Works by using the inner op's items(filtered=False) to enumerate all items via the
+    proper data-access layer, then excluding keys that match the inner pattern.
+
+    TODO: `!*` always evaluates to empty — the parser should recognize this and emit
+    something that evaluates to empty directly, rather than going through negation.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1265,117 +1318,59 @@ class OpGroupNot(OpGroup):
         inner_str = ''.join(op.operator(top=(i == 0)) for i, op in enumerate(self.inner))
         return f'(!{inner_str})'
 
-    def walk(self, ops, node, paths):
-        all_keys = _get_all_keys(node)
-        if all_keys is None:
-            return
+    def _not_items(self, node):
+        """
+        Yield (key, value) pairs for keys NOT excluded by the inner pattern.
 
-        is_list = not hasattr(node, 'keys') and hasattr(node, '__iter__')
-
-        excluded_keys = set()
-
-        def collect_excluded(op):
-            if isinstance(op, (OpGroupOr, OpGroupFirst)):
-                for branch in _branches_only(op.branches):
-                    if branch:
-                        collect_excluded(branch[0])
-            elif isinstance(op, Key):
-                inner_op = op.op
-                if is_list and hasattr(inner_op, 'matches') and callable(inner_op.matches):
-                    excluded_keys.update(inner_op.matches(range(len(node))))
-                else:
-                    excluded_keys.update(op.keys(node))
-            elif hasattr(op, 'keys'):
-                excluded_keys.update(op.keys(node))
-
-        for branch in _branches_only(self.branches):
-            if branch:
-                collect_excluded(branch[0])
-
+        Uses items(filtered=False) on the leaf op to enumerate all items via the
+        proper data-access layer, then subtracts keys matched by the inner pattern.
+        """
         inner = self.inner
         if not inner:
             return
         first_op = inner[0]
-        if isinstance(first_op, (OpGroupOr, OpGroupFirst)):
-            concrete_op = Key(Const(''))
-        else:
-            concrete_op = first_op
+        leaf = _leaf_op(first_op)
+        excluded = _excluded_keys(first_op, node)
+        for k, v in leaf.items(node, filtered=False):
+            if k not in excluded:
+                yield (k, v)
 
-        for k in all_keys:
-            if k in excluded_keys:
-                continue
-            try:
-                v = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
-            except (KeyError, IndexError, AttributeError):
-                continue
-            if not ops:
-                yield ((concrete_op.concrete(k),) if paths else None, v)
-                continue
-            for sub_path, sub_val in walk(ops, v, paths):
-                if sub_path is _CUT_SENTINEL:
-                    yield (_CUT_SENTINEL, None)
-                    return
-                yield ((concrete_op.concrete(k),) + sub_path if paths else None, sub_val)
+    def push_children(self, stack, frame, paths):
+        inner = self.inner
+        if not inner:
+            return ()
+        leaf = _leaf_op(inner[0])
+        children = list(self._not_items(frame.node))
+        for k, v in reversed(children):
+            cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
+            stack.push(Frame(frame.ops, v, cp))
+        return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         inner = self.inner
         if not inner:
             return node
-        all_keys = _get_all_keys(node)
-        if all_keys is None:
-            return node
-        first_op = inner[0]
-        if isinstance(first_op, (OpGroupOr, OpGroupFirst)):
-            excluded_keys = set()
-            for branch in _branches_only(first_op.branches):
-                if branch and hasattr(branch[0], 'keys'):
-                    excluded_keys.update(branch[0].keys(node))
-            update_op = Key(Const(''))
-        else:
-            excluded_keys = set(first_op.keys(node))
-            update_op = first_op
+        leaf = _leaf_op(inner[0])
         remaining_ops = list(inner[1:]) + list(ops)
-        for k in all_keys:
-            if k in excluded_keys:
-                continue
-            try:
-                v = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
-            except (KeyError, IndexError, AttributeError):
-                continue
+        for k, v in self._not_items(node):
             if remaining_ops:
-                node = update_op.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(update_op, k)], nop))
+                node = leaf.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop))
             else:
-                node = update_op.update(node, k, val)
+                node = leaf.update(node, k, val)
         return node
 
     def do_remove(self, ops, node, val, nop):
         inner = self.inner
         if not inner:
             return node
-        all_keys = _get_all_keys(node)
-        if all_keys is None:
-            return node
-        first_op = inner[0]
-        if isinstance(first_op, (OpGroupOr, OpGroupFirst)):
-            excluded_keys = set()
-            for branch in _branches_only(first_op.branches):
-                if branch and hasattr(branch[0], 'keys'):
-                    excluded_keys.update(branch[0].keys(node))
-            remove_op = Key(Const(''))
-        else:
-            excluded_keys = set(first_op.keys(node))
-            remove_op = first_op
+        leaf = _leaf_op(inner[0])
         remaining_ops = list(inner[1:]) + list(ops)
-        keys_to_remove = [k for k in all_keys if k not in excluded_keys]
-        for k in reversed(keys_to_remove):
+        items = list(self._not_items(node))
+        for k, v in reversed(items):
             if remaining_ops:
-                try:
-                    v = node[k] if hasattr(node, '__getitem__') else getattr(node, k)
-                    node = remove_op.update(node, k, removes(remaining_ops, v, val))
-                except (KeyError, IndexError, AttributeError):
-                    pass
+                node = leaf.update(node, k, removes(remaining_ops, v, val))
             else:
-                node = remove_op.pop(node, k)
+                node = leaf.pop(node, k)
         return node
 
 
@@ -1857,7 +1852,7 @@ class Key(SimpleOp):
             return s
         return '.' + s
 
-    def _items(self, node, keys):
+    def _items(self, node, keys, filtered=True):
         curkey = None
 
         def _values():
@@ -1871,24 +1866,27 @@ class Key(SimpleOp):
                 yield v
 
         def _items():
-            for v in self.filtered(_values()):
+            values = self.filtered(_values()) if filtered else _values()
+            for v in values:
                 yield (curkey, v)
 
         return _items()
 
-    def items(self, node):
+    def items(self, node, filtered=True):
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
-            return self._items(node, self.op.matches(node.keys()))
-        # Not indexable or not a concrete key
+            keys = self.op.matches(node.keys()) if filtered else node.keys()
+            return self._items(node, keys, filtered)
+        # Key only handles lists with concrete numeric keys
         if not hasattr(node, '__getitem__'):
             return ()
         if not isinstance(self.op, Const):
             return ()
-        # Only numeric keys work as indices
         key = self.op.value
         if not isinstance(key, int):
             return ()
+        if not filtered:
+            return self._items(node, range(len(node)), filtered=False)
         # Treat as sequence index
         try:
             return iter([(key, node[key])])
@@ -1976,7 +1974,7 @@ class Attr(Key):
         iterable = itertools.chain((q,), (repr(f) for f in self.filters))
         return '@' + '.'.join(iterable)
 
-    def _items(self, node, keys):
+    def _items(self, node, keys, filtered=True):
         curkey = None
 
         def _values():
@@ -1990,18 +1988,20 @@ class Attr(Key):
                 yield v
 
         def _items():
-            for v in self.filtered(_values()):
+            values = self.filtered(_values()) if filtered else _values()
+            for v in values:
                 yield (curkey, v)
 
         return _items()
 
-    def items(self, node):
+    def items(self, node, filtered=True):
         # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
-            keys = node.__dict__.keys()
+            all_keys = node.__dict__.keys()
         except AttributeError:
-            keys = getattr(node, '_fields', ())
-        return self._items(node, self.op.matches(keys))
+            all_keys = getattr(node, '_fields', ())
+        keys = self.op.matches(all_keys) if filtered else all_keys
+        return self._items(node, keys, filtered)
 
     def default(self):
         o = types.SimpleNamespace()
@@ -2091,16 +2091,18 @@ class Slot(Key):
             iterable = itertools.chain((q,), iterable)
         return '[' + '.'.join(iterable) + ']'
 
-    def items(self, node):
+    def items(self, node, filtered=True):
         if hasattr(node, 'keys'):
-            return super().items(node)
+            return super().items(node, filtered)
 
-        if self.is_pattern():
+        if not filtered:
+            keys = range(len(node))
+        elif self.is_pattern():
             keys = self.op.matches(idx for idx, _ in enumerate(node))
         else:
             keys = (self.op.value,)
 
-        return self._items(node, keys)
+        return self._items(node, keys, filtered)
 
     def default(self):
         if isinstance(self.op, Numeric) and self.op.is_int():
@@ -3154,15 +3156,6 @@ def build(ops, node, deepcopy=True):
     return built or build_default([cur]+ops)
 
 
-def _get_all_keys(node):
-    """
-    Get all keys from a node (dict keys or sequence indices).
-    """
-    if hasattr(node, 'keys'):
-        return set(node.keys())
-    if hasattr(node, '__iter__') and hasattr(node, '__getitem__'):
-        return set(range(len(node)))
-    return None
 
 
 def iter_until_cut(gen):
@@ -3175,17 +3168,13 @@ def iter_until_cut(gen):
         yield x
 
 
-def _walk_engine(ops, node, paths):
+def _process(stack, paths):
     """
-    Stack-based traversal engine. Single loop, explicit DepthStack.
-
-    Each Op implements push_children(stack, frame, paths) which either:
-    - Pushes Frame entries onto the stack (simple ops), or
-    - Yields (path, value) results directly (complex ops delegating to walk())
+    Process frames at the current depth level and any nested levels
+    pushed by ops within it. Yields (path, value) results.
     """
-    stack = DepthStack()
-    stack.push(Frame(ops, node, ()))
-    while stack.current:
+    level = stack.level
+    while stack.level >= level and stack.current:
         frame = stack.pop()
         if not frame.ops:
             yield (frame.prefix if paths else None, frame.node)
@@ -3193,6 +3182,15 @@ def _walk_engine(ops, node, paths):
         op, *rest = frame.ops
         frame.ops = rest
         yield from op.push_children(stack, frame, paths)
+
+
+def _walk_engine(ops, node, paths):
+    """
+    Stack-based traversal engine. Single loop, explicit DepthStack.
+    """
+    stack = DepthStack()
+    stack.push(Frame(ops, node, ()))
+    yield from _process(stack, paths)
 
 
 def walk(ops, node, paths=True):
