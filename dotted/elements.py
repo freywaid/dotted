@@ -162,6 +162,20 @@ class TraversalOp(Op):
     def to_branches(self):
         return [tuple([self])]
 
+    def leaf_op(self):
+        """
+        Find the leaf traversal op for data-access (items, keys, update, pop).
+        Simple ops return self; groups recurse into their first branch.
+        """
+        return self
+
+    def excluded_keys(self, node):
+        """
+        Collect the set of keys excluded by a negation pattern's first op.
+        Simple ops return their own keys; groups recurse into branches.
+        """
+        return set(self.keys(node))
+
 
 class MatchOp(Op):
     """
@@ -861,6 +875,25 @@ class OpGroupOr(OpGroup):
     _BRANCH_CUT in the sequence means: after yielding from the previous branch, yield _CUT_SENTINEL and stop.
     _BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
     """
+    def leaf_op(self):
+        """
+        Recurse into the first non-cut branch.
+        """
+        for branch in _branches_only(self.branches):
+            if branch:
+                return branch[0].leaf_op()
+        return self
+
+    def excluded_keys(self, node):
+        """
+        Union of excluded keys across all non-cut branches.
+        """
+        excluded = set()
+        for branch in _branches_only(self.branches):
+            if branch:
+                excluded.update(branch[0].excluded_keys(node))
+        return excluded
+
     def __repr__(self):
         parts = []
         for item in self.branches:
@@ -997,6 +1030,25 @@ class OpGroupFirst(OpGroup):
     """
     First-match operation group - returns only first matching value across all branches.
     """
+    def leaf_op(self):
+        """
+        Recurse into the first non-cut branch.
+        """
+        for branch in _branches_only(self.branches):
+            if branch:
+                return branch[0].leaf_op()
+        return self
+
+    def excluded_keys(self, node):
+        """
+        Union of excluded keys across all non-cut branches.
+        """
+        excluded = set()
+        for branch in _branches_only(self.branches):
+            if branch:
+                excluded.update(branch[0].excluded_keys(node))
+        return excluded
+
     def __repr__(self):
         branch_strs = [''.join(op.operator(top=(i == 0)) for i, op in enumerate(b)) for b in _branches_only(self.branches)]
         return '(' + ','.join(branch_strs) + ')?'
@@ -1046,6 +1098,24 @@ class OpGroupAnd(OpGroup):
 
     If any branch fails to match, returns nothing.
     """
+    def leaf_op(self):
+        """
+        Recurse into the first branch.
+        """
+        if self.branches:
+            return self.branches[0][0].leaf_op()
+        return self
+
+    def excluded_keys(self, node):
+        """
+        Union of excluded keys across all branches of the conjunction.
+        """
+        excluded = set()
+        for branch in self.branches:
+            if branch:
+                excluded.update(branch[0].excluded_keys(node))
+        return excluded
+
     def __repr__(self):
         branch_strs = []
         for branch in self.branches:
@@ -1098,31 +1168,6 @@ class OpGroupAnd(OpGroup):
         return node
 
 
-def _leaf_op(op):
-    """
-    Find the leaf traversal op from a (possibly nested) OpGroup.
-
-    For simple ops (Key, Slot, Attr), returns the op itself.
-    For OpGroupOr/OpGroupFirst, recurses into the first branch.
-    """
-    if isinstance(op, (OpGroupOr, OpGroupFirst)):
-        for branch in _branches_only(op.branches):
-            if branch:
-                return _leaf_op(branch[0])
-    return op
-
-
-def _excluded_keys(op, node):
-    """
-    Collect the set of keys excluded by a negation pattern's first op.
-    """
-    if isinstance(op, (OpGroupOr, OpGroupFirst)):
-        excluded = set()
-        for branch in _branches_only(op.branches):
-            if branch:
-                excluded.update(_excluded_keys(branch[0], node))
-        return excluded
-    return set(op.keys(node))
 
 
 class OpGroupNot(OpGroup):
@@ -1144,6 +1189,22 @@ class OpGroupNot(OpGroup):
         # For negation, we have a single inner expression to negate
         self.inner = self.branches[0] if self.branches else ()
 
+    def leaf_op(self):
+        """
+        Recurse into the inner pattern.
+        """
+        if self.inner:
+            return self.inner[0].leaf_op()
+        return self
+
+    def excluded_keys(self, node):
+        """
+        Delegate to the inner pattern.
+        """
+        if self.inner:
+            return self.inner[0].excluded_keys(node)
+        return set()
+
     def __repr__(self):
         inner_str = ''.join(op.operator(top=(i == 0)) for i, op in enumerate(self.inner))
         return f'(!{inner_str})'
@@ -1159,8 +1220,8 @@ class OpGroupNot(OpGroup):
         if not inner:
             return
         first_op = inner[0]
-        leaf = _leaf_op(first_op)
-        excluded = _excluded_keys(first_op, node)
+        leaf = first_op.leaf_op()
+        excluded = first_op.excluded_keys(node)
         for k, v in leaf.items(node, filtered=False):
             if k not in excluded:
                 yield (k, v)
@@ -1169,7 +1230,7 @@ class OpGroupNot(OpGroup):
         inner = self.inner
         if not inner:
             return ()
-        leaf = _leaf_op(inner[0])
+        leaf = inner[0].leaf_op()
         children = list(self._not_items(frame.node))
         for k, v in reversed(children):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
@@ -1180,7 +1241,7 @@ class OpGroupNot(OpGroup):
         inner = self.inner
         if not inner:
             return node
-        leaf = _leaf_op(inner[0])
+        leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
         for k, v in self._not_items(node):
             if remaining_ops:
@@ -1193,7 +1254,7 @@ class OpGroupNot(OpGroup):
         inner = self.inner
         if not inner:
             return node
-        leaf = _leaf_op(inner[0])
+        leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
         items = list(self._not_items(node))
         for k, v in reversed(items):
@@ -1204,118 +1265,95 @@ class OpGroupNot(OpGroup):
         return node
 
 
-def _extract_grammar_args(args):
-    """
-    Extract grammar keys from pyparsing or manual constructor args.
-    """
-    if len(args) == 3 and isinstance(args[2], pp.ParseResults):
-        return tuple(args[2].as_list())
-    return tuple(args)
+# =============================================================================
+# Parse actions — called by grammar.py to construct OpGroups from parse results
+# =============================================================================
 
 
-class PathOr(OpGroupOr):
+def _to_branch(item):
     """
-    Grammar-level disjunction — an OpGroupOr that reprs as comma-separated keys.
+    Convert a parse result item (op_seq Group or OpGroup) to a branch tuple.
     """
-    def __init__(self, *args, cut_after=None, **kwargs):
-        self.keys = _extract_grammar_args(args)
-        self.cut_after = cut_after
-        branches = []
-        for k in self.keys:
-            branches.extend(k.to_branches())
-        out = []
-        for i, b in enumerate(branches):
-            out.append(b)
-            if cut_after and i < len(cut_after):
-                if cut_after[i] == '##':
-                    out.append(_BRANCH_SOFTCUT)
-                elif cut_after[i] == '#':
-                    out.append(_BRANCH_CUT)
-        OpGroupOr.__init__(self, *out)
-
-    def __repr__(self):
-        parts = []
-        for i, k in enumerate(self.keys):
-            s = str(k)
-            if self.cut_after and i < len(self.cut_after):
-                if self.cut_after[i] == '##':
-                    s += '##'
-                elif self.cut_after[i] == '#':
-                    s += '#'
-            parts.append(s)
-        return '(' + ','.join(parts) + ')'
+    if isinstance(item, OpGroup):
+        return (item,)
+    if isinstance(item, (list, tuple, pp.ParseResults)):
+        return tuple(item)
+    return (item,)
 
 
-class PathAnd(OpGroupAnd):
+def _inner_not_action(t):
     """
-    Grammar-level conjunction — an OpGroupAnd with a grammar-friendly constructor.
+    Parse action for unified negation: ! atom.
+    The atom is either an OpGroup (from grouped expression) or an op_seq.
+    OpGroupNot takes a single branch as its inner pattern.
     """
-    def __init__(self, *args, **kwargs):
-        self.keys = _extract_grammar_args(args)
-        and_branches = [k.to_branches()[0] for k in self.keys]
-        OpGroupAnd.__init__(self, *and_branches)
+    item = t[0]
+    branch = _to_branch(item)
+    return OpGroupNot(branch)
 
 
-class PathNot(OpGroupNot):
+def _inner_and_action(t):
     """
-    Grammar-level negation — an OpGroupNot with a grammar-friendly constructor.
+    Parse action for unified conjunction: atom & atom & ...
     """
-    def __init__(self, *args, **kwargs):
-        grammar_args = _extract_grammar_args(args)
-        inner_key = grammar_args[0] if grammar_args else None
-        if isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
-            OpGroupNot.__init__(self, *inner_key.branches)
-        elif inner_key is not None:
-            OpGroupNot.__init__(self, inner_key.to_branches()[0])
-        else:
-            OpGroupNot.__init__(self)
+    branches = [_to_branch(item) for item in t]
+    return OpGroupAnd(*branches)
 
 
-def _path_or_with_cut(parse_tokens):
+def _inner_or_action(t):
     """
-    Parse action for (a#, b) and (a##, b): build PathOr with cut markers baked in.
+    Parse action for unified disjunction: term , term , ...
+    Each term is a Group containing [inner_and_result, optional_cut_marker].
+    If there's only one term with no cut marker, pass through without wrapping.
     """
-    keys = []
-    cut_after = []
-    for item in parse_tokens:
-        if hasattr(item, '__getitem__') and not isinstance(item, (str, bytes)):
-            keys.append(item[0])
-            if len(item) >= 2 and item[1] == '##':
-                cut_after.append('##')
-            elif len(item) >= 2 and item[1] == '#':
-                cut_after.append('#')
-            else:
-                cut_after.append(None)
-        else:
-            keys.append(item)
-            cut_after.append(None)
-    return PathOr(*keys, cut_after=tuple(cut_after))
+    terms = list(t)
+    # Single term, no cut marker — pass through (don't wrap in OpGroupOr)
+    if len(terms) == 1 and len(terms[0]) == 1:
+        return terms[0][0]
+    out = []
+    for term in terms:
+        item = term[0]
+        out.append(_to_branch(item))
+        if len(term) >= 2:
+            if term[1] == '##':
+                out.append(_BRANCH_SOFTCUT)
+            elif term[1] == '#':
+                out.append(_BRANCH_CUT)
+    return OpGroupOr(*out)
 
 
-def _path_to_opgroup(parsed_result):
+def _inner_to_opgroup(parsed_result):
     """
-    Parse action: convert path grouping syntax to OpGroup.
+    Parse action: convert (inner_expr) to OpGroup.
+    Unwraps single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot,
+    since the OpGroupOr wrapper is redundant in that case.
+    Does NOT unwrap OpGroupNot or OpGroupAnd — those carry semantic meaning.
     """
-    inner = parsed_result[0] if parsed_result else None
-    if inner is None:
+    items = list(parsed_result)
+    if not items:
         return OpGroupOr()
-    if isinstance(inner, OpGroup):
-        # Unwrap single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot
-        branches = list(_branches_only(inner.branches))
-        if (len(branches) == 1 and isinstance(branches[0], tuple)
-                and len(branches[0]) == 1
-                and isinstance(branches[0][0], (OpGroupAnd, OpGroupNot))):
-            return branches[0][0]
+    # If there's a single OpGroup result, use it directly
+    if len(items) == 1 and isinstance(items[0], OpGroup):
+        inner = items[0]
+        # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
+        if isinstance(inner, OpGroupOr):
+            branches = list(_branches_only(inner.branches))
+            if (len(branches) == 1 and isinstance(branches[0], tuple)
+                    and len(branches[0]) == 1
+                    and isinstance(branches[0][0], (OpGroupAnd, OpGroupNot))):
+                return branches[0][0]
         return inner
-    # Simple key (MatchOp, TraversalOp, etc.)
-    return OpGroupOr(inner.to_branches()[0])
+    # Multiple items or single non-OpGroup: treat as a single branch (op_seq)
+    # This handles cases like (name.first) where inner_expr flattens to [name, first]
+    branch = tuple(items)
+    return OpGroupOr(branch)
 
 
-def _path_to_opgroup_first(parsed_result):
+def _inner_to_opgroup_first(parsed_result):
     """
-    Parse action: convert path grouping (a,b)? to OpGroupFirst.
+    Parse action: convert (inner_expr)? to OpGroupFirst.
     """
-    return OpGroupFirst(*_path_to_opgroup(parsed_result).branches)
+    return OpGroupFirst(*_inner_to_opgroup(parsed_result).branches)
 
 
 def _slot_to_opgroup(parsed_result):
