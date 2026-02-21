@@ -795,94 +795,6 @@ class FilterNot(FilterOp):
         return self.inner.match(op.inner)
 
 
-#
-# Path-level grouping
-#
-class GrammarOp(Op):
-    """
-    Base for parse-time grammar constructs that get converted to TraversalOps.
-    These never appear in the final ops list processed by the engine.
-    """
-    pass
-
-
-class PathOr(GrammarOp):
-    """
-    Grammar-level disjunction — converted to OpGroupOr at parse time via to_opgroup().
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.keys = tuple(self.args)
-
-    def __repr__(self):
-        return ','.join(str(k) for k in self.keys)
-
-    def to_branches(self):
-        """
-        Convert each key to OpGroup branches.
-        """
-        branches = []
-        for k in self.keys:
-            branches.extend(k.to_branches())
-        return branches
-
-    def to_opgroup(self, cut_after=None):
-        """
-        Convert to OpGroupOr with optional cut markers.
-        """
-        branches = self.to_branches()
-        out = []
-        for i, b in enumerate(branches):
-            out.append(b)
-            if cut_after and i < len(cut_after):
-                if cut_after[i] == '##':
-                    out.append(_BRANCH_SOFTCUT)
-                elif cut_after[i] == '#':
-                    out.append(_BRANCH_CUT)
-        if len(out) == 1 and isinstance(out[0], OpGroupAnd):
-            return out[0]
-        return OpGroupOr(*out)
-
-
-class PathAnd(GrammarOp):
-    """
-    Grammar-level conjunction — converted to OpGroupAnd at parse time via to_opgroup().
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.keys = tuple(self.args)
-
-    def __repr__(self):
-        return '&'.join(str(k) for k in self.keys)
-
-    def to_branches(self):
-        return [self.to_opgroup()]
-
-    def to_opgroup(self, cut_after=None):
-        """
-        Convert to OpGroupAnd.
-        """
-        and_branches = [k.to_branches()[0] for k in self.keys]
-        return OpGroupAnd(*and_branches)
-
-
-class PathGroup(GrammarOp):
-    """
-    Grammar-level parenthesized group — converted to OpGroup at parse time via to_branches().
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.inner = self.args[0] if self.args else None
-
-    def __repr__(self):
-        return f'({self.inner})'
-
-    def to_branches(self):
-        if self.inner:
-            return self.inner.to_branches()
-        return []
-
-
 class OpGroup(TraversalOp):
     """
     Base class for all operation groups (disjunction, conjunction, negation, first-match).
@@ -1292,15 +1204,89 @@ class OpGroupNot(OpGroup):
         return node
 
 
+def _extract_grammar_args(args):
+    """
+    Extract grammar keys from pyparsing or manual constructor args.
+    """
+    if len(args) == 3 and isinstance(args[2], pp.ParseResults):
+        return tuple(args[2].as_list())
+    return tuple(args)
+
+
+class PathOr(OpGroupOr):
+    """
+    Grammar-level disjunction — an OpGroupOr that reprs as comma-separated keys.
+    """
+    def __init__(self, *args, cut_after=None, **kwargs):
+        self.keys = _extract_grammar_args(args)
+        self.cut_after = cut_after
+        branches = []
+        for k in self.keys:
+            branches.extend(k.to_branches())
+        out = []
+        for i, b in enumerate(branches):
+            out.append(b)
+            if cut_after and i < len(cut_after):
+                if cut_after[i] == '##':
+                    out.append(_BRANCH_SOFTCUT)
+                elif cut_after[i] == '#':
+                    out.append(_BRANCH_CUT)
+        OpGroupOr.__init__(self, *out)
+
+    def __repr__(self):
+        parts = []
+        for i, k in enumerate(self.keys):
+            s = str(k)
+            if self.cut_after and i < len(self.cut_after):
+                if self.cut_after[i] == '##':
+                    s += '##'
+                elif self.cut_after[i] == '#':
+                    s += '#'
+            parts.append(s)
+        return '(' + ','.join(parts) + ')'
+
+
+class PathAnd(OpGroupAnd):
+    """
+    Grammar-level conjunction — an OpGroupAnd that reprs as ampersand-separated keys.
+    """
+    def __init__(self, *args, **kwargs):
+        self.keys = _extract_grammar_args(args)
+        and_branches = [k.to_branches()[0] for k in self.keys]
+        OpGroupAnd.__init__(self, *and_branches)
+
+    def __repr__(self):
+        return '&'.join(str(k) for k in self.keys)
+
+
+class PathNot(OpGroupNot):
+    """
+    Grammar-level negation — an OpGroupNot that reprs without enclosing parens.
+    """
+    def __init__(self, *args, **kwargs):
+        grammar_args = _extract_grammar_args(args)
+        inner_key = grammar_args[0] if grammar_args else None
+        if isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
+            OpGroupNot.__init__(self, *inner_key.branches)
+        elif inner_key is not None:
+            OpGroupNot.__init__(self, inner_key.to_branches()[0])
+        else:
+            OpGroupNot.__init__(self)
+
+    def __repr__(self):
+        inner_str = ''.join(
+            op.operator(top=(i == 0)) for i, op in enumerate(self.inner)
+        )
+        return f'!{inner_str}'
+
+
 def _path_or_with_cut(parse_tokens):
     """
-    Parse action for (a#, b) and (a##, b): build (PathOr(keys), cut_after).
-    cut_after entries are None (no cut), '#' (hard cut), or '##' (soft cut).
+    Parse action for (a#, b) and (a##, b): build PathOr with cut markers baked in.
     """
-    items = parse_tokens
     keys = []
     cut_after = []
-    for item in items:
+    for item in parse_tokens:
         if hasattr(item, '__getitem__') and not isinstance(item, (str, bytes)):
             keys.append(item[0])
             if len(item) >= 2 and item[1] == '##':
@@ -1312,21 +1298,24 @@ def _path_or_with_cut(parse_tokens):
         else:
             keys.append(item)
             cut_after.append(None)
-    return (PathOr(*keys), tuple(cut_after))
+    return PathOr(*keys, cut_after=tuple(cut_after))
 
 
 def _path_to_opgroup(parsed_result):
     """
-    Parse action: convert path grouping syntax (a,b) or (a#, b) to OpGroup.
+    Parse action: convert path grouping syntax to OpGroup.
     """
     inner = parsed_result[0] if parsed_result else None
-    cut_after = None
-    if isinstance(inner, tuple) and len(inner) == 2 and isinstance(inner[1], tuple):
-        inner, cut_after = inner
     if inner is None:
         return OpGroupOr()
-    if hasattr(inner, 'to_opgroup'):
-        return inner.to_opgroup(cut_after)
+    if isinstance(inner, OpGroup):
+        # Unwrap single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot
+        branches = list(_branches_only(inner.branches))
+        if (len(branches) == 1 and isinstance(branches[0], tuple)
+                and len(branches[0]) == 1
+                and isinstance(branches[0][0], (OpGroupAnd, OpGroupNot))):
+            return branches[0][0]
+        return inner
     # Simple key (MatchOp, TraversalOp, etc.)
     return OpGroupOr(inner.to_branches()[0])
 
@@ -1369,36 +1358,6 @@ def _slot_to_opgroup_first(parsed_result):
     Convert slot grouping [(*&filter, +)?] to OpGroupFirst.
     """
     return OpGroupFirst(*_slot_to_opgroup(parsed_result).branches)
-
-
-class PathNot(GrammarOp):
-    """
-    Grammar-level negation — converted to OpGroupNot at parse time via to_opgroup().
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.inner = self.args[0] if self.args else None
-
-    def __repr__(self):
-        return f'!{self.inner}'
-
-    def to_branches(self):
-        return [self.to_opgroup()]
-
-    def to_opgroup(self, cut_after=None):
-        """
-        Convert to OpGroupNot.
-        """
-        inner_key = self.inner
-        if isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
-            return OpGroupNot(*inner_key.branches)
-        return OpGroupNot(inner_key.to_branches()[0])
-
-    def remove(self, node, val):
-        for k, v in list(self.items(node)):
-            if val is ANY or v == val:
-                self.pop(node, k)
-        return node
 
 
 #
