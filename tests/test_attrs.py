@@ -175,3 +175,70 @@ def test_format_path_attr_segment():
     # Slot segment -> [0]
     path4 = [(el.Key(el.Word('items')), 'items'), (el.Slot(el.Wildcard()), 0)]
     assert el._format_path(path4) == 'items[0]'
+
+
+# =============================================================================
+# Attribute group access: @(a,b)
+# =============================================================================
+
+def test_attr_group_get():
+    """
+    @(a,b) accesses multiple attributes.
+    """
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    assert dotted.get(ns, '@(a,b)') == (1, 2)
+    assert dotted.get(ns, '@(a,b)') == dotted.get(ns, '(@a,@b)')
+
+
+def test_attr_group_conjunction():
+    """
+    @(a&b) conjunction of attrs.
+    """
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    assert dotted.get(ns, '@(a&b)') == dotted.get(ns, '(@a&@b)')
+
+
+def test_attr_group_negation():
+    """
+    @(!a) negation of attr.
+    """
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    assert dotted.get(ns, '@(!a)') == dotted.get(ns, '(!@a)')
+    assert set(dotted.get(ns, '@(!a)')) == {2, 3}
+
+
+def test_attr_group_nested():
+    """
+    prefix@(a,b) accesses attrs from prefix.
+    """
+    ns = types.SimpleNamespace(inner=types.SimpleNamespace(x=10, y=20, z=30))
+    assert dotted.get(ns, '@inner@(x,y)') == (10, 20)
+
+
+def test_attr_group_first():
+    """
+    @(a,b)? first-match version.
+    """
+    ns = types.SimpleNamespace(b=2, c=3)
+    assert dotted.get(ns, '@(a,b)?') == dotted.get(ns, '(@a,@b)?')
+
+
+def test_attr_group_update():
+    """
+    @(a,b) update multiple attrs.
+    """
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    dotted.update(ns, '@(a,b)', 0)
+    assert ns.a == 0
+    assert ns.b == 0
+    assert ns.c == 3
+
+
+def test_attr_group_assemble():
+    """
+    @(a,b) round-trips through assemble.
+    """
+    parsed = dotted.parse('@(a,b)')
+    assembled = dotted.assemble(parsed)
+    # Round-trip stability: parse(assembled) produces same assembled form
+    assert dotted.assemble(dotted.parse(assembled)) == assembled

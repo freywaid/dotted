@@ -860,7 +860,14 @@ class OpGroup(TraversalOp):
         return self
 
     def operator(self, top=False):
-        return self.__repr__()
+        return self._render(top)
+
+    def _render(self, top=True):
+        """
+        Render the group as a string. Subclasses override this.
+        When top=False (mid-path), branch-leading Keys get a '.' prefix.
+        """
+        return repr(self)
 
 
 class OpGroupOr(OpGroup):
@@ -894,7 +901,7 @@ class OpGroupOr(OpGroup):
                 excluded.update(branch[0].excluded_keys(node))
         return excluded
 
-    def __repr__(self):
+    def _render(self, top=True):
         parts = []
         for item in self.branches:
             if item is _BRANCH_CUT:
@@ -904,9 +911,12 @@ class OpGroupOr(OpGroup):
                 if parts:
                     parts[-1] += '##'
             else:
-                s = ''.join(op.operator(top=(j == 0)) for j, op in enumerate(item))
+                s = ''.join(op.operator(top=(top and j == 0)) for j, op in enumerate(item))
                 parts.append(s)
         return '(' + ','.join(parts) + ')'
+
+    def __repr__(self):
+        return self._render(top=True)
 
     def _next_marker(self, i):
         """
@@ -1049,9 +1059,12 @@ class OpGroupFirst(OpGroup):
                 excluded.update(branch[0].excluded_keys(node))
         return excluded
 
-    def __repr__(self):
-        branch_strs = [''.join(op.operator(top=(i == 0)) for i, op in enumerate(b)) for b in _branches_only(self.branches)]
+    def _render(self, top=True):
+        branch_strs = [''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(b)) for b in _branches_only(self.branches)]
         return '(' + ','.join(branch_strs) + ')?'
+
+    def __repr__(self):
+        return self._render(top=True)
 
     def push_children(self, stack, frame, paths):
         """
@@ -1116,11 +1129,14 @@ class OpGroupAnd(OpGroup):
                 excluded.update(branch[0].excluded_keys(node))
         return excluded
 
-    def __repr__(self):
+    def _render(self, top=True):
         branch_strs = []
         for branch in self.branches:
-            branch_strs.append(''.join(op.operator(top=(i == 0)) for i, op in enumerate(branch)))
+            branch_strs.append(''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(branch)))
         return '(' + '&'.join(branch_strs) + ')'
+
+    def __repr__(self):
+        return self._render(top=True)
 
     def push_children(self, stack, frame, paths):
         """
@@ -1205,9 +1221,12 @@ class OpGroupNot(OpGroup):
             return self.inner[0].excluded_keys(node)
         return set()
 
-    def __repr__(self):
-        inner_str = ''.join(op.operator(top=(i == 0)) for i, op in enumerate(self.inner))
+    def _render(self, top=True):
+        inner_str = ''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(self.inner))
         return f'(!{inner_str})'
+
+    def __repr__(self):
+        return self._render(top=True)
 
     def _not_items(self, node):
         """
@@ -1389,6 +1408,47 @@ def _slot_to_opgroup_first(parsed_result):
     return OpGroupFirst(*_slot_to_opgroup(parsed_result).branches)
 
 
+def _attr_branch(branch):
+    """
+    Convert leading Key to Attr in a branch tuple.
+    Only converts exact Key (not Attr or other subclasses).
+    """
+    if isinstance(branch, tuple) and branch and type(branch[0]) is Key:
+        return (Attr(*branch[0].args),) + branch[1:]
+    return branch
+
+
+def _attr_transform_opgroup(group):
+    """
+    Transform an OpGroup, converting leading Keys to Attrs in all branches.
+    Used by @(group) syntax to infer attribute access for bare keys.
+    """
+    if isinstance(group, OpGroupOr):
+        new_branches = []
+        for b in group.branches:
+            if isinstance(b, tuple):
+                new_branches.append(_attr_branch(b))
+            else:
+                new_branches.append(b)  # cut markers pass through
+        return OpGroupOr(*new_branches)
+    if isinstance(group, OpGroupFirst):
+        new_branches = []
+        for b in group.branches:
+            if isinstance(b, tuple):
+                new_branches.append(_attr_branch(b))
+            else:
+                new_branches.append(b)
+        return OpGroupFirst(*new_branches)
+    if isinstance(group, OpGroupAnd):
+        return OpGroupAnd(*[_attr_branch(b) for b in group.branches])
+    if isinstance(group, OpGroupNot):
+        return OpGroupNot(*[_attr_branch(b) for b in group.branches])
+    # Single Key not wrapped in OpGroup (e.g. @(a) with single item)
+    if type(group) is Key:
+        return Attr(*group.args)
+    return group
+
+
 #
 #
 #
@@ -1552,7 +1612,21 @@ class Empty(SimpleOp):
         return (MatchResult(''),) + m
 
 
-class Key(SimpleOp):
+class AccessOp(SimpleOp):
+    """
+    Base class for the three access operations: Key (.), Attr (@), Slot ([]).
+
+    Access ops are the traversal primitives that actually look up a child
+    value from a node.  Modifiers like ! (negation) and ~ (nop) are not
+    access ops — they wrap or filter but don't access anything themselves.
+
+    Inside mid-path groups, every branch must begin with an access op
+    (explicit form) or inherit one from a prefix (shorthand form).
+    """
+    pass
+
+
+class Key(AccessOp):
     @classmethod
     def concrete(cls, val):
         import numbers
