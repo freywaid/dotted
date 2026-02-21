@@ -1484,9 +1484,10 @@ def _slot_to_opgroup(parsed_result):
 
 
 def _slot_to_opgroup_first(parsed_result):
-    """Convert slot grouping [(*&filter, +)?] to OpGroupFirst."""
-    opgroup = _slot_to_opgroup(parsed_result)
-    return OpGroupFirst(*opgroup.branches)
+    """
+    Convert slot grouping [(*&filter, +)?] to OpGroupFirst.
+    """
+    return OpGroupFirst(*_slot_to_opgroup(parsed_result).branches)
 
 
 class PathNot(GrammarOp):
