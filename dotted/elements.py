@@ -1,5 +1,6 @@
 """
 """
+import collections
 import collections.abc
 import contextlib
 import copy
@@ -120,6 +121,39 @@ class Frame:
         self.prefix = prefix
         self.depth = depth
         self.seen_paths = seen_paths
+
+
+class DepthStack:
+    """
+    Stack of substacks, indexed by depth. Each depth level is a deque.
+    OpGroups push a new level for branch isolation; simple ops push
+    onto the current level.
+    """
+    __slots__ = ('_stacks', '_pos')
+
+    def __init__(self):
+        self._stacks = collections.defaultdict(collections.deque)
+        self._pos = 0
+
+    def push(self, frame):
+        self._stacks[self._pos].append(frame)
+
+    def pop(self):
+        return self._stacks[self._pos].pop()
+
+    def push_level(self):
+        self._pos += 1
+
+    def pop_level(self):
+        del self._stacks[self._pos]
+        self._pos -= 1
+
+    @property
+    def current(self):
+        return self._stacks[self._pos]
+
+    def __bool__(self):
+        return bool(self._stacks)
 
 
 class TraversalOp(Op):
@@ -1705,7 +1739,7 @@ class SimpleOp(BaseOp):
         children = list(self.items(frame.node))
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-            stack.append(Frame(frame.ops, v, cp))
+            stack.push(Frame(frame.ops, v, cp))
         return ()
 
 
@@ -2280,7 +2314,7 @@ class SliceFilter(BaseOp):
         """
         filtered = type(frame.node)(self.filtered(frame.node))
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
-        stack.append(Frame(frame.ops, filtered, cp))
+        stack.push(Frame(frame.ops, filtered, cp))
         return ()
 
 
@@ -2636,7 +2670,7 @@ class ValueGuard(Wrap):
             children = list(self.items(frame.node))
             for k, v in reversed(children):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.append(Frame(frame.ops, v, cp))
+                stack.push(Frame(frame.ops, v, cp))
             return ()
         results = []
         for path, val in self.inner.push_children(stack, frame, paths):
@@ -3143,14 +3177,15 @@ def iter_until_cut(gen):
 
 def _walk_engine(ops, node, paths):
     """
-    Stack-based traversal engine. Single loop, explicit stack, no recursive generators.
+    Stack-based traversal engine. Single loop, explicit DepthStack.
 
     Each Op implements push_children(stack, frame, paths) which either:
     - Pushes Frame entries onto the stack (simple ops), or
-    - Yields (path, value) results directly (complex ops like OpGroup)
+    - Yields (path, value) results directly (complex ops delegating to walk())
     """
-    stack = [Frame(ops, node, ())]
-    while stack:
+    stack = DepthStack()
+    stack.push(Frame(ops, node, ()))
+    while stack.current:
         frame = stack.pop()
         if not frame.ops:
             yield (frame.prefix if paths else None, frame.node)
