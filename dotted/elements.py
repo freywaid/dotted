@@ -811,7 +811,7 @@ class GrammarOp(Op):
 
 class PathOr(GrammarOp):
     """
-    Disjunction of path keys - returns tuple of values that exist
+    Grammar-level disjunction — converted to OpGroupOr at parse time via to_opgroup().
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -819,9 +819,6 @@ class PathOr(GrammarOp):
 
     def __repr__(self):
         return ','.join(str(k) for k in self.keys)
-
-    def is_pattern(self):
-        return True
 
     def to_branches(self):
         """
@@ -849,34 +846,10 @@ class PathOr(GrammarOp):
             return out[0]
         return OpGroupOr(*out)
 
-    def items(self, node):
-        for k in self.keys:
-            # Handle nested groups and conjunctions
-            if hasattr(k, 'items') and callable(k.items):
-                yield from k.items(node)
-                continue
-
-            # Simple key (Const)
-            key_val = getattr(k, 'value', k)
-            try:
-                if hasattr(node, 'keys') and key_val in node:
-                    yield (key_val, node[key_val])
-                    continue
-                if hasattr(node, '__getitem__') and isinstance(key_val, int):
-                    yield (key_val, node[key_val])
-            except (KeyError, IndexError, TypeError):
-                pass
-
-    def values(self, node):
-        return (v for _, v in self.items(node))
-
-    def keys_iter(self, node):
-        return (k for k, _ in self.items(node))
-
 
 class PathAnd(GrammarOp):
     """
-    Conjunction of path keys - returns tuple only if ALL exist
+    Grammar-level conjunction — converted to OpGroupAnd at parse time via to_opgroup().
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -884,9 +857,6 @@ class PathAnd(GrammarOp):
 
     def __repr__(self):
         return '&'.join(str(k) for k in self.keys)
-
-    def is_pattern(self):
-        return True
 
     def to_branches(self):
         return [self.to_opgroup()]
@@ -898,108 +868,22 @@ class PathAnd(GrammarOp):
         and_branches = [k.to_branches()[0] for k in self.keys]
         return OpGroupAnd(*and_branches)
 
-    def items(self, node):
-        is_dict = hasattr(node, 'keys')
-        is_seq = hasattr(node, '__getitem__')
-
-        def _get(key_val):
-            if is_dict and key_val in node:
-                return (key_val, node[key_val])
-            if is_seq and isinstance(key_val, int):
-                try:
-                    return (key_val, node[key_val])
-                except (IndexError, TypeError):
-                    pass
-            return None
-
-        items = tuple(_get(getattr(k, 'value', k)) for k in self.keys)
-        if None in items:
-            return
-        yield from items
-
-    def values(self, node):
-        return (v for _, v in self.items(node))
-
-    def keys_iter(self, node):
-        return (k for k, _ in self.items(node))
-
 
 class PathGroup(GrammarOp):
     """
-    Parenthesized path group expression - treated as a pattern
+    Grammar-level parenthesized group — converted to OpGroup at parse time via to_branches().
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
-        self.filters = ()
 
     def __repr__(self):
         return f'({self.inner})'
-
-    def is_pattern(self):
-        return True
 
     def to_branches(self):
         if self.inner:
             return self.inner.to_branches()
         return []
-
-    def items(self, node):
-        if self.inner:
-            yield from self.inner.items(node)
-
-    def values(self, node):
-        return (v for _, v in self.items(node))
-
-    def keys(self, node):
-        return (k for k, _ in self.items(node))
-
-    def default(self):
-        return {}
-
-    @classmethod
-    def concrete(cls, val):
-        return Key.concrete(val)
-
-    def update(self, node, key, val):
-        try:
-            node[key] = val
-            return node
-        except TypeError:
-            pass
-        return node
-
-    def upsert(self, node, val):
-        for k, _ in self.items(node):
-            self.update(node, k, val)
-        return node
-
-    def pop(self, node, key):
-        try:
-            del node[key]
-        except (KeyError, TypeError):
-            pass
-        return node
-
-    def remove(self, node, val):
-        for k, v in list(self.items(node)):
-            if val is ANY or v == val:
-                self.pop(node, k)
-        return node
-
-
-class PathGroupFirst(PathGroup):
-    """
-    First-match path group - returns only first matching value
-    """
-    def __repr__(self):
-        return f'({self.inner})?'
-
-    def items(self, node):
-        if self.inner:
-            for item in self.inner.items(node):
-                yield item
-                break
 
 
 class OpGroup(TraversalOp):
@@ -1492,23 +1376,14 @@ def _slot_to_opgroup_first(parsed_result):
 
 class PathNot(GrammarOp):
     """
-    Negation for path keys - returns all keys EXCEPT those matching the inner expression.
-
-    Examples:
-        (!a)      - all keys except 'a'
-        (!(a,b))  - all keys except 'a' and 'b'
-        (!*)      - no keys (negating wildcard)
+    Grammar-level negation — converted to OpGroupNot at parse time via to_opgroup().
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
-        self.filters = ()
 
     def __repr__(self):
         return f'!{self.inner}'
-
-    def is_pattern(self):
-        return True
 
     def to_branches(self):
         return [self.to_opgroup()]
@@ -1521,79 +1396,6 @@ class PathNot(GrammarOp):
         if isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
             return OpGroupNot(*inner_key.branches)
         return OpGroupNot(inner_key.to_branches()[0])
-
-    def _excluded_keys(self, node):
-        """
-        Get set of keys to exclude based on inner expression.
-        """
-        if self.inner is None:
-            return set()
-        # Handle complex expressions (PathOr, PathAnd, PathGroup, etc.)
-        if hasattr(self.inner, 'items') and callable(self.inner.items):
-            return set(k for k, _ in self.inner.items(node))
-        # Handle patterns (Wildcard, Regex) via matches()
-        if hasattr(self.inner, 'matches') and callable(self.inner.matches):
-            if hasattr(node, 'keys'):
-                return set(self.inner.matches(node.keys()))
-            if hasattr(node, '__iter__'):
-                return set(self.inner.matches(range(len(node))))
-            return set()
-        # Simple key (Const)
-        key_val = getattr(self.inner, 'value', self.inner)
-        if hasattr(node, 'keys') and key_val in node:
-            return {key_val}
-        if hasattr(node, '__getitem__') and isinstance(key_val, int):
-            try:
-                node[key_val]  # Check if index exists
-                return {key_val}
-            except (IndexError, TypeError):
-                pass
-        return set()
-
-    def items(self, node):
-        excluded = self._excluded_keys(node)
-        if hasattr(node, 'keys'):
-            iterable = ((k, node[k]) for k in node.keys())
-        elif hasattr(node, '__iter__') and hasattr(node, '__getitem__'):
-            iterable = enumerate(node)
-        else:
-            raise NotImplementedError
-
-        iterable = ((k, v) for k, v in iterable if k not in excluded)
-        yield from iterable
-
-    def values(self, node):
-        return (v for _, v in self.items(node))
-
-    def keys_iter(self, node):
-        return (k for k, _ in self.items(node))
-
-    def default(self):
-        return {}
-
-    @classmethod
-    def concrete(cls, val):
-        return Key.concrete(val)
-
-    def update(self, node, key, val):
-        try:
-            node[key] = val
-            return node
-        except TypeError:
-            pass
-        return node
-
-    def upsert(self, node, val):
-        for k, _ in self.items(node):
-            self.update(node, k, val)
-        return node
-
-    def pop(self, node, key):
-        try:
-            del node[key]
-        except (KeyError, TypeError):
-            pass
-        return node
 
     def remove(self, node, val):
         for k, v in list(self.items(node)):
