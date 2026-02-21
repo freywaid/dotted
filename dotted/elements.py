@@ -162,6 +162,8 @@ class TraversalOp(Op):
     Base class for ops that participate in stack-based traversal.
     Subclasses must implement push_children(stack, frame, paths).
     """
+    def to_branches(self):
+        return [tuple([self])]
 
 
 class MatchOp(Op):
@@ -170,7 +172,8 @@ class MatchOp(Op):
     These are used by TraversalOps for pattern matching but never appear
     directly in the ops list processed by the engine.
     """
-    pass
+    def to_branches(self):
+        return [tuple([Key(self)])]
 
 
 class Const(MatchOp):
@@ -820,6 +823,32 @@ class PathOr(GrammarOp):
     def is_pattern(self):
         return True
 
+    def to_branches(self):
+        """
+        Convert each key to OpGroup branches.
+        """
+        branches = []
+        for k in self.keys:
+            branches.extend(k.to_branches())
+        return branches
+
+    def to_opgroup(self, cut_after=None):
+        """
+        Convert to OpGroupOr with optional cut markers.
+        """
+        branches = self.to_branches()
+        out = []
+        for i, b in enumerate(branches):
+            out.append(b)
+            if cut_after and i < len(cut_after):
+                if cut_after[i] == '##':
+                    out.append(_BRANCH_SOFTCUT)
+                elif cut_after[i] == '#':
+                    out.append(_BRANCH_CUT)
+        if len(out) == 1 and isinstance(out[0], OpGroupAnd):
+            return out[0]
+        return OpGroupOr(*out)
+
     def items(self, node):
         for k in self.keys:
             # Handle nested groups and conjunctions
@@ -858,6 +887,16 @@ class PathAnd(GrammarOp):
 
     def is_pattern(self):
         return True
+
+    def to_branches(self):
+        return [self.to_opgroup()]
+
+    def to_opgroup(self, cut_after=None):
+        """
+        Convert to OpGroupAnd.
+        """
+        and_branches = [k.to_branches()[0] for k in self.keys]
+        return OpGroupAnd(*and_branches)
 
     def items(self, node):
         is_dict = hasattr(node, 'keys')
@@ -899,6 +938,11 @@ class PathGroup(GrammarOp):
 
     def is_pattern(self):
         return True
+
+    def to_branches(self):
+        if self.inner:
+            return self.inner.to_branches()
+        return []
 
     def items(self, node):
         if self.inner:
@@ -1203,6 +1247,8 @@ class OpGroupAnd(OpGroup):
 
     If any branch fails to match, returns nothing.
     """
+    def to_branches(self):
+        return [self]
     def __repr__(self):
         branch_strs = []
         for branch in self.branches:
@@ -1296,6 +1342,9 @@ class OpGroupNot(OpGroup):
     TODO: `!*` always evaluates to empty — the parser should recognize this and emit
     something that evaluates to empty directly, rather than going through negation.
     """
+    def to_branches(self):
+        return [self]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # For negation, we have a single inner expression to negate
@@ -1361,19 +1410,6 @@ class OpGroupNot(OpGroup):
         return node
 
 
-def _key_to_op(key_item):
-    """Convert a key item (from path grouping) to a Key operation."""
-    if isinstance(key_item, Key):
-        return key_item
-    if isinstance(key_item, OpGroup):
-        # Already an OpGroup from nested path grouping - shouldn't be wrapped
-        return key_item
-    # Key expects op with .matches (e.g. Const/Word); wrap raw str
-    if isinstance(key_item, str):
-        key_item = Const(key_item)
-    return Key(key_item)
-
-
 def _path_or_with_cut(parse_tokens):
     """
     Parse action for (a#, b) and (a##, b): build (PathOr(keys), cut_after).
@@ -1399,110 +1435,27 @@ def _path_or_with_cut(parse_tokens):
 
 def _path_to_opgroup(parsed_result):
     """
-    Convert path grouping syntax (a,b) or (a#, b) to OpGroup.
-    This makes path grouping syntactic sugar for operation grouping.
+    Parse action: convert path grouping syntax (a,b) or (a#, b) to OpGroup.
     """
     inner = parsed_result[0] if parsed_result else None
     cut_after = None
     if isinstance(inner, tuple) and len(inner) == 2 and isinstance(inner[1], tuple):
         inner, cut_after = inner
-
-    def _to_branches(item):
-        """Recursively convert path group items to OpGroup branches."""
-        # Handle OpGroup types (from nested path group conversion)
-        if isinstance(item, OpGroupAnd):
-            # Nested AND: return as marker for special handling
-            return [item]
-        elif isinstance(item, OpGroupNot):
-            # Nested NOT: return as marker
-            return [item]
-        elif isinstance(item, OpGroup):
-            # Nested OpGroup: keep as single op in a branch
-            return [tuple([item])]
-        elif isinstance(item, PathOr):
-            # PathOr: each key becomes a branch
-            branches = []
-            for k in item.keys:
-                branches.extend(_to_branches(k))
-            return branches
-        elif isinstance(item, PathAnd):
-            # PathAnd: all keys must exist, convert to OpGroupAnd
-            and_branches = [tuple([_key_to_op(k)]) for k in item.keys]
-            return [OpGroupAnd(*and_branches)]
-        elif isinstance(item, PathNot):
-            # PathNot: convert to OpGroupNot
-            inner_key = item.inner
-            if isinstance(inner_key, (OpGroupOr, OpGroupFirst)):
-                # (!(a,b)) - keep OpGroup intact so we can extract all keys to exclude
-                return [OpGroupNot(tuple([inner_key]))]
-            elif isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
-                return [OpGroupNot(*inner_key.branches)]
-            return [OpGroupNot(tuple([_key_to_op(inner_key)]))]
-        elif isinstance(item, PathGroup):
-            # Nested PathGroup: recurse into its inner
-            return _to_branches(item.inner) if item.inner else []
-        else:
-            # Simple key: wrap in a list as a single-op branch
-            return [tuple([_key_to_op(item)])]
-
     if inner is None:
         return OpGroupOr()
-
-    # If inner is already an OpGroup (from nested path group), return it
     if isinstance(inner, OpGroup):
         return inner
-
-    # Check for PathAnd at the top level
-    if isinstance(inner, PathAnd):
-        branches = [tuple([_key_to_op(k)]) for k in inner.keys]
-        return OpGroupAnd(*branches)
-
-    # Check for PathNot at top level
-    if isinstance(inner, PathNot):
-        inner_key = inner.inner
-        if isinstance(inner_key, (OpGroupOr, OpGroupFirst)):
-            # (!(a,b)) - keep OpGroup intact so we can extract all keys to exclude
-            return OpGroupNot(tuple([inner_key]))
-        elif isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
-            return OpGroupNot(*inner_key.branches)
-        return OpGroupNot(tuple([_key_to_op(inner_key)]))
-
-    # Convert to branches
-    branches = _to_branches(inner)
-
-    # Build final branches, then sequence with _BRANCH_CUT/_BRANCH_SOFTCUT where cut_after[i]
-    final_branches = []
-    for b in branches:
-        if isinstance(b, OpGroupAnd):
-            final_branches.append(b)
-        elif isinstance(b, OpGroupNot):
-            final_branches.append(b)
-        elif isinstance(b, tuple):
-            final_branches.append(b)
-        elif isinstance(b, list):
-            final_branches.append(tuple(b))
-        else:
-            final_branches.append(tuple([_key_to_op(b)]))
-    out = []
-    for i, fb in enumerate(final_branches):
-        out.append(fb)
-        if cut_after and i < len(cut_after):
-            if cut_after[i] == '##':
-                out.append(_BRANCH_SOFTCUT)
-            elif cut_after[i] == '#':
-                out.append(_BRANCH_CUT)
-    # (a&b) parses as PathOr(PathAnd) -> single OpGroupAnd; return it directly
-    if len(out) == 1 and isinstance(out[0], OpGroupAnd):
-        return out[0]
-    return OpGroupOr(*out)
+    if hasattr(inner, 'to_opgroup'):
+        return inner.to_opgroup(cut_after)
+    # Simple key (MatchOp, TraversalOp, etc.)
+    return OpGroupOr(inner.to_branches()[0])
 
 
 def _path_to_opgroup_first(parsed_result):
-    """Convert path grouping (a,b)? to OpGroupFirst."""
+    """
+    Parse action: convert path grouping (a,b)? to OpGroupFirst.
+    """
     opgroup = _path_to_opgroup(parsed_result)
-    if isinstance(opgroup, OpGroupAnd):
-        # (a&b)? - first match of an AND
-        return OpGroupFirst(*opgroup.branches)
     return OpGroupFirst(*opgroup.branches)
 
 
@@ -1557,6 +1510,18 @@ class PathNot(GrammarOp):
 
     def is_pattern(self):
         return True
+
+    def to_branches(self):
+        return [self.to_opgroup()]
+
+    def to_opgroup(self, cut_after=None):
+        """
+        Convert to OpGroupNot.
+        """
+        inner_key = self.inner
+        if isinstance(inner_key, (OpGroupAnd, OpGroupNot)):
+            return OpGroupNot(*inner_key.branches)
+        return OpGroupNot(inner_key.to_branches()[0])
 
     def _excluded_keys(self, node):
         """
