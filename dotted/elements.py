@@ -59,11 +59,12 @@ from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 is_mapping = is_dict_like
 
 
-class Match:
+class MatchResult:
     def __init__(self, val):
         self.val = val
     def __bool__(self):
         return True
+
 
 
 class Op:
@@ -107,7 +108,36 @@ class NOP(metaclass=MetaNOP):
         return False
 
 
-class Const(Op):
+class TraversalOp(Op):
+    """
+    Base for all ops that participate in traversal (walk/update/remove).
+    Provides the default push_children that delegates to walk().
+    """
+
+    def push_children(self, stack, ops, node, prefix, paths):
+        """
+        Default: delegate to walk(), prepending prefix to paths.
+        """
+        for sub_path, sub_val in self.walk(ops, node, paths):
+            if sub_path is _CUT_SENTINEL:
+                yield (_CUT_SENTINEL, None)
+                return
+            if not prefix or not sub_path:
+                yield (sub_path, sub_val)
+                continue
+            yield (prefix + sub_path, sub_val)
+
+
+class MatchOp(Op):
+    """
+    Base for ops that match values/keys (Const, Pattern, Special, Filter).
+    These are used by TraversalOps for pattern matching but never appear
+    directly in the ops list processed by the engine.
+    """
+    pass
+
+
+class Const(MatchOp):
     @property
     def value(self):
         return self.args[0]
@@ -202,7 +232,7 @@ class NoneValue(Const):
         return 'None'
 
 
-class Pattern(Op):
+class Pattern(MatchOp):
     def __repr__(self):
         return str(self.value)
     def matchable(self, op, specials=False):
@@ -267,7 +297,7 @@ class RegexFirst(Regex):
         return isinstance(op, Const) or (specials and isinstance(op, (Special, RegexFirst)))
 
 
-class Special(Op):
+class Special(MatchOp):
     @property
     def value(self):
         return self.args[0]
@@ -293,7 +323,7 @@ class AppenderUnique(Appender):
         return '+?'
 
 
-class FilterOp(Op):
+class FilterOp(MatchOp):
     def is_pattern(self):
         return False
 
@@ -307,7 +337,7 @@ class FilterOp(Op):
         raise NotImplementedError
 
 
-class FilterKey(Op):
+class FilterKey(MatchOp):
     """
     Represents a dotted path in a filter key, e.g. user.id or config.db.host
     """
@@ -732,7 +762,15 @@ class FilterNot(FilterOp):
 #
 # Path-level grouping
 #
-class PathOr(Op):
+class GrammarOp(Op):
+    """
+    Base for parse-time grammar constructs that get converted to TraversalOps.
+    These never appear in the final ops list processed by the engine.
+    """
+    pass
+
+
+class PathOr(GrammarOp):
     """
     Disjunction of path keys - returns tuple of values that exist
     """
@@ -771,7 +809,7 @@ class PathOr(Op):
         return (k for k, _ in self.items(node))
 
 
-class PathAnd(Op):
+class PathAnd(GrammarOp):
     """
     Conjunction of path keys - returns tuple only if ALL exist
     """
@@ -811,7 +849,7 @@ class PathAnd(Op):
         return (k for k, _ in self.items(node))
 
 
-class PathGroup(Op):
+class PathGroup(GrammarOp):
     """
     Parenthesized path group expression - treated as a pattern
     """
@@ -884,7 +922,7 @@ class PathGroupFirst(PathGroup):
                 break
 
 
-class OpGroup(Op):
+class OpGroup(TraversalOp):
     """
     Base class for all operation groups (disjunction, conjunction, negation, first-match).
 
@@ -1469,7 +1507,7 @@ def _slot_to_opgroup_first(parsed_result):
     return OpGroupFirst(*opgroup.branches)
 
 
-class PathNot(Op):
+class PathNot(GrammarOp):
     """
     Negation for path keys - returns all keys EXCEPT those matching the inner expression.
 
@@ -1577,10 +1615,26 @@ def itemof(node, val):
 
 
 
-class _WalkMixin:
-    """
-    Default walk/do_update/do_remove for ops with items/concrete/is_empty/upsert/update/remove.
-    """
+class BaseOp(TraversalOp):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.filters = ()
+
+    def match(self, op):
+        results = ()
+        for f, of in zip(self.filters, op.filters):
+            if not f.matchable(of):
+                return None
+            m = f.match(of)
+            if m is None:
+                return None
+            results += (MatchResult(m),)
+        return results
+
+    def filtered(self, items):
+        for f in self.filters:
+            items = f.filtered(items)
+        return items
 
     def walk(self, ops, node, paths):
         for k, v in self.items(node):
@@ -1615,30 +1669,27 @@ class _WalkMixin:
             node = self.update(node, k, removes(ops, v, val, nop=False))
         return node
 
-
-class CmdOp(_WalkMixin, Op):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.filters = ()
-
-    def match(self, op):
-        results = ()
-        for f, of in zip(self.filters, op.filters):
-            if not f.matchable(of):
-                return None
-            m = f.match(of)
-            if m is None:
-                return None
-            results += (Match(m),)
-        return results
-
-    def filtered(self, items):
-        for f in self.filters:
-            items = f.filtered(items)
-        return items
+CmdOp = BaseOp  # back-compat alias
 
 
-class Empty(CmdOp):
+class SimpleOp(BaseOp):
+    """
+    Base for ops with items()/concrete() that share the standard walk pattern.
+    """
+
+    def push_children(self, stack, ops, node, prefix, paths):
+        """
+        Push matching children onto the traversal stack.
+        Reverse order so first match is popped first (LIFO).
+        """
+        children = list(self.items(node))
+        for k, v in reversed(children):
+            cp = prefix + (self.concrete(k),) if paths else prefix
+            stack.append((ops, v, cp))
+        return ()
+
+
+class Empty(SimpleOp):
     """
     Represents an empty path - the root of the data structure.
 
@@ -1722,10 +1773,10 @@ class Empty(CmdOp):
         m = super().match(op)
         if m is None:
             return m
-        return (Match(''),) + m
+        return (MatchResult(''),) + m
 
 
-class Key(CmdOp):
+class Key(SimpleOp):
     @classmethod
     def concrete(cls, val):
         import numbers
@@ -1820,7 +1871,7 @@ class Key(CmdOp):
         val = next(self.op.matches((op.op.value,)), _marker)
         if val is _marker:
             return None
-        results += (Match(val),)
+        results += (MatchResult(val),)
         return results
 
     def update(self, node, key, val):
@@ -2225,7 +2276,7 @@ class SliceFilter(CmdOp):
                 yield ((self.concrete(k),) + sub_path if paths else None, sub_val)
 
 
-class Slice(CmdOp):
+class Slice(SimpleOp):
     @classmethod
     def concrete(cls, val):
         o = cls()
@@ -2304,7 +2355,7 @@ class Slice(CmdOp):
             return None
         if self.cardinality() < op.cardinality():
             return None
-        return Match(op.slice())
+        return MatchResult(op.slice())
     def update(self, node, key, val):
         if node[key] == val:
             return node
@@ -2367,7 +2418,7 @@ class Invert(CmdOp):
     def operator(self, top=False):
         return '-'
     def match(self, op, specials=False):
-        return Match('-') if isinstance(op, Invert) else None
+        return MatchResult('-') if isinstance(op, Invert) else None
     def items(self, node):
         yield ('-', node)
     def keys(self, node):
@@ -2390,7 +2441,7 @@ class Invert(CmdOp):
         return updates(ops, node, val)
 
 
-class Wrap(Op):
+class Wrap(TraversalOp):
     """Abstract base for ops that wrap another op; use .inner to get the wrapped op."""
 
     inner = None  # subclasses set in __init__
@@ -2459,6 +2510,9 @@ class NopWrap(Wrap):
         except TypeError:
             return self.inner.match(op)
 
+    def push_children(self, stack, ops, node, prefix, paths):
+        return self.inner.push_children(stack, ops, node, prefix, paths)
+
     def walk(self, ops, node, paths):
         yield from self.inner.walk(ops, node, paths)
 
@@ -2476,7 +2530,7 @@ def _guard_repr(guard):
     return repr(guard)
 
 
-class ValueGuard(_WalkMixin, Wrap):
+class ValueGuard(Wrap):
     """
     Wraps Key/Slot with a direct value test: key=value, [slot]=value.
     """
@@ -2573,20 +2627,20 @@ class ValueGuard(_WalkMixin, Wrap):
                 elif self._guard_matches(val):
                     yield (path, val)
             return
-        # Default: use _WalkMixin.walk via items()
-        yield from _WalkMixin.walk(self, ops, node, paths)
+        # Default: use BaseOp.walk via items()
+        yield from BaseOp.walk(self, ops, node, paths)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop):
         if self.inner.is_recursive():
             return self.inner._update_recursive(
                 ops, node, val, has_defaults, _path, nop, guard=self._guard_matches)
-        return _WalkMixin.do_update(self, ops, node, val, has_defaults, _path, nop)
+        return BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop)
 
     def do_remove(self, ops, node, val, nop):
         if self.inner.is_recursive():
             return self.inner._remove_recursive(
                 ops, node, val, nop, guard=self._guard_matches)
-        return _WalkMixin.do_remove(self, ops, node, val, nop)
+        return BaseOp.do_remove(self, ops, node, val, nop)
 
 
 class Recursive(CmdOp):
@@ -3071,13 +3125,30 @@ def iter_until_cut(gen):
         yield x
 
 
+def _walk_engine(ops, node, paths):
+    """
+    Stack-based traversal engine. Single loop, explicit stack, no recursive generators.
+
+    Each Op implements push_children(stack, ops, node, prefix, paths) which either:
+    - Pushes continuation entries onto the stack (simple ops), or
+    - Yields (path, value) results directly (complex ops like OpGroup)
+    """
+    stack = [(ops, node, ())]
+    while stack:
+        cur_ops, cur, prefix = stack.pop()
+        if not cur_ops:
+            yield (prefix if paths else None, cur)
+            continue
+        op, *rest = cur_ops
+        yield from op.push_children(stack, rest, cur, prefix, paths)
+
+
 def walk(ops, node, paths=True):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
-    cur, *ops = ops
-    yield from cur.walk(ops, node, paths)
+    yield from _walk_engine(ops, node, paths)
 
 
 def gets(ops, node):
