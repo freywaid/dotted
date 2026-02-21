@@ -108,17 +108,32 @@ class NOP(metaclass=MetaNOP):
         return False
 
 
+class Frame:
+    """
+    Stack frame for the traversal engine.
+    """
+    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths')
+
+    def __init__(self, ops, node, prefix, depth=0, seen_paths=None):
+        self.ops = ops
+        self.node = node
+        self.prefix = prefix
+        self.depth = depth
+        self.seen_paths = seen_paths
+
+
 class TraversalOp(Op):
     """
     Base for all ops that participate in traversal (walk/update/remove).
     Provides the default push_children that delegates to walk().
     """
 
-    def push_children(self, stack, ops, node, prefix, paths):
+    def push_children(self, stack, frame, paths):
         """
         Default: delegate to walk(), prepending prefix to paths.
         """
-        for sub_path, sub_val in self.walk(ops, node, paths):
+        prefix = frame.prefix
+        for sub_path, sub_val in self.walk(frame.ops, frame.node, paths):
             if sub_path is _CUT_SENTINEL:
                 yield (_CUT_SENTINEL, None)
                 return
@@ -1677,15 +1692,15 @@ class SimpleOp(BaseOp):
     Base for ops with items()/concrete() that share the standard walk pattern.
     """
 
-    def push_children(self, stack, ops, node, prefix, paths):
+    def push_children(self, stack, frame, paths):
         """
         Push matching children onto the traversal stack.
         Reverse order so first match is popped first (LIFO).
         """
-        children = list(self.items(node))
+        children = list(self.items(frame.node))
         for k, v in reversed(children):
-            cp = prefix + (self.concrete(k),) if paths else prefix
-            stack.append((ops, v, cp))
+            cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
+            stack.append(Frame(frame.ops, v, cp))
         return ()
 
 
@@ -2510,8 +2525,8 @@ class NopWrap(Wrap):
         except TypeError:
             return self.inner.match(op)
 
-    def push_children(self, stack, ops, node, prefix, paths):
-        return self.inner.push_children(stack, ops, node, prefix, paths)
+    def push_children(self, stack, frame, paths):
+        return self.inner.push_children(stack, frame, paths)
 
     def walk(self, ops, node, paths):
         yield from self.inner.walk(ops, node, paths)
@@ -3129,18 +3144,19 @@ def _walk_engine(ops, node, paths):
     """
     Stack-based traversal engine. Single loop, explicit stack, no recursive generators.
 
-    Each Op implements push_children(stack, ops, node, prefix, paths) which either:
-    - Pushes continuation entries onto the stack (simple ops), or
+    Each Op implements push_children(stack, frame, paths) which either:
+    - Pushes Frame entries onto the stack (simple ops), or
     - Yields (path, value) results directly (complex ops like OpGroup)
     """
-    stack = [(ops, node, ())]
+    stack = [Frame(ops, node, ())]
     while stack:
-        cur_ops, cur, prefix = stack.pop()
-        if not cur_ops:
-            yield (prefix if paths else None, cur)
+        frame = stack.pop()
+        if not frame.ops:
+            yield (frame.prefix if paths else None, frame.node)
             continue
-        op, *rest = cur_ops
-        yield from op.push_children(stack, rest, cur, prefix, paths)
+        op, *rest = frame.ops
+        frame.ops = rest
+        yield from op.push_children(stack, frame, paths)
 
 
 def walk(ops, node, paths=True):
