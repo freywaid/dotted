@@ -159,22 +159,9 @@ class DepthStack:
 class TraversalOp(Op):
     """
     Base for all ops that participate in traversal (walk/update/remove).
-    Provides the default push_children that delegates to walk().
+    Base class for ops that participate in stack-based traversal.
+    Subclasses must implement push_children(stack, frame, paths).
     """
-
-    def push_children(self, stack, frame, paths):
-        """
-        Default: delegate to walk(), prepending prefix to paths.
-        """
-        prefix = frame.prefix
-        for sub_path, sub_val in self.walk(frame.ops, frame.node, paths):
-            if sub_path is _CUT_SENTINEL:
-                yield (_CUT_SENTINEL, None)
-                return
-            if not prefix or not sub_path:
-                yield (sub_path, sub_val)
-                continue
-            yield (prefix + sub_path, sub_val)
 
 
 class MatchOp(Op):
@@ -1686,17 +1673,6 @@ class BaseOp(TraversalOp):
     def values(self, node):
         return (v for _, v in self.items(node))
 
-    def walk(self, ops, node, paths):
-        for k, v in self.items(node):
-            if not ops:
-                yield ((self.concrete(k),) if paths else None, v)
-                continue
-            for sub_path, sub_val in walk(ops, v, paths):
-                if sub_path is _CUT_SENTINEL:
-                    yield (_CUT_SENTINEL, None)
-                    return
-                yield ((self.concrete(k),) + sub_path if paths else None, sub_val)
-
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         if not ops:
             return node if nop else self.upsert(node, val)
@@ -2471,13 +2447,6 @@ class Invert(SimpleOp):
     def values(self, node):
         yield node
 
-    def walk(self, ops, node, paths):
-        for sub_path, sub_val in walk(ops, node, paths):
-            if sub_path is _CUT_SENTINEL:
-                yield (_CUT_SENTINEL, None)
-                return
-            yield ((self.concrete('-'),) + sub_path if paths else None, sub_val)
-
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         return removes(ops, node, val)
 
@@ -2557,9 +2526,6 @@ class NopWrap(Wrap):
 
     def push_children(self, stack, frame, paths):
         return self.inner.push_children(stack, frame, paths)
-
-    def walk(self, ops, node, paths):
-        yield from self.inner.walk(ops, node, paths)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
         return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True)
@@ -2666,7 +2632,7 @@ class ValueGuard(Wrap):
     def push_children(self, stack, frame, paths):
         """
         Non-recursive: items() already filters by guard, push onto stack.
-        Recursive: delegate to inner, filter yielded results by guard.
+        Recursive: collect matches from inner, filter by guard, push survivors.
         """
         if not self.inner.is_recursive():
             children = list(self.items(frame.node))
@@ -2674,13 +2640,11 @@ class ValueGuard(Wrap):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
                 stack.push(Frame(frame.ops, v, cp))
             return ()
-        results = []
-        for path, val in self.inner.push_children(stack, frame, paths):
-            if path is _CUT_SENTINEL:
-                results.append((path, val))
-            elif self._guard_matches(val):
-                results.append((path, val))
-        return results
+        matches = [(cp, v) for cp, v in self.inner._collect_matches(
+            frame.node, paths, prefix=frame.prefix) if self._guard_matches(v)]
+        for cp, v in reversed(matches):
+            stack.push(Frame(frame.ops, v, cp))
+        return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop):
         if self.inner.is_recursive():
@@ -2831,7 +2795,13 @@ class Recursive(BaseOp):
                 return max(child_depths) + 1
         return 0
 
-    def _walk_recursive(self, ops, node, paths, depth=0, prefix=()):
+    def _collect_matches(self, node, paths, depth=0, prefix=()):
+        """
+        Yield (prefix, value) for all nodes matching the recursive pattern.
+
+        Traverses the tree depth-first, yielding matches at each level
+        before recursing into children (parent-before-children ordering).
+        """
         if is_mapping(node):
             iterable = self._matching_keys(node)
             matched = True
@@ -2844,26 +2814,22 @@ class Recursive(BaseOp):
             return
 
         for k, v in iterable:
-            cp = prefix + (concrete(k),) if paths else None
+            cp = prefix + (concrete(k),) if paths else prefix
             if not matched or not any(True for _ in self.filtered((v,))):
-                yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
+                yield from self._collect_matches(v, paths, depth + 1, cp)
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
-                yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
+                yield from self._collect_matches(v, paths, depth + 1, cp)
                 continue
-            if not ops:
-                yield (cp, v)
-            else:
-                for sub_path, sub_val in walk(ops, v, paths):
-                    if sub_path is _CUT_SENTINEL:
-                        break
-                    yield (cp + sub_path if paths else None, sub_val)
-            # Always recurse into children
-            yield from self._walk_recursive(ops, v, paths, depth + 1, cp or ())
+            yield (cp, v)
+            yield from self._collect_matches(v, paths, depth + 1, cp)
 
-    def walk(self, ops, node, paths):
-        yield from self._walk_recursive(ops, node, paths)
+    def push_children(self, stack, frame, paths):
+        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix))
+        for cp, v in reversed(matches):
+            stack.push(Frame(frame.ops, v, cp))
+        return ()
 
     def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None):
         if is_mapping(node):
@@ -2946,10 +2912,11 @@ class RecursiveFirst(Recursive):
         # Insert ? before filters if present, otherwise append
         return s + '?'
 
-    def walk(self, ops, node, paths):
-        for pair in self._walk_recursive(ops, node, paths):
-            yield pair
-            return
+    def push_children(self, stack, frame, paths):
+        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix):
+            stack.push(Frame(frame.ops, v, cp))
+            return ()
+        return ()
 
 
 #
