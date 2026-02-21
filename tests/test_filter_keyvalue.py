@@ -468,17 +468,17 @@ def test_pluck_slicefilter():
         {'id': 1, 'name': 'alice'},
         {'id': 2, 'name': 'bob'},
     ]
-    # pluck with filter returns index
+    # pluck with filter returns filtered list
     r = dotted.pluck(data, '[id=1]')
-    assert r == ('[0]', {'id': 1, 'name': 'alice'})
+    assert r == ('[]', [{'id': 1, 'name': 'alice'}])
 
-    # expand with filter returns index
+    # expand with filter returns []
     r = dotted.expand(data, '[id=1]')
-    assert r == ('[0]',)
+    assert r == ('[]',)
 
     # multiple matches
     r = dotted.expand(data, '[id=1,id=2]')
-    assert r == ('[0]', '[1]')
+    assert r == ('[]',)
 
 
 def test_setdefault_filter_keyvalue():

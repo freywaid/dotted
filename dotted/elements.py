@@ -1651,6 +1651,12 @@ class BaseOp(TraversalOp):
             items = f.filtered(items)
         return items
 
+    def keys(self, node):
+        return (k for k, _ in self.items(node))
+
+    def values(self, node):
+        return (v for _, v in self.items(node))
+
     def walk(self, ops, node, paths):
         for k, v in self.items(node):
             if not ops:
@@ -1684,7 +1690,6 @@ class BaseOp(TraversalOp):
             node = self.update(node, k, removes(ops, v, val, nop=False))
         return node
 
-CmdOp = BaseOp  # back-compat alias
 
 
 class SimpleOp(BaseOp):
@@ -1855,12 +1860,6 @@ class Key(SimpleOp):
             return iter([(key, node[key])])
         except (IndexError, TypeError):
             return ()
-
-    def keys(self, node):
-        return (k for k, _ in self.items(node))
-
-    def values(self, node):
-        return (v for _, v in self.items(node))
 
     def is_empty(self, node):
         return not any(True for _ in self.keys(node))
@@ -2212,7 +2211,7 @@ class SlotSpecial(Slot):
         return node
 
 
-class SliceFilter(CmdOp):
+class SliceFilter(BaseOp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = self.args
@@ -2232,14 +2231,10 @@ class SliceFilter(CmdOp):
             return None
         return super().match(op)
 
-    def values(self, node):
-        return (type(node)(self.filtered(node)),)
     def items(self, node):
         for idx, v in enumerate(node):
             if any(True for _ in self.filtered((v,))):
                 yield (idx, v)
-    def keys(self, node):
-        return (k for k, _ in self.items(node))
 
     def upsert(self, node, val):
         return self.update(node, None, val)
@@ -2278,17 +2273,16 @@ class SliceFilter(CmdOp):
     def pop(self, node, key):
         return self.remove(node, ANY)
 
-    def walk(self, ops, node, paths):
-        pairs = self.items(node) if paths else ((None, v) for v in self.values(node))
-        for k, v in pairs:
-            if not ops:
-                yield ((self.concrete(k),) if paths else None, v)
-                continue
-            for sub_path, sub_val in walk(ops, v, paths):
-                if sub_path is _CUT_SENTINEL:
-                    yield (_CUT_SENTINEL, None)
-                    return
-                yield ((self.concrete(k),) + sub_path if paths else None, sub_val)
+    def push_children(self, stack, frame, paths):
+        """
+        Push filtered container onto the stack.
+        Path segment is [] (Slice) since the filter narrows the whole collection.
+        """
+        filtered = type(frame.node)(self.filtered(frame.node))
+        cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
+        stack.append(Frame(frame.ops, filtered, cp))
+        return ()
+
 
 
 class Slice(SimpleOp):
@@ -2419,7 +2413,7 @@ class Slice(SimpleOp):
         return node
 
 
-class Invert(CmdOp):
+class Invert(SimpleOp):
     @classmethod
     def concrete(cls, val):
         return cls(val)
@@ -2658,7 +2652,7 @@ class ValueGuard(Wrap):
         return BaseOp.do_remove(self, ops, node, val, nop)
 
 
-class Recursive(CmdOp):
+class Recursive(BaseOp):
     """
     Recursive traversal operator. Matches a pattern at each level and recurses
     into matched values. Handles type detection and iteration directly.
