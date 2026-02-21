@@ -558,8 +558,24 @@ op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_actio
 
 op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
 
+# Top-level negation: !a, !@a, ![0], !(a.b) without surrounding parens
+def _top_not_action(t):
+    """
+    Parse action for top-level negation (! prefix without surrounding parens).
+
+    Path-level targets (OpGroupAnd, OpGroupNot) are unwrapped like PathNot does,
+    so !(a&b) == (!(a&b)). Other targets are wrapped as-is, so !(a.b)
+    negates the compound path as a unit.
+    """
+    inner = t[0]
+    if isinstance(inner, (el.OpGroupAnd, el.OpGroupNot)):
+        return el.OpGroupNot(*inner.branches)
+    return el.OpGroupNot(inner)
+_top_not_target = path_grouped | op_grouped | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd
+_top_not = (bang + _top_not_target).set_parse_action(_top_not_action)
+
 # NOP (~): match but don't update. At top assemble to ~@/~.; else .~/@~
-dotted_top_inner = path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | empty
+dotted_top_inner = _top_not | path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | empty
 _nop_wrap = (tilde + dotted_top_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
 dotted_top = _nop_wrap | dotted_top_inner
 # Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses; path_grouped for (a&b).c; op_grouped for ((a,b),c)
