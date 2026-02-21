@@ -1046,6 +1046,12 @@ class OpGroup(TraversalOp):
                     return first_op.default()
         return {}
 
+    def to_branches(self):
+        return [self]
+
+    def to_opgroup(self, cut_after=None):
+        return self
+
     def operator(self, top=False):
         return self.__repr__()
 
@@ -1247,8 +1253,6 @@ class OpGroupAnd(OpGroup):
 
     If any branch fails to match, returns nothing.
     """
-    def to_branches(self):
-        return [self]
     def __repr__(self):
         branch_strs = []
         for branch in self.branches:
@@ -1342,9 +1346,6 @@ class OpGroupNot(OpGroup):
     TODO: `!*` always evaluates to empty — the parser should recognize this and emit
     something that evaluates to empty directly, rather than going through negation.
     """
-    def to_branches(self):
-        return [self]
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # For negation, we have a single inner expression to negate
@@ -1443,8 +1444,6 @@ def _path_to_opgroup(parsed_result):
         inner, cut_after = inner
     if inner is None:
         return OpGroupOr()
-    if isinstance(inner, OpGroup):
-        return inner
     if hasattr(inner, 'to_opgroup'):
         return inner.to_opgroup(cut_after)
     # Simple key (MatchOp, TraversalOp, etc.)
