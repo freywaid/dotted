@@ -1248,20 +1248,17 @@ class PathOr(OpGroupOr):
 
 class PathAnd(OpGroupAnd):
     """
-    Grammar-level conjunction — an OpGroupAnd that reprs as ampersand-separated keys.
+    Grammar-level conjunction — an OpGroupAnd with a grammar-friendly constructor.
     """
     def __init__(self, *args, **kwargs):
         self.keys = _extract_grammar_args(args)
         and_branches = [k.to_branches()[0] for k in self.keys]
         OpGroupAnd.__init__(self, *and_branches)
 
-    def __repr__(self):
-        return '&'.join(str(k) for k in self.keys)
-
 
 class PathNot(OpGroupNot):
     """
-    Grammar-level negation — an OpGroupNot that reprs without enclosing parens.
+    Grammar-level negation — an OpGroupNot with a grammar-friendly constructor.
     """
     def __init__(self, *args, **kwargs):
         grammar_args = _extract_grammar_args(args)
@@ -1272,12 +1269,6 @@ class PathNot(OpGroupNot):
             OpGroupNot.__init__(self, inner_key.to_branches()[0])
         else:
             OpGroupNot.__init__(self)
-
-    def __repr__(self):
-        inner_str = ''.join(
-            op.operator(top=(i == 0)) for i, op in enumerate(self.inner)
-        )
-        return f'!{inner_str}'
 
 
 def _path_or_with_cut(parse_tokens):

@@ -463,6 +463,76 @@ def test_setdefault_with_path_negation():
 
 
 # =============================================================================
+# Attribute Negation Tests
+# =============================================================================
+
+def test_negate_single_attr():
+    """
+    Exclude a single attribute.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!@a)')
+    assert set(r) == {2, 3}
+
+
+def test_negate_multiple_attrs():
+    """
+    Exclude multiple attributes.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!(@a,@b))')
+    assert r == (3,)
+
+
+def test_negate_wildcard_attr():
+    """
+    Negating wildcard attribute excludes all — returns nothing.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!@*)')
+    assert r == ()
+
+
+def test_update_attr_negation():
+    """
+    Update all attributes except excluded ones.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    dotted.update(ns, '(!@a)', 99)
+    assert ns.a == 1
+    assert ns.b == 99
+    assert ns.c == 99
+
+
+def test_remove_attr_negation():
+    """
+    Remove all attributes except excluded ones.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    dotted.remove(ns, '(!@a)')
+    assert hasattr(ns, 'a')
+    assert not hasattr(ns, 'b')
+    assert not hasattr(ns, 'c')
+
+
+def test_negate_attr_nested():
+    """
+    Attribute negation inside attribute traversal.
+    """
+    import types
+    ns = types.SimpleNamespace(
+        outer=types.SimpleNamespace(public=1, secret=2, also_public=3)
+    )
+    r = dotted.get(ns, '@outer(!@secret)')
+    assert set(r) == {1, 3}
+
+
+# =============================================================================
 # Repr Tests
 # =============================================================================
 
