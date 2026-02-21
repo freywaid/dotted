@@ -2627,17 +2627,24 @@ class ValueGuard(Wrap):
         except TypeError:
             return self.inner.match(op)
 
-    def walk(self, ops, node, paths):
-        # Recursive inner: delegate walk, filter yielded values by guard
-        if self.inner.is_recursive():
-            for path, val in self.inner.walk(ops, node, paths):
-                if path is _CUT_SENTINEL:
-                    yield (path, val)
-                elif self._guard_matches(val):
-                    yield (path, val)
-            return
-        # Default: use BaseOp.walk via items()
-        yield from BaseOp.walk(self, ops, node, paths)
+    def push_children(self, stack, frame, paths):
+        """
+        Non-recursive: items() already filters by guard, push onto stack.
+        Recursive: delegate to inner, filter yielded results by guard.
+        """
+        if not self.inner.is_recursive():
+            children = list(self.items(frame.node))
+            for k, v in reversed(children):
+                cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
+                stack.append(Frame(frame.ops, v, cp))
+            return ()
+        results = []
+        for path, val in self.inner.push_children(stack, frame, paths):
+            if path is _CUT_SENTINEL:
+                results.append((path, val))
+            elif self._guard_matches(val):
+                results.append((path, val))
+        return results
 
     def do_update(self, ops, node, val, has_defaults, _path, nop):
         if self.inner.is_recursive():
