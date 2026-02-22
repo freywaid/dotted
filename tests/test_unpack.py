@@ -75,7 +75,7 @@ def test_unpack_mixed_depth():
 
 def test_unpack_attrs():
     """
-    attrs=True descends into object attributes via @*.
+    attrs=[Attrs.standard] descends into non-dunder object attributes.
     """
     class Pt:
         def __init__(self, x, y):
@@ -83,7 +83,7 @@ def test_unpack_attrs():
             self.y = y
 
     d = {'point': Pt(3, 4)}
-    r = dotted.unpack(d, attrs=True)
+    r = dotted.unpack(d, attrs=[dotted.Attrs.standard])
     assert ('point@x', 3) in r
     assert ('point@y', 4) in r
 

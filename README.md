@@ -480,13 +480,13 @@ original object. Use `AUTO` as the base object to infer the root container type.
     >>> dotted.update_multi(dotted.AUTO, dotted.unpack(d)) == d
     True
 
-Pass `attrs=True` to also descend into object attributes:
+Pass `attrs=` to also descend into object attributes:
 
     >>> class Pt:
     ...     def __init__(self, x, y):
     ...         self.x = x
     ...         self.y = y
-    >>> dotted.unpack({'point': Pt(3, 4)}, attrs=True)
+    >>> dotted.unpack({'point': Pt(3, 4)}, attrs=[dotted.Attrs.standard])
     (('point@x', 3), ('point@y', 4))
 
 <a id="build"></a>

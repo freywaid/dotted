@@ -2,10 +2,19 @@
 Main api
 """
 import copy
+import enum
 import functools
 import itertools
 from . import grammar
 from . import elements as el
+
+
+class Attrs(enum.StrEnum):
+    """
+    Feature flags for unpack attr inclusion.
+    """
+    standard = 'standard'
+    special = 'special'
 
 CACHE_SIZE = 300
 ANY = el.ANY
@@ -823,11 +832,16 @@ def pluck(obj, pattern, default=None, strict=False):
     return out[0]
 
 
-def unpack(obj, attrs=False):
+def unpack(obj, attrs=None):
     """
     Convert obj to dotted normal form.  A tuple of (path, value) pairs which
     can be replayed to regenerate the obj.  Internally, this calls:
          pluck(obj, '*(*#, [*]):-2(.*, [])##, (*, [])')
+
+    Pass attrs= to include object attributes:
+        attrs=[Attrs.standard]            non-dunder attrs
+        attrs=[Attrs.special]             dunder attrs only
+        attrs=[Attrs.standard, Attrs.special]  all attrs
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     >>> r = unpack(d)
@@ -836,7 +850,14 @@ def unpack(obj, attrs=False):
     >>> update_multi(AUTO, r) == d
     True
     """
-    extra = ', @*' if attrs else ''
+    if not attrs:
+        extra = ''
+    elif set(attrs) >= {Attrs.standard, Attrs.special}:
+        extra = ', @*'
+    elif Attrs.standard in attrs:
+        extra = ', @/(?!__).*/'
+    else:
+        extra = ', @/__.*/'
     return pluck(obj, f'*(*#, [*]{extra}):-2(.*, []{extra})##, (*, []{extra})')
 
 
