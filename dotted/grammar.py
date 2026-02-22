@@ -423,24 +423,28 @@ _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
 slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
 slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(el._slot_to_opgroup_first)
 
-# Path-level grouping: (a,b) for disjunction, (a&b) for conjunction, (!a) for negation
-path_expr = pp.Forward()
-path_group_inner = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
-path_group_item = path_group_inner | key.copy()
-
-# NOT: ! prefix binds tightest for paths
-path_not = (bang + path_group_item).set_parse_action(el.PathNot) | path_group_item
-
-# AND: path items joined by &
-path_group_and = (path_not + OM(amp + path_not)).set_parse_action(el.PathAnd) | path_not
-
-# OR: and-groups joined by ,; (a#, b) has cut on first branch
-path_group_or_term = pp.Group(path_group_and + Opt(cut_marker))
-path_group_or = (path_group_or_term + ZM(_comma_ws + path_group_or_term)).set_parse_action(el._path_or_with_cut) | path_group_and
-path_expr <<= path_group_or
-path_group = (lparen + path_expr + rparen).set_parse_action(el._path_to_opgroup)
-path_group_first = (lparen + path_expr + rparen + S('?')).set_parse_action(el._path_to_opgroup_first)
-path_grouped = path_group_first | path_group
+# Unified inner expression: single precedence tower for !, &, , operators
+# Used both inside parens (inner_grouped) and at top level.
+# Atoms are op_seqs (which subsume bare keys as single-item sequences).
+# Precedence: ! (tightest) > & > , (loosest)
+inner_expr = pp.Forward()
+inner_grouped = (lparen + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
+inner_grouped_first = (lparen + inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
+# Explicit-op grouped: used mid-path where bare-key inference is not allowed.
+# Uses a separate precedence tower (_explicit_inner_expr) that only allows
+# op_seqs built from _op_seq_cont (no bare keys even in first position).
+# The FollowedBy is a fast-fail optimization — if the first char after ( can't
+# start an explicit branch, don't even try the tower.
+_explicit_op_start = pp.FollowedBy(pp.Char('.@[!~('))
+_explicit_inner_expr = pp.Forward()
+_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
+_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
+# Bare-key grouped: first branch does NOT start with an access op.
+# Used with prefix shorthand (.(a,b), @(a,b)) where the prefix distributes.
+# Allows ! and ~ (modifiers) but rejects . @ [ ( (access ops / nested groups).
+_bare_key_start = ~pp.FollowedBy(pp.Char('.@[('))
+_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
+_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
 
 # Recursive operator: ** (recursive wildcard) and *pattern (recursive chain-following)
 # Depth slice: :start:stop:step — uses sentinel for missing values to preserve position
@@ -514,71 +518,136 @@ empty = pp.Empty().set_parse_action(el.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
 # An op_seq is a sequence of operations like .key, [slot], @attr
-_dot_keycmd_guarded_neq = (dot + Opt(L('~')) + keycmd_guarded_neq).set_parse_action(
-    lambda t: el.NopWrap(t[1]) if len(t) == 2 else t[0])
-_dot_keycmd_guarded = (dot + Opt(L('~')) + keycmd_guarded).set_parse_action(
-    lambda t: el.NopWrap(t[1]) if len(t) == 2 else t[0])
-_dot_keycmd = (dot + Opt(L('~')) + keycmd).set_parse_action(
-    lambda t: el.NopWrap(t[1]) if len(t) == 2 else t[0])
+# .~key and ~.key both produce NopWrap(key); .key produces key
+_dot_keycmd_guarded_neq = (((dot + tilde) | (tilde + dot)) + keycmd_guarded_neq).set_parse_action(
+    lambda t: el.NopWrap(t[-1]))
+_dot_plain_keycmd_guarded_neq = (dot + keycmd_guarded_neq).set_parse_action(lambda t: t[0])
+_dot_keycmd_guarded = (((dot + tilde) | (tilde + dot)) + keycmd_guarded).set_parse_action(
+    lambda t: el.NopWrap(t[-1]))
+_dot_plain_keycmd_guarded = (dot + keycmd_guarded).set_parse_action(lambda t: t[0])
+_dot_keycmd_nop = (((dot + tilde) | (tilde + dot)) + keycmd).set_parse_action(
+    lambda t: el.NopWrap(t[-1]))
+_dot_keycmd = (dot + keycmd).set_parse_action(lambda t: t[0])
 # op_seq_item uses _nop_wrap (defined later); Forward for circular ref
-op_seq_item = pp.Forward()
-op_seq = pp.Group(OM(op_seq_item))
+op_seq_item = pp.Forward()     # first item: allows bare (a,b)
+_op_seq_cont = pp.Forward()    # continuation: requires explicit ops
+op_seq = pp.Group(op_seq_item + ZM(_op_seq_cont))
 
-# OpGroup with AND/OR/NOT semantics:
-# (.b,.c)  - disjunction: get both a.b and a.c
-# (.b#,.c) - disjunction with cut: first branch that matches wins (commit, don't try rest)
-# (.b&.c)  - conjunction: get both only if both exist
-# (!.b)    - negation: get all except b
-op_group_and_inner = op_seq + OM(amp + op_seq)
-op_group_and = (lparen + op_group_and_inner + rparen).set_parse_action(el.OpGroupAnd)
-
-op_group_or_term = pp.Group(op_seq + Opt(cut_marker))
-op_group_or_inner = op_group_or_term + ZM(_comma_ws + op_group_or_term)
-def _op_group_from_parse(t):
-    items = t  # list of terms (op_group_or_inner result)
-    out = []
-    for item in items:
-        b = item[0]  # op_seq result (Group of op_seq_items)
-        if isinstance(b, (list, tuple, pp.ParseResults)) and len(b) == 1:
-            b = b[0]
-        # Unwrap so branch is always tuple of elements, never raw ParseResults
-        branch = tuple(b) if isinstance(b, (list, tuple, pp.ParseResults)) else (b,)
-        out.append(branch)
-        if len(item) >= 2 and item[1] == '##':
-            out.append(el._BRANCH_SOFTCUT)
-        elif len(item) >= 2 and item[1] == '#':
-            out.append(el._BRANCH_CUT)
-    return el.OpGroupOr(*out)
-op_group_or = (lparen + op_group_or_inner + rparen).set_parse_action(_op_group_from_parse)
-op_group_first = (lparen + op_group_or_inner + rparen + S('?')).set_parse_action(
-    lambda t: el.OpGroupFirst(*_op_group_from_parse(t).branches))
-
-# Negation: (!.b) or (!(.a,.b))
-op_group_not = (lparen + bang + (op_group_or | op_seq) + rparen).set_parse_action(el.OpGroupNot)
-
-op_grouped = op_group_first | op_group_and | op_group_not | op_group_or
-
-# NOP (~): match but don't update. At top assemble to ~@/~.; else .~/@~
-dotted_top_inner = path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | empty
-_nop_wrap = (tilde + dotted_top_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
-dotted_top = _nop_wrap | dotted_top_inner
-# Resolve forward: op_seq_item can be _nop_wrap so ~(name.first) parses; path_grouped for (a&b).c; op_grouped for ((a,b),c)
-op_seq_item << (_nop_wrap | path_grouped | op_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | _dot_keycmd_guarded_neq | _dot_keycmd_guarded | _dot_keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd)
-
-# ~. and .~ both produce NopWrap (canonical form .~)
-_dot_nop_guarded = ((dot + tilde) | (tilde + dot)) + (keycmd_guarded_neq | keycmd_guarded)
-_dot_nop_guarded = _dot_nop_guarded.set_parse_action(lambda t: el.NopWrap(t[-1]))
-_dot_plain_guarded = (dot + (keycmd_guarded_neq | keycmd_guarded)).set_parse_action(lambda t: t[0])
-_dot_segment_guarded = _dot_nop_guarded | _dot_plain_guarded
-_dot_nop = ((dot + tilde) | (tilde + dot)) + (path_grouped | keycmd)
-_dot_nop = _dot_nop.set_parse_action(lambda t: el.NopWrap(t[-1]))
-_dot_plain = (dot + (path_grouped | keycmd)).set_parse_action(lambda t: t[0])
-_dot_segment = _dot_nop | _dot_plain
-_nop_op_grouped = (tilde + op_grouped).set_parse_action(lambda t: el.NopWrap(t[1]))
+# Continuation items (absorbed from former multi grammar):
+# .~ and ~. with grouped expressions — prefix shorthand requires bare keys inside
+_dot_nop_grouped = ((dot + tilde) | (tilde + dot)) + (_inner_grouped_bare_first | _inner_grouped_bare)
+_dot_nop_grouped = _dot_nop_grouped.set_parse_action(lambda t: el.NopWrap(t[-1]))
+_dot_plain_grouped = (dot + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(lambda t: t[0])
+# .recursive
 _dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
-multi = OM(_dot_segment_guarded | _dot_segment | _dot_recursive | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd | _nop_op_grouped | op_grouped)
+# @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
+_at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
+    lambda t: el._attr_transform_opgroup(t[0])
+)
+_at_nop_grouped = ((at + tilde) | (tilde + at)) + (_inner_grouped_bare_first | _inner_grouped_bare)
+_at_nop_grouped = _at_nop_grouped.set_parse_action(
+    lambda t: el.NopWrap(el._attr_transform_opgroup(t[-1]))
+)
+
+# NOP (~): match but don't update
+_nop_inner = inner_grouped_first | inner_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd
+_nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
+
+# Explicit NOP (~): like _nop_wrap but inner must start with an access op (./@/[]).
+# Bare keys (keycmd) are excluded — ~key is not allowed inside explicit groups.
+_explicit_nop_inner = (
+    _inner_grouped_explicit_first | _inner_grouped_explicit |
+    recursive_op |
+    _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
+    _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_keycmd_nop | _dot_keycmd |
+    _dot_nop_grouped | _dot_plain_grouped |
+    _dot_recursive |
+    _at_nop_grouped | _at_plain_grouped |
+    attrcmd |
+    slotgroup_first | slotgroup |
+    slotcmd_guarded_neq | slotcmd_guarded | slotcmd |
+    slotspecial | slicefilter | slicecmd
+)
+_explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
+
+# Resolve forward: op_seq_item is the atom of op_seq, used in the precedence tower
+# Continuation items: everything that can appear after the first item in an op_seq.
+# Bare (a,b) is NOT allowed here — only explicit-op groups like (.a,.b).
+_op_seq_cont_items = (
+    _nop_wrap |
+    _inner_grouped_explicit_first | _inner_grouped_explicit |
+    recursive_op |
+    keycmd_guarded_neq | keycmd_guarded | keycmd |
+    _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
+    _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_keycmd_nop | _dot_keycmd |
+    _dot_nop_grouped | _dot_plain_grouped |
+    _dot_recursive |
+    _at_nop_grouped | _at_plain_grouped |
+    attrcmd |
+    slotgroup_first | slotgroup |
+    slotcmd_guarded_neq | slotcmd_guarded | slotcmd |
+    slotspecial | slicefilter | slicecmd
+)
+_op_seq_cont << _op_seq_cont_items
+# First item also allows bare grouped expressions — (a,b) with bare keys.
+# This is valid at the start of a path (top-level inference).
+op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_cont_items)
+
+# Precedence tower (atoms are op_seqs)
+inner_atom = op_seq
+inner_not = (bang + inner_atom).set_parse_action(el._inner_not_action) | inner_atom
+inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(el._inner_and_action) | inner_not
+inner_or_term = pp.Group(inner_and + Opt(cut_marker))
+inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(el._inner_or_action) | inner_and
+inner_expr <<= inner_or
+
+# ---------------------------------------------------------------------------
+# Explicit precedence tower: used inside mid-path groups where every leaf
+# must start with an access op (Key/Attr/Slot).  Bare keys are rejected.
+# This enforces the rule: "if no access op floats down from parent, you
+# must specify one on every branch."
+# ---------------------------------------------------------------------------
+_explicit_op_seq_cont_items = (
+    _explicit_nop_wrap |
+    _inner_grouped_explicit_first | _inner_grouped_explicit |
+    _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
+    _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_keycmd_nop | _dot_keycmd |
+    _dot_nop_grouped | _dot_plain_grouped |
+    _dot_recursive |
+    _at_nop_grouped | _at_plain_grouped |
+    attrcmd |
+    slotgroup_first | slotgroup |
+    slotcmd_guarded_neq | slotcmd_guarded | slotcmd |
+    slotspecial | slicefilter | slicecmd
+)
+_explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
+_explicit_inner_atom = _explicit_op_seq
+_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(el._inner_not_action) | _explicit_inner_atom
+_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(el._inner_and_action) | _explicit_inner_not
+_explicit_inner_or_term = pp.Group(_explicit_inner_and + Opt(cut_marker))
+_explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(el._inner_or_action) | _explicit_inner_and
+_explicit_inner_expr <<= _explicit_inner_or
+
+# Top-level: flatten op_seq Groups into flat ops list
+def _top_level_flatten(t):
+    """
+    Flatten top-level expression result for the ops list.
+    Plain op_seqs (ParseResults from Group) are unwrapped into individual ops.
+    OpGroups are kept as single ops.
+    """
+    out = []
+    for item in t:
+        if isinstance(item, (list, tuple, pp.ParseResults)) and not isinstance(item, el.OpGroup):
+            out.extend(item)
+        else:
+            out.append(item)
+    return out
+
 invert = Opt(L('-').set_parse_action(el.Invert))
-dotted = invert + dotted_top + ZM(multi)
+dotted = pp.Group((invert + (inner_expr | empty)).set_parse_action(_top_level_flatten))
 
 targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])

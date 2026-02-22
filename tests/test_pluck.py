@@ -122,7 +122,7 @@ def test_pluck_dict_filter():
 def test_pluck_list_filter():
     data = [{'id': 1, 'name': 'alice'}, {'id': 2, 'name': 'bob'}]
     r = dotted.pluck(data, '[id=1]')
-    assert r == ('[0]', {'id': 1, 'name': 'alice'})
+    assert r == ('[]', [{'id': 1, 'name': 'alice'}])
 
 
 def test_pluck_list_filter_pattern():

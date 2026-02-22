@@ -463,6 +463,153 @@ def test_setdefault_with_path_negation():
 
 
 # =============================================================================
+# Attribute Negation Tests
+# =============================================================================
+
+def test_negate_single_attr():
+    """
+    Exclude a single attribute.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!@a)')
+    assert set(r) == {2, 3}
+
+
+def test_negate_multiple_attrs():
+    """
+    Exclude multiple attributes.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!(@a,@b))')
+    assert r == (3,)
+
+
+def test_negate_wildcard_attr():
+    """
+    Negating wildcard attribute excludes all — returns nothing.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    r = dotted.get(ns, '(!@*)')
+    assert r == ()
+
+
+def test_update_attr_negation():
+    """
+    Update all attributes except excluded ones.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    dotted.update(ns, '(!@a)', 99)
+    assert ns.a == 1
+    assert ns.b == 99
+    assert ns.c == 99
+
+
+def test_remove_attr_negation():
+    """
+    Remove all attributes except excluded ones.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    dotted.remove(ns, '(!@a)')
+    assert hasattr(ns, 'a')
+    assert not hasattr(ns, 'b')
+    assert not hasattr(ns, 'c')
+
+
+def test_negate_attr_nested():
+    """
+    Attribute negation inside attribute traversal.
+    """
+    import types
+    ns = types.SimpleNamespace(
+        outer=types.SimpleNamespace(public=1, secret=2, also_public=3)
+    )
+    r = dotted.get(ns, '@outer(!@secret)')
+    assert set(r) == {1, 3}
+
+
+# =============================================================================
+# Top-level Negation Tests
+# =============================================================================
+
+def test_top_level_negate_key():
+    """
+    Top-level !a negates a single key without surrounding parens.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '!a') == dotted.get(d, '(!a)')
+    assert set(dotted.get(d, '!a')) == {2, 3}
+
+
+def test_top_level_negate_attr():
+    """
+    Top-level !@a negates a single attribute.
+    """
+    import types
+    ns = types.SimpleNamespace(a=1, b=2, c=3)
+    assert dotted.get(ns, '!@a') == dotted.get(ns, '(!@a)')
+    assert set(dotted.get(ns, '!@a')) == {2, 3}
+
+
+def test_top_level_negate_slot():
+    """
+    Top-level ![0] negates a single slot.
+    """
+    data = ['x', 'y', 'z']
+    assert dotted.get(data, '![0]') == dotted.get(data, '(![0])')
+    assert set(dotted.get(data, '![0]')) == {'y', 'z'}
+
+
+def test_top_level_negate_compound_path():
+    """
+    Top-level !a.b negates the compound path a.b, same as (!a.b).
+    """
+    d = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    assert dotted.get(d, '!a.b') == dotted.get(d, '(!a.b)')
+
+
+def test_top_level_negate_multi_key():
+    """
+    Top-level !(a,b) negates multiple keys.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '!(a,b)') == dotted.get(d, '(!(a,b))')
+    assert dotted.get(d, '!(a,b)') == (3,)
+
+
+def test_top_level_negate_conjunction():
+    """
+    Top-level !(a&b) negates a conjunction, same as (!(a&b)).
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '!(a&b)') == dotted.get(d, '(!(a&b))')
+
+
+def test_top_level_negate_wildcard():
+    """
+    Top-level !* negates wildcard — returns nothing.
+    """
+    d = {'a': 1, 'b': 2}
+    assert dotted.get(d, '!*') == ()
+
+
+def test_top_level_negate_vs_paren_negate_then_traverse():
+    """
+    !a.b negates compound path; (!a).b negates a then traverses .b.
+    """
+    d = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    # !a.b == !(a.b) — negate compound path
+    r1 = dotted.get(d, '!a.b')
+    # (!a).b — negate a (gives x:3), then traverse .b on 3 (nothing)
+    r2 = dotted.get(d, '(!a).b')
+    assert r1 != r2
+
+
+# =============================================================================
 # Repr Tests
 # =============================================================================
 
@@ -477,7 +624,81 @@ def test_filter_not_repr():
 
 def test_path_not_repr():
     """
-    PathNot repr shows ! prefix.
+    OpGroupNot repr shows ! prefix.
     """
     ops = dotted.parse('(!a)')
     assert '!' in repr(ops)
+
+
+# =============================================================================
+# Top-level unified expression tests (new syntax enabled by grammar unification)
+# =============================================================================
+
+def test_top_level_conjunction():
+    """
+    a&b at top level produces same result as (a&b).
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, 'a&b') == dotted.get(d, '(a&b)')
+
+
+def test_top_level_disjunction():
+    """
+    a,b at top level produces same result as (a,b).
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, 'a,b') == dotted.get(d, '(a,b)')
+
+
+def test_top_level_negate_and():
+    """
+    !a&b at top level parses as (!a)&b — ! binds tightest.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    r = dotted.get(d, '!a&b')
+    # (!a) = get everything except a = (2, 3)
+    # &b means conjunction: only if b also matches
+    # Result should match (!a)&b
+    assert r == dotted.get(d, '(!a)&b')
+
+
+def test_top_level_negate_compound_and():
+    """
+    !a.b&c.d at top level works as (!a.b)&(c.d).
+    """
+    d = {'a': {'b': 1}, 'c': {'d': 2}, 'e': 3}
+    r = dotted.get(d, '!a.b&c.d')
+    assert r == dotted.get(d, '(!a.b)&(c.d)')
+
+
+def test_top_level_disjunction_compound():
+    """
+    a,b.c at top level: disjunction of a and b.c.
+    """
+    d = {'a': 1, 'b': {'c': 2}, 'x': 3}
+    r = dotted.get(d, 'a,b.c')
+    assert r == dotted.get(d, '(a,b.c)')
+
+
+def test_top_level_cut():
+    """
+    a#,b at top level works with cut marker.
+    """
+    d = {'a': 1, 'b': 2}
+    r = dotted.get(d, 'a#,b')
+    assert r == dotted.get(d, '(a#,b)')
+
+
+def test_top_level_paren_equivalence():
+    """
+    (expr) == expr at top level — parens are just grouping.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    # Simple disjunction
+    assert dotted.get(d, '(a,b)') == dotted.get(d, 'a,b')
+    # Conjunction
+    assert dotted.get(d, '(a&b)') == dotted.get(d, 'a&b')
+    # Negation
+    assert dotted.get(d, '(!a)') == dotted.get(d, '!a')
+    # Negation of conjunction
+    assert dotted.get(d, '(!(a&b))') == dotted.get(d, '!(a&b)')

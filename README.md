@@ -76,7 +76,7 @@ Or pick only what you need:
   - [Recursive match](#recursive-match)
 - [Grouping](#grouping)
   - [Path grouping](#path-grouping)
-  - [Operation grouping](#operation-grouping)
+  - [Precedence](#precedence)
 - [Operators](#operators)
   - [The append `+` operator](#the-append--operator)
   - [The append-unique `+?` operator](#the-append-unique--operator)
@@ -126,8 +126,8 @@ instead of raising an exception:
 
     >>> import dotted
     >>> d = {'a': {'b': 1}}
-    >>> dotted.get(d, 'a.b.c.d.e')  # path doesn't exist
-    None
+    >>> dotted.get(d, 'a.b.c.d.e') is None  # path doesn't exist
+    True
     >>> dotted.get(d, 'a.b.c.d.e', 'default')  # with default
     'default'
     >>> dotted.get(d, 'x.y.z', 42)  # missing from the start
@@ -170,7 +170,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
 - Recursive traversal with `**` (any depth) and `*key` (chain-following), with Python-style depth slicing
-- Path grouping `(a,b).c` and operation grouping `prefix(.a,.b)` for multi-access
+- Path grouping `(a,b).c` / `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
 - **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(**:-2(.*, [])##, *)` for "recurse into containers, fall back to `*` for the rest"
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
@@ -425,14 +425,14 @@ is immutable.
     False
     >>> dotted.mutable((1, 2), '[0]')          # tuple is immutable
     False
-    >>> dotted.mutable({'a': (1, 2)}, 'a[0]')  # nested tuple
-    False
+    >>> dotted.mutable({'a': (1, 2)}, 'a[0]')  # nested tuple (dict is mutable)
+    True
 
 This is useful when you need to know whether to use the return value:
 
     >>> data = {'a': 1}
     >>> if dotted.mutable(data, 'a'):
-    ...     dotted.update(data, 'a', 2)  # mutates in place
+    ...     _ = dotted.update(data, 'a', 2)  # mutates in place
     ... else:
     ...     data = dotted.update(data, 'a', 2)  # use return value
 
@@ -690,14 +690,16 @@ Chaining works naturally:
 
 Updates and removes also work:
 
-    >>> dotted.update(data, 'users.0.name', 'ALICE')
+    >>> _ = dotted.update(data, 'users.0.name', 'ALICE')
     >>> dotted.get(data, 'users.0.name')
     'ALICE'
 
 **Note**: When _creating_ structures, use bracket notation for lists:
 
-    >>> dotted.build({}, 'items.0')    # creates dict: {'items': {0: None}}
-    >>> dotted.build({}, 'items[0]')   # creates list: {'items': [None]}
+    >>> dotted.build({}, 'items.0')     # dot notation creates dict
+    {'items': {0: None}}
+    >>> dotted.build({}, 'items[0]')   # bracket notation creates list
+    {'items': [None]}
 
 <a id="empty-path-root-access"></a>
 ### Empty path (root access)
@@ -730,8 +732,8 @@ Compare with a normal path which mutates:
 Other empty path operations:
 
     >>> data = {'a': 1, 'b': 2}
-    >>> dotted.remove(data, '')
-    None
+    >>> dotted.remove(data, '') is None
+    True
     >>> dotted.expand(data, '')
     ('',)
     >>> dotted.pluck(data, '')
@@ -876,12 +878,12 @@ type of slice operation. Whereas, patterns _iterate_ through items:
 
 Chaining after a slice accesses the result itself, not the items within it:
 
-    >>> dotted.get(data, '[1:3].name')           # accessing .name on the list
-    None
-    >>> dotted.get(data, '[name="alice"].name')  # also accessing .name on the list
-    None
-    >>> dotted.get(data, '[].name')              # .name on a raw list
-    None
+    >>> dotted.get(data, '[1:3].name') is None           # accessing .name on the list
+    True
+    >>> dotted.get(data, '[name="alice"].name') is None  # also accessing .name on the list
+    True
+    >>> dotted.get(data, '[].name') is None              # .name on a raw list
+    True
 
 To chain through the items, use a pattern instead:
 
@@ -1010,50 +1012,62 @@ chains of a specific key:
 <a id="path-grouping"></a>
 ### Path grouping
 
-Use parentheses to group keys that share a common prefix or suffix:
+Parentheses group operations that branch from a common point. Each branch
+is a full operation chain—keys, slots, attrs, and further groups can all
+appear inside. Branches are combined using `,` (disjunction), `&`
+(conjunction), and `!` (negation).
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'c': 3}
 
-    # Group keys
-    >>> dotted.get(d, '(a,b)')
+    >>> dotted.get(d, '(a,b)')        # , — get a and b
     (1, 2)
-
-    # With a shared suffix
-    >>> d = {'x': {'val': 1}, 'y': {'val': 2}}
-    >>> dotted.get(d, '(x,y).val')
+    >>> dotted.get(d, '(a&b)')        # & — get a and b only if both exist
     (1, 2)
+    >>> dotted.get(d, '(!a)')         # ! — get everything except a
+    (2, 3)
 
-Path grouping is syntactic sugar for [operation grouping](#operation-grouping)
-where each branch is a single key—`(a,b).c` is equivalent to `(.a,.b).c`. All
-operators (disjunction, conjunction, negation, cut `#`, soft cut `##`,
-first-match `?`) work the same way; see operation grouping for full details.
+The three **access ops**—`.` (key), `@` (attr), `[]` (slot)—are what
+actually look up a child value.  Modifiers like `!` (negation) and `~`
+(nop) wrap or filter but don't access anything themselves.
 
-<a id="operation-grouping"></a>
-### Operation grouping
+At top level, bare keys infer `.`, so `(a,b)` is equivalent to `(.a,.b)`:
 
-Use parentheses to group **operation sequences** that diverge from a common point.
-Each branch is a full operation chain including dots, brackets, and attrs:
+    >>> dotted.get(d, 'a,b')          # same as (a,b) and (.a,.b)
+    (1, 2)
+    >>> dotted.get(d, '!a')           # same as (!a) and (!.a)
+    (2, 3)
 
-    >>> import dotted
+Parentheses are needed to continue after the group (`(a,b).c`) or to
+nest groups inside paths.
 
-    # Mix different operation types from a common prefix
-    >>> d = {'items': [10, 20, 30]}
-    >>> dotted.get(d, 'items(.0,[])')
-    (10, [10, 20, 30])
+#### Mid-path groups
 
-    # Nested paths in branches
-    >>> d = {'x': {'a': {'i': 1}, 'b': {'k': 3}}}
-    >>> dotted.get(d, 'x(.a.i,.b.k)')
-    (1, 3)
+Mid-path groups—groups that follow another operation—come in two forms.
 
-Operation groups support these operators:
+**Prefix shorthand** — the access op sits outside the parentheses and
+distributes to every branch.  Branches are bare keys (no access ops
+inside):
 
-| Syntax | Meaning | Behavior |
-|--------|---------|----------|
-| `(.a,.b)` | Disjunction (OR) | Returns all values that exist |
-| `(.a&.b)` | Conjunction (AND) | Returns values only if ALL branches exist |
-| `(!.a)` | Negation (NOT) | Returns values for keys NOT matching |
+| Shorthand | Equivalent |
+|-----------|------------|
+| `a.(b,c)` | `a(.b,.c)` |
+| `a.(!b)` | `a(!.b)` |
+| `@obj@(x,y)` | `@obj(@x,@y)` |
+| `items[(0,1)]` | `items([0],[1])` |
+
+**Explicit** — no prefix; every branch specifies its own access op.
+Branches can mix different access ops freely:
+
+| Example | Meaning |
+|---------|---------|
+| `a(.b,.c)` | Keys `b` and `c` from `a` |
+| `a(.b,@b)` | Key `b` and attr `b` from `a` |
+| `a(!.secret)` | Everything except key `secret` |
+| `a(.x.y,[0].z)` | Key path `x.y` and slot `0` then key `z` |
+
+The rule is simple: if an access op floats down from a prefix, you
+can't specify one; otherwise, you must.
 
 #### Disjunction (OR)
 
@@ -1148,9 +1162,18 @@ Use `!` prefix to exclude keys matching a pattern:
 
     >>> import dotted
 
-    # Exclude single key - get user fields except password
+    # Exclude a single key at top level
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.get(d, '!a')
+    (2, 3)
+
+    # Exclude single key — explicit form (access op on every branch)
     >>> user = {'email': 'a@x.com', 'name': 'alice', 'password': 'secret'}
     >>> sorted(dotted.get({'user': user}, 'user(!.password)'))
+    ['a@x.com', 'alice']
+
+    # Same thing — shorthand form (access op distributes from prefix)
+    >>> sorted(dotted.get({'user': user}, 'user.(!password)'))
     ['a@x.com', 'alice']
 
     # Works with lists too
@@ -1166,6 +1189,31 @@ Updates and removes apply to all non-matching keys:
     {'a': {'x': 1}}
 
 **Note**: For De Morgan's law with filter expressions, see the Filters section below.
+
+<a id="precedence"></a>
+### Precedence
+
+Access ops (`.`, `@`, `[]`) bind tightest—they build compound paths
+before any operator sees them. Then `!`, then `&`, then `,`:
+
+| Precedence | Operator | Example |
+|------------|----------|---------|
+| tightest   | `.` `@` `[]` (access ops) | `a.b` is one path |
+|            | `!` (negation) | `!a.b` = `!(a.b)` |
+|            | `&` (conjunction) | `!a&b` = `(!a)&b` |
+| loosest    | `,` (disjunction) | `!a&b,c` = `((!a)&b),c` |
+
+    >>> d = {'a': 1, 'b': 2, 'c': 3}
+    >>> dotted.get(d, '!a&b,c')       # parsed as ((!a)&b), c
+    (2, 3, 2, 3)
+
+Since `.` binds tightest, `!a.b&c` is `(!a.b) & c`, not `!(a.b&c)`:
+
+    >>> d = {'a': {'b': 1}, 'c': 2, 'x': 3}
+    >>> dotted.get(d, '!a.b&c')       # (!a.b)&c — negate a.b, conjoin with c
+    (2, 3, 2)
+    >>> dotted.get(d, '!(a.b&c)')     # negate the conjunction as a unit
+    (3,)
 
 <a id="operators"></a>
 ## Operators
@@ -1224,19 +1272,20 @@ NOP applies only to the segment it wraps; child segments are unaffected.
 | `[~*]` or `~[*]` | NOP on slot (canonical: `[~stuff]`) |
 | `@~attr` or `~@attr` | NOP on attr |
 
-    >>> data = {'a': {'b': 1}}
-    >>> dotted.update(data, '~a.b', 2)   # NOP at a, update .b
+    >>> dotted.update({'a': {'b': 1}}, '~a.b', 2)   # NOP at a, update .b
     {'a': {'b': 2}}
-    >>> dotted.update(data, 'a.~b', 2)   # NOP at b, no change
+    >>> dotted.update({'a': {'b': 1}}, 'a.~b', 2)   # NOP at b, no change
     {'a': {'b': 1}}
 
 Combine NOP with cut (`#`) for "update only if missing" semantics—if the NOP
 branch matches, cut commits to it and skips the remaining branches:
 
+    >>> # first existed — NOP branch matched and cut
     >>> dotted.update({'name': {'first': 'alice'}}, '(name.~first#, name.first)', 'bob')
-    {'name': {'first': 'alice'}}   # first existed, NOP branch matched and cut
+    {'name': {'first': 'alice'}}
+    >>> # first missing — fell through to update branch
     >>> dotted.update({'name': {}}, '(name.~first#, name.first)', 'bob')
-    {'name': {'first': 'bob'}}     # first missing, fell through to update branch
+    {'name': {'first': 'bob'}}
 
 <a id="the-cut--operator"></a>
 ### The cut `#` operator
@@ -1397,6 +1446,7 @@ Groups can be nested for complex logic:
 
     # ((id=1 OR id=2) AND type='a') OR id=4
     >>> dotted.get(data, '[((id=1,id=2)&type="a"),id=4]')
+    [{'id': 1, 'type': 'a', 'active': True}]
 
 Precedence: `&` (AND) binds tighter than `,` (OR). Use parentheses when you need
 OR groups inside AND expressions.
@@ -1523,7 +1573,7 @@ the item values directly. For primitive lists, use `[*]=value`.
 **Note**: Python equality applies, so `1 == True` and `0 == False`:
 
     >>> dotted.get([True, 1, False, 0], '[*]=True')
-    (True, True, 1)
+    (True, 1)
 
 <a id="container-filter-values"></a>
 ### Container filter values
@@ -1547,9 +1597,9 @@ regex, and full nesting.
     >>> dotted.get(d, '*=[1, *, 3]')
     ([1, 2, 3],)
 
-    # Glob: ... matches zero or more elements
+    # Glob: ... matches zero or more elements ([] matches list and tuple)
     >>> dotted.get(d, '*=[1, ...]')
-    ([1, 2, 3],)
+    ([1, 2, 3], (1, 2))
 
     # Empty list matches any empty list or tuple
     >>> dotted.get({'a': [], 'b': [1]}, '*=[]')
@@ -1625,7 +1675,7 @@ In dicts, `...` appears on the key side:
 
     >>> d = {'user_a': 1, 'user_b': 2, 'admin': 3}
     >>> dotted.get({'x': d}, 'x={.../user_.*/: *, ...: *}')
-    ({'user_a': 1, 'user_b': 2, 'admin': 3},)
+    {'user_a': 1, 'user_b': 2, 'admin': 3}
 
 #### Nested containers
 
@@ -1830,9 +1880,9 @@ Filter keys can include slice notation so the comparison applies to a slice of t
     ...     {'name': 'hello', 'file': 'x.py'},
     ... ]
     >>> dotted.get(data, '[*&name[:5]="hello"]')
-    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
+    ({'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'})
     >>> dotted.get(data, '[*&file[-3:]=".py"]')
-    [{'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'}]
+    ({'name': 'hello world', 'file': 'app.py'}, {'name': 'hello', 'file': 'x.py'})
 
 <a id="transforms"></a>
 ## Transforms
@@ -1983,7 +2033,7 @@ Raised when dotted notation cannot be parsed:
     >>> dotted.get({}, '[invalid')
     Traceback (most recent call last):
     ...
-    dotted.api.ParseError: Expected ']' at pos 8: '[invalid'
+    dotted.api.ParseError: Invalid dotted notation: ...
 
 <a id="cli-dq"></a>
 ## CLI (`dq`)
@@ -2114,7 +2164,7 @@ example, removing an entire group without listing every key:
 `get()` returns a **single value** for a non-pattern path and a **tuple of values** for a pattern path. A path is a pattern if:
 
 - Any path segment is a pattern (e.g. wildcard `*`, regex), or
-- The path uses operation or path grouping: disjunction `(.a,.b)` / `(a,b)`, conjunction `(.a&.b)` / `(a&b)`, or negation `(!.a)` / `(!a)`.
+- The path uses path grouping: disjunction `(a,b)`, conjunction `(a&b)`, or negation `(!a)`.
 
 Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&first=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None." Value guards (e.g. `name.first=None`) also preserve the pattern/non-pattern status of the underlying path segment.
 
