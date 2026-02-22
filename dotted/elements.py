@@ -112,14 +112,15 @@ class Frame:
     """
     Stack frame for the traversal engine.
     """
-    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths')
+    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'kwargs')
 
-    def __init__(self, ops, node, prefix, depth=0, seen_paths=None):
+    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, **kwargs):
         self.ops = ops
         self.node = node
         self.prefix = prefix
         self.depth = depth
         self.seen_paths = seen_paths
+        self.kwargs = kwargs
 
 
 class DepthStack:
@@ -951,7 +952,7 @@ class OpGroupOr(OpGroup):
             is_softcut = marker is _BRANCH_SOFTCUT
             use_paths = paths or bool(softcut_paths) or is_softcut
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
             found = False
             for path, val in _process(stack, use_paths):
                 if path is _CUT_SENTINEL:
@@ -970,7 +971,7 @@ class OpGroupOr(OpGroup):
                 return results
         return results
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         matched_any = False
         br = self.branches
         softcut_paths = []
@@ -983,7 +984,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in walk(branch_ops, node, paths=True):
+            for path, _ in walk(branch_ops, node, paths=True, **kwargs):
                 if path is _CUT_SENTINEL:
                     break
                 if softcut_paths and path and _path_overlaps(softcut_paths, path):
@@ -997,16 +998,16 @@ class OpGroupOr(OpGroup):
             if softcut_paths:
                 branch_nop = nop or any(isinstance(op, NopWrap) for op in item)
                 for path in paths:
-                    node = updates(list(path), node, val, has_defaults, _path, branch_nop)
+                    node = updates(list(path), node, val, has_defaults, _path, branch_nop, **kwargs)
             else:
-                node = updates(branch_ops, node, val, has_defaults, _path, nop)
+                node = updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
             if marker is _BRANCH_CUT:
                 return node
         if not matched_any:
-            return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop)
+            return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
         return node
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         br = self.branches
         softcut_paths = []
         for i in range(len(br)):
@@ -1018,7 +1019,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in walk(branch_ops, node, paths=True):
+            for path, _ in walk(branch_ops, node, paths=True, **kwargs):
                 if path is _CUT_SENTINEL:
                     break
                 if softcut_paths and path and _path_overlaps(softcut_paths, path):
@@ -1030,9 +1031,9 @@ class OpGroupOr(OpGroup):
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
                 for path in paths:
-                    node = removes(list(path), node, val)
+                    node = removes(list(path), node, val, **kwargs)
             else:
-                node = removes(branch_ops, node, val)
+                node = removes(branch_ops, node, val, **kwargs)
             if marker is _BRANCH_CUT:
                 return node
         return node
@@ -1077,29 +1078,29 @@ class OpGroupFirst(OpGroup):
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
             for pair in _process(stack, paths):
                 stack.pop_level()
                 return [pair]
             stack.pop_level()
         return ()
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         for branch in _branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if _has_any(gets(branch_ops, node)):
-                return updates(branch_ops, node, val, has_defaults, _path, nop)
-        return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop)
+            if _has_any(gets(branch_ops, node, **kwargs)):
+                return updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+        return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         for branch in _branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if _has_any(gets(branch_ops, node)):
-                return removes(branch_ops, node, val)
+            if _has_any(gets(branch_ops, node, **kwargs)):
+                return removes(branch_ops, node, val, **kwargs)
         return node
 
 
@@ -1151,7 +1152,7 @@ class OpGroupAnd(OpGroup):
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
             branch_results = list(_process(stack, paths))
             stack.pop_level()
             if not branch_results:
@@ -1159,7 +1160,7 @@ class OpGroupAnd(OpGroup):
             all_results.extend(branch_results)
         return all_results
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
@@ -1169,20 +1170,20 @@ class OpGroupAnd(OpGroup):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = updates(branch_ops, node, val, has_defaults, _path, nop)
+                node = updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
         return node
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if not _has_any(gets(branch_ops, node)):
+            if not _has_any(gets(branch_ops, node, **kwargs)):
                 return node
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = removes(branch_ops, node, val)
+                node = removes(branch_ops, node, val, **kwargs)
         return node
 
 
@@ -1230,7 +1231,7 @@ class OpGroupNot(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
-    def _not_items(self, node):
+    def _not_items(self, node, **kwargs):
         """
         Yield (key, value) pairs for keys NOT excluded by the inner pattern.
 
@@ -1243,7 +1244,7 @@ class OpGroupNot(OpGroup):
         first_op = inner[0]
         leaf = first_op.leaf_op()
         excluded = first_op.excluded_keys(node)
-        for k, v in leaf.items(node, filtered=False):
+        for k, v in leaf.items(node, filtered=False, **kwargs):
             if k not in excluded:
                 yield (k, v)
 
@@ -1252,35 +1253,35 @@ class OpGroupNot(OpGroup):
         if not inner:
             return ()
         leaf = inner[0].leaf_op()
-        children = list(self._not_items(frame.node))
+        children = list(self._not_items(frame.node, **frame.kwargs))
         for k, v in reversed(children):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
-            stack.push(Frame(frame.ops, v, cp))
+            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
         return ()
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         inner = self.inner
         if not inner:
             return node
         leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
-        for k, v in self._not_items(node):
+        for k, v in self._not_items(node, **kwargs):
             if remaining_ops:
-                node = leaf.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop))
+                node = leaf.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, **kwargs))
             else:
                 node = leaf.update(node, k, val)
         return node
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         inner = self.inner
         if not inner:
             return node
         leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
-        items = list(self._not_items(node))
+        items = list(self._not_items(node, **kwargs))
         for k, v in reversed(items):
             if remaining_ops:
-                node = leaf.update(node, k, removes(remaining_ops, v, val))
+                node = leaf.update(node, k, removes(remaining_ops, v, val, **kwargs))
             else:
                 node = leaf.pop(node, k)
         return node
@@ -1480,32 +1481,40 @@ class BaseOp(TraversalOp):
             items = f.filtered(items)
         return items
 
-    def keys(self, node):
-        return (k for k, _ in self.items(node))
+    def keys(self, node, **kwargs):
+        return (k for k, _ in self.items(node, **kwargs))
 
-    def values(self, node):
-        return (v for _, v in self.items(node))
+    def values(self, node, **kwargs):
+        return (v for _, v in self.items(node, **kwargs))
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         if not ops:
-            return node if nop else self.upsert(node, val)
+            if nop:
+                return node
+            if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
+                return node
+            return self.upsert(node, val)
         if self.is_empty(node) and not has_defaults:
             if nop or isinstance(ops[0], NopWrap):
                 return node
-            built = updates(ops, build_default(ops), val, True, _path, nop)
+            built = updates(ops, build_default(ops), val, True, _path, nop, **kwargs)
             return self.upsert(node, built)
         pass_nop = nop and not nop_from_unwrap
-        for k, v in self.items(node):
+        for k, v in self.items(node, **kwargs):
             if v is None:
                 v = build_default(ops)
-            node = self.update(node, k, updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop))
+            node = self.update(node, k, updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **kwargs))
         return node
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         if not ops:
-            return node if nop else self.remove(node, val)
-        for k, v in self.items(node):
-            node = self.update(node, k, removes(ops, v, val, nop=False))
+            if nop:
+                return node
+            if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
+                return node
+            return self.remove(node, val)
+        for k, v in self.items(node, **kwargs):
+            node = self.update(node, k, removes(ops, v, val, nop=False, **kwargs))
         return node
 
 
@@ -1520,10 +1529,10 @@ class SimpleOp(BaseOp):
         Push matching children onto the traversal stack.
         Reverse order so first match is popped first (LIFO).
         """
-        children = list(self.items(frame.node))
+        children = list(self.items(frame.node, **frame.kwargs))
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-            stack.push(Frame(frame.ops, v, cp))
+            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
         return ()
 
 
@@ -1552,20 +1561,20 @@ class Empty(SimpleOp):
     def operator(self, top=False):
         return self.__repr__()
 
-    def items(self, node):
+    def items(self, node, **kwargs):
         """
         Yield the root as a single item with empty key.
         """
         for v in self.filtered((node,)):
             yield ('', v)
 
-    def keys(self, node):
+    def keys(self, node, **kwargs):
         """
         Yield empty string as the 'key' for root.
         """
-        return (k for k, _ in self.items(node))
+        return (k for k, _ in self.items(node, **kwargs))
 
-    def values(self, node):
+    def values(self, node, **kwargs):
         return self.filtered((node,))
 
     def default(self):
@@ -1675,11 +1684,14 @@ class Key(AccessOp):
 
         return _items()
 
-    def items(self, node, filtered=True):
+    def items(self, node, filtered=True, **kwargs):
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
             keys = self.op.matches(node.keys()) if filtered else node.keys()
             return self._items(node, keys, filtered)
+        # In strict mode, numeric keys never coerce to list indices
+        if kwargs.get('strict'):
+            return ()
         # Key only handles lists with concrete numeric keys
         if not hasattr(node, '__getitem__'):
             return ()
@@ -1757,8 +1769,8 @@ class Key(AccessOp):
         except TypeError:
             pass
         return type(node)((k, v) for k, v in node.items() if k != key)
-    def remove(self, node, val):
-        to_remove = [k for k, v in self.items(node) if val is ANY or v == val]
+    def remove(self, node, val, **kwargs):
+        to_remove = [k for k, v in self.items(node, **kwargs) if val is ANY or v == val]
         for k in to_remove:
             node = self.pop(node, k)
         return node
@@ -1797,7 +1809,7 @@ class Attr(Key):
 
         return _items()
 
-    def items(self, node, filtered=True):
+    def items(self, node, filtered=True, **kwargs):
         # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
             all_keys = node.__dict__.keys()
@@ -1864,8 +1876,8 @@ class Attr(Key):
             pass
         return node
 
-    def remove(self, node, val):
-        to_remove = [k for k, v in self.items(node) if val is ANY or v == val]
+    def remove(self, node, val, **kwargs):
+        to_remove = [k for k, v in self.items(node, **kwargs) if val is ANY or v == val]
         for k in to_remove:
             self.pop(node, k)
         return node
@@ -1894,9 +1906,11 @@ class Slot(Key):
             iterable = itertools.chain((q,), iterable)
         return '[' + '.'.join(iterable) + ']'
 
-    def items(self, node, filtered=True):
+    def items(self, node, filtered=True, **kwargs):
         if hasattr(node, 'keys'):
-            return super().items(node, filtered)
+            if kwargs.get('strict'):
+                return ()
+            return super().items(node, filtered, **kwargs)
 
         if not hasattr(node, '__getitem__'):
             return ()
@@ -2019,7 +2033,7 @@ class SlotSpecial(Slot):
     def default(self):
         return []
 
-    def items(self, node):
+    def items(self, node, **kwargs):
         try:
             yield -1, node[-1]
         except (TypeError, IndexError):
@@ -2073,7 +2087,7 @@ class SliceFilter(BaseOp):
             return None
         return super().match(op)
 
-    def items(self, node):
+    def items(self, node, **kwargs):
         for idx, v in enumerate(node):
             if any(True for _ in self.filtered((v,))):
                 yield (idx, v)
@@ -2084,8 +2098,8 @@ class SliceFilter(BaseOp):
     def update(self, node, key, val):
         raise RuntimeError('Updates not supported for slice filtering')
 
-    def remove(self, node, val):
-        removes = [idx for idx, _ in self.items(node)]
+    def remove(self, node, val, **kwargs):
+        removes = [idx for idx, _ in self.items(node, **kwargs)]
 
         if not removes:
             return node
@@ -2122,7 +2136,7 @@ class SliceFilter(BaseOp):
         """
         filtered = type(frame.node)(self.filtered(frame.node))
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
-        stack.push(Frame(frame.ops, filtered, cp))
+        stack.push(Frame(frame.ops, filtered, cp, **frame.kwargs))
         return ()
 
 
@@ -2184,16 +2198,16 @@ class Slice(SimpleOp):
             return 1 << 64
         return max(0, int((stop - start) / step))
 
-    def keys(self, node):
+    def keys(self, node, **kwargs):
         return (self.slice(node),)
-    def items(self, node):
-        for k in self.keys(node):
+    def items(self, node, **kwargs):
+        for k in self.keys(node, **kwargs):
             try:
                 yield (k, node[k])
             except (TypeError, KeyError, IndexError):
                 pass
-    def values(self, node):
-        return (v for _, v in self.items(node))
+    def values(self, node, **kwargs):
+        return (v for _, v in self.items(node, **kwargs))
     def is_empty(self, node):
         return not node[self.slice(node)]
     def default(self):
@@ -2270,19 +2284,19 @@ class Invert(SimpleOp):
         return '-'
     def match(self, op, specials=False):
         return MatchResult('-') if isinstance(op, Invert) else None
-    def items(self, node):
+    def items(self, node, **kwargs):
         yield ('-', node)
-    def keys(self, node):
+    def keys(self, node, **kwargs):
         yield '-'
-    def values(self, node):
+    def values(self, node, **kwargs):
         yield node
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
-        return removes(ops, node, val)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+        return removes(ops, node, val, **kwargs)
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         assert val is not ANY, 'Value required'
-        return updates(ops, node, val)
+        return updates(ops, node, val, **kwargs)
 
 
 class Wrap(TraversalOp):
@@ -2334,11 +2348,11 @@ class NopWrap(Wrap):
     def upsert(self, node, val):
         return self.inner.upsert(node, val) if hasattr(self.inner, 'upsert') else val
 
-    def items(self, node):
-        return self.inner.items(node) if hasattr(self.inner, 'items') else iter(())
+    def items(self, node, **kwargs):
+        return self.inner.items(node, **kwargs) if hasattr(self.inner, 'items') else iter(())
 
-    def values(self, node):
-        return self.inner.values(node) if hasattr(self.inner, 'values') else iter(())
+    def values(self, node, **kwargs):
+        return self.inner.values(node, **kwargs) if hasattr(self.inner, 'values') else iter(())
 
     def is_empty(self, node):
         return self.inner.is_empty(node) if hasattr(self.inner, 'is_empty') else True
@@ -2357,11 +2371,11 @@ class NopWrap(Wrap):
     def push_children(self, stack, frame, paths):
         return self.inner.push_children(stack, frame, paths)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False):
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, **kwargs)
 
-    def do_remove(self, ops, node, val, nop):
-        return self.inner.do_remove(ops, node, val, nop=True)
+    def do_remove(self, ops, node, val, nop, **kwargs):
+        return self.inner.do_remove(ops, node, val, nop=True, **kwargs)
 
 
 def _guard_repr(guard):
@@ -2416,14 +2430,14 @@ class ValueGuard(Wrap):
     def is_empty(self, node):
         return self.inner.is_empty(node)
 
-    def values(self, node):
-        return (v for v in self.inner.values(node) if self._guard_matches(v))
+    def values(self, node, **kwargs):
+        return (v for v in self.inner.values(node, **kwargs) if self._guard_matches(v))
 
-    def items(self, node):
-        return ((k, v) for k, v in self.inner.items(node) if self._guard_matches(v))
+    def items(self, node, **kwargs):
+        return ((k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
 
-    def keys(self, node):
-        return (k for k, v in self.inner.items(node) if self._guard_matches(v))
+    def keys(self, node, **kwargs):
+        return (k for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
 
     def upsert(self, node, val):
         # Only update entries where guard matches
@@ -2438,9 +2452,9 @@ class ValueGuard(Wrap):
     def update(self, node, key, val):
         return self.inner.update(node, key, val)
 
-    def remove(self, node, val):
+    def remove(self, node, val, **kwargs):
         # Only remove entries where guard matches
-        to_remove = [(k, v) for k, v in self.inner.items(node) if self._guard_matches(v)]
+        to_remove = [(k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v)]
         for k, v in reversed(to_remove):
             if val is ANY or v == val:
                 node = self.inner.pop(node, k)
@@ -2465,28 +2479,28 @@ class ValueGuard(Wrap):
         Recursive: collect matches from inner, filter by guard, push survivors.
         """
         if not self.inner.is_recursive():
-            children = list(self.items(frame.node))
+            children = list(self.items(frame.node, **frame.kwargs))
             for k, v in reversed(children):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.push(Frame(frame.ops, v, cp))
+                stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
             return ()
         matches = [(cp, v) for cp, v in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix) if self._guard_matches(v)]
+            frame.node, paths, prefix=frame.prefix, **frame.kwargs) if self._guard_matches(v)]
         for cp, v in reversed(matches):
-            stack.push(Frame(frame.ops, v, cp))
+            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
         return ()
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
         if self.inner.is_recursive():
             return self.inner._update_recursive(
-                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches)
-        return BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop)
+                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches, **kwargs)
+        return BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)
 
-    def do_remove(self, ops, node, val, nop):
+    def do_remove(self, ops, node, val, nop, **kwargs):
         if self.inner.is_recursive():
             return self.inner._remove_recursive(
-                ops, node, val, nop, guard=self._guard_matches)
-        return BaseOp.do_remove(self, ops, node, val, nop)
+                ops, node, val, nop, guard=self._guard_matches, **kwargs)
+        return BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
 
 
 class Recursive(BaseOp):
@@ -2582,7 +2596,7 @@ class Recursive(BaseOp):
             return self.accessors
         return ((Key(self.inner),),)
 
-    def _iter_node(self, node):
+    def _iter_node(self, node, **kwargs):
         """
         Yield (accessor, key, value) for all matching accessors on this node.
         Respects hard cuts: if a cut-marked branch matched, stop.
@@ -2599,7 +2613,7 @@ class Recursive(BaseOp):
                 continue
             acc = item[0]
             matched = False
-            for k, v in acc.items(node):
+            for k, v in acc.items(node, **kwargs):
                 matched = True
                 yield acc, k, v
             if matched and i + 1 < len(branches) and branches[i + 1] is _BRANCH_CUT:
@@ -2660,7 +2674,7 @@ class Recursive(BaseOp):
             return eff_start <= depth <= stop
         return depth >= eff_start
 
-    def _max_depth_to_leaf(self, node, seen=frozenset()):
+    def _max_depth_to_leaf(self, node, seen=frozenset(), **kwargs):
         """
         Compute max depth to leaf from this node (structural, ignores filters/depth range).
         Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
@@ -2669,13 +2683,13 @@ class Recursive(BaseOp):
         if node_id in seen:
             return 0
         seen = seen | {node_id}
-        items = list(self._iter_node(node))
+        items = list(self._iter_node(node, **kwargs))
         if not items:
             return 0
-        child_depths = [self._max_depth_to_leaf(v, seen) for _, _, v in items]
+        child_depths = [self._max_depth_to_leaf(v, seen, **kwargs) for _, _, v in items]
         return max(child_depths) + 1 if child_depths else 0
 
-    def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset()):
+    def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset(), **kwargs):
         """
         Yield (prefix, value) for all nodes matching the recursive pattern.
 
@@ -2687,26 +2701,26 @@ class Recursive(BaseOp):
         if node_id in seen:
             return
         seen = seen | {node_id}
-        items = list(self._iter_node(node))
+        items = list(self._iter_node(node, **kwargs))
         if not items:
             return
 
         for acc, k, v in items:
             cp = prefix + (acc.concrete(k),) if paths else prefix
             if not any(True for _ in self.filtered((v,))):
-                yield from self._collect_matches(v, paths, depth + 1, cp, seen)
+                yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
                 continue
-            max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
+            max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), **kwargs) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
-                yield from self._collect_matches(v, paths, depth + 1, cp, seen)
+                yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
                 continue
             yield (cp, v)
-            yield from self._collect_matches(v, paths, depth + 1, cp, seen)
+            yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
 
     def push_children(self, stack, frame, paths):
-        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix))
+        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, **frame.kwargs))
         for cp, v in reversed(matches):
-            stack.push(Frame(frame.ops, v, cp))
+            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
         return ()
 
     def _assign(self, acc, node, k, v):
@@ -2718,18 +2732,18 @@ class Recursive(BaseOp):
         node[k] = v
         return node
 
-    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset()):
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
         node_id = id(node)
         if node_id in seen:
             return node
         seen = seen | {node_id}
-        items = list(self._iter_node(node))
+        items = list(self._iter_node(node, **kwargs))
         if not items:
             return node
 
         for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen)
+            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, **kwargs)
             node = self._assign(acc, node, k, v)
             if not any(True for _ in self.filtered((v,))):
                 continue
@@ -2739,27 +2753,27 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, updates(ops, v, val, has_defaults, _path + [(self, k)], nop))
+                node = self._assign(acc, node, k, updates(ops, v, val, has_defaults, _path + [(self, k)], nop, **kwargs))
             elif not nop:
                 node = self._assign(acc, node, k, val)
         return node
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop):
-        return self._update_recursive(ops, node, val, has_defaults, _path, nop)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop, **kwargs)
 
-    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset()):
+    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
         node_id = id(node)
         if node_id in seen:
             return node
         seen = seen | {node_id}
-        items = list(self._iter_node(node))
+        items = list(self._iter_node(node, **kwargs))
         if not items:
             return node
 
         to_remove = []
         for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen)
+            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen, **kwargs)
             node = self._assign(acc, node, k, v)
             if not any(True for _ in self.filtered((v,))):
                 continue
@@ -2769,7 +2783,7 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, removes(ops, v, val, nop=False))
+                node = self._assign(acc, node, k, removes(ops, v, val, nop=False, **kwargs))
             elif not nop:
                 to_remove.append((acc, k))
         for acc, k in reversed(to_remove):
@@ -2779,8 +2793,8 @@ class Recursive(BaseOp):
                 del node[k]
         return node
 
-    def do_remove(self, ops, node, val, nop):
-        return self._remove_recursive(ops, node, val, nop)
+    def do_remove(self, ops, node, val, nop, **kwargs):
+        return self._remove_recursive(ops, node, val, nop, **kwargs)
 
 
 class RecursiveFirst(Recursive):
@@ -2797,8 +2811,8 @@ class RecursiveFirst(Recursive):
         return s + '?'
 
     def push_children(self, stack, frame, paths):
-        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix):
-            stack.push(Frame(frame.ops, v, cp))
+        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix, **frame.kwargs):
+            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
             return ()
         return ()
 
@@ -2996,14 +3010,14 @@ def build_default(ops):
     return cur.upsert(built, build_default(ops))
 
 
-def build(ops, node, deepcopy=True):
+def build(ops, node, deepcopy=True, **kwargs):
     cur, *ops = ops
     built = node.__class__()
-    for k,v in cur.items(node):
+    for k,v in cur.items(node, **kwargs):
         if not ops:
             built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
         else:
-            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy))
+            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy, **kwargs))
     return built or build_default([cur]+ops)
 
 
@@ -3035,21 +3049,21 @@ def _process(stack, paths):
         yield from op.push_children(stack, frame, paths)
 
 
-def walk(ops, node, paths=True):
+def walk(ops, node, paths=True, **kwargs):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
     stack = DepthStack()
-    stack.push(Frame(ops, node, ()))
+    stack.push(Frame(ops, node, (), **kwargs))
     yield from _process(stack, paths)
 
 
-def gets(ops, node):
+def gets(ops, node, **kwargs):
     """
     Yield values for all matches. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, paths=False):
+    for path, val in walk(ops, node, paths=False, **kwargs):
         if path is _CUT_SENTINEL:
             yield _CUT_SENTINEL
         else:
@@ -3120,7 +3134,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
 
 
 
-def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop):
+def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwargs):
     """
     When nothing matches in disjunction: update first concrete path (last to first).
     """
@@ -3129,11 +3143,11 @@ def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop):
         if not branch_ops:
             continue
         if _is_concrete_path(branch_ops):
-            return updates(branch_ops, node, val, has_defaults, _path, nop)
+            return updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
     return node
 
 
-def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -3144,19 +3158,19 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False):
             "use a dict, list, or other container"
         )
     cur, *ops = ops
-    return cur.do_update(ops, node, val, has_defaults, _path, nop)
+    return cur.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
 
 
-def removes(ops, node, val=ANY, nop=False):
+def removes(ops, node, val=ANY, nop=False, **kwargs):
     cur, *ops = ops
-    return cur.do_remove(ops, node, val, nop)
+    return cur.do_remove(ops, node, val, nop, **kwargs)
 
 
-def expands(ops, node):
+def expands(ops, node, **kwargs):
     """
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, paths=True):
+    for path, val in walk(ops, node, paths=True, **kwargs):
         if path is _CUT_SENTINEL:
             return
         yield Dotted({'ops': path, 'transforms': ops.transforms})

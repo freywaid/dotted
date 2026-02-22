@@ -49,6 +49,7 @@ Or pick only what you need:
   - [Normalize](#normalize)
   - [AUTO](#auto)
   - [Multi Operations](#multi-operations)
+  - [Strict Mode](#strict-mode)
 - [Paths](#paths)
   - [Key fields](#key-fields)
   - [Bracketed fields](#bracketed-fields)
@@ -162,6 +163,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | String/bytes glob patterns (`"pre"..."suf"`) | ✅ | ❌ | ❌ | ❌ |
 | Value groups (`(val1, val2)`) | ✅ | ❌ | ❌ | ❌ |
 | Bytes literal support (`b"..."`) | ✅ | ❌ | ❌ | ❌ |
+| Strict mode (`strict=True`) | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
@@ -176,6 +178,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
 - **String/bytes glob patterns**—match by prefix, suffix, or substring: `*="user_"...`, `*=b"header"...b"footer"`
 - **Value groups**—disjunction over filter values: `*=(1, 2, 3)`, `[*&status=("active", "pending")]`
+- **Strict mode**—enforce type separation: `[0]` only matches lists, `.key` only matches dicts
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
@@ -611,6 +614,51 @@ Most operations have `*_multi` variants for batch processing:
 Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `remove_multi`,
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
 `build_multi`, `pluck_multi`, `assemble_multi`.
+
+<a id="strict-mode"></a>
+### Strict Mode
+
+By default, dotted is flexible about accessor types: bracket notation `[0]` falls through
+to dict keys on dicts, and dot notation `.0` coerces numeric keys to list indices on lists.
+This makes casual access forgiving, but sometimes you want type-separated access where
+slots only match lists and keys only match dicts.
+
+Pass `strict=True` to enforce this separation:
+
+    >>> import dotted
+    >>> d = {0: 'by-key', 'a': [10, 20]}
+
+    >>> # Non-strict (default): [0] falls through to dict key 0
+    >>> dotted.get(d, '[0]')
+    'by-key'
+
+    >>> # Strict: [0] only matches lists, returns None on dict
+    >>> dotted.get(d, '[0]', strict=True) is None
+    True
+
+    >>> # Non-strict: .0 coerces to list index
+    >>> dotted.get(d, 'a.0')
+    10
+
+    >>> # Strict: .0 only matches dict keys, returns None on list
+    >>> dotted.get(d, 'a.0', strict=True) is None
+    True
+
+Strict mode applies to all operations — `get`, `update`, `remove`, `has`, `expand`,
+`pluck`, and their `_multi` variants. Mismatches silently return empty results, consistent
+with dotted's safe traversal model:
+
+    >>> dotted.has(d, '[0]', strict=True)
+    False
+
+    >>> dotted.update(d, '[0]', 'new', strict=True)  # no-op on dict
+    {0: 'by-key', 'a': [10, 20]}
+
+    >>> dotted.remove(d, '[0]', strict=True)  # no-op on dict
+    {0: 'by-key', 'a': [10, 20]}
+
+Use strict mode when your data mixes integer dict keys and list indices, and you need
+to distinguish between them.
 
 <a id="paths"></a>
 ## Paths

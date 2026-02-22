@@ -166,7 +166,7 @@ def _is_mutable_container(obj):
     return False
 
 
-def mutable(obj, key):
+def mutable(obj, key, strict=False):
     """
     Check if update(obj, key, val) would mutate obj in place.
 
@@ -210,7 +210,7 @@ def mutable(obj, key):
 
         # Traverse to next level (consume only first value)
         _marker = object()
-        first = next(op.values(current), _marker)
+        first = next(op.values(current, strict=strict), _marker)
         if first is _marker:
             # Path doesn't exist - would be created, but parent is immutable
             return False
@@ -223,7 +223,7 @@ def mutable(obj, key):
 _mutable = mutable
 
 
-def build_multi(obj, keys):
+def build_multi(obj, keys, strict=False):
     """
     Build a subset/default obj based on concrete key fields
     >>> build_multi({}, ('hello.bye[]', 'hello.there', ))
@@ -233,22 +233,22 @@ def build_multi(obj, keys):
     if obj is AUTO:
         obj = _auto_root(((k, None) for k in keys))
     for key in keys:
-        built = el.build(parse(key), obj)
-        obj = update_multi(obj, pluck_multi(built, (key,)))
+        built = el.build(parse(key), obj, strict=strict)
+        obj = update_multi(obj, pluck_multi(built, (key,), strict=strict), strict=strict)
     return obj
 
 
-def build(obj, key):
+def build(obj, key, strict=False):
     """
     Build a subset/default obj based on dotted
     >>> build({}, 'hello.there')
     {'hello': {'there': None}}
     >>> # build({}, 'a.b.c[:2].d')
     """
-    return build_multi(obj, (key,))
+    return build_multi(obj, (key,), strict=strict)
 
 
-def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
+def get(obj, key, default=None, pattern_default=(), apply_transforms=True, strict=False):
     """
     Get a value specified by the dotted key. If dotted is a pattern,
     return a tuple of all matches.
@@ -276,7 +276,7 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     (7,)
     """
     ops = parse(key)
-    vals = el.iter_until_cut(el.gets(ops, obj))
+    vals = el.iter_until_cut(el.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )
     found = tuple(vals)
@@ -285,18 +285,18 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True):
     return found if found else pattern_default
 
 
-def get_multi(obj, iterable, apply_transforms=True):
+def get_multi(obj, iterable, apply_transforms=True, strict=False):
     """
     Get all values from obj in iterable; return iterable
     >>> list(get_multi({'hello': 7, 'there': 9}, ['hello', 'there']))
     [7, 9]
     """
     dummy = object()
-    found = (get(obj, k, dummy, dummy, apply_transforms=apply_transforms) for k in iterable)
+    found = (get(obj, k, dummy, dummy, apply_transforms=apply_transforms, strict=strict) for k in iterable)
     return (v for v in found if v is not dummy)
 
 
-def has(obj, key):
+def has(obj, key, strict=False):
     """
     True if key/pattern is contained in obj
     >>> d = {'hello': {'there': [1, '2', 3]}}
@@ -306,10 +306,10 @@ def has(obj, key):
     False
     """
     dummy = object()
-    return get(obj, key, dummy, dummy) is not dummy
+    return get(obj, key, dummy, dummy, strict=strict) is not dummy
 
 
-def setdefault(obj, key, val, apply_transforms=True):
+def setdefault(obj, key, val, apply_transforms=True, strict=False):
     """
     Get value at path if it exists, else set path to val and return that value (like dict.setdefault).
     >>> d = {'hello': 'there'}
@@ -322,13 +322,13 @@ def setdefault(obj, key, val, apply_transforms=True):
     """
     if obj is AUTO:
         obj = _auto_root_from_key(key)
-    if has(obj, key):
-        return  get(obj, key, apply_transforms=apply_transforms)
-    obj = update(obj, key, val, apply_transforms=apply_transforms)
-    return get(obj, key, apply_transforms=False)
+    if has(obj, key, strict=strict):
+        return  get(obj, key, apply_transforms=apply_transforms, strict=strict)
+    obj = update(obj, key, val, apply_transforms=apply_transforms, strict=strict)
+    return get(obj, key, apply_transforms=False, strict=strict)
 
 
-def setdefault_multi(obj, keyvalues, apply_transforms=True):
+def setdefault_multi(obj, keyvalues, apply_transforms=True, strict=False):
     """
     For each (key, value), set value at key only if key does not exist (like setdefault).
     Returns an iterable of the value at each path (same order as keyvalues), like get_multi.
@@ -340,10 +340,10 @@ def setdefault_multi(obj, keyvalues, apply_transforms=True):
     {'a': 1, 'b': 2}
     """
     for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        yield setdefault(obj, k, v, apply_transforms=apply_transforms)
+        yield setdefault(obj, k, v, apply_transforms=apply_transforms, strict=strict)
 
 
-def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True):
+def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False):
     """
     Update only when pred(val) is true.  Default pred skips None values.
     Use pred=None for unconditional update (same as update).
@@ -367,10 +367,10 @@ def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, app
         return obj
 
     ops = parse(key)
-    return el.updates(ops, obj, ops.apply(val) if apply_transforms else val)
+    return el.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
 
 
-def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True):
+def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False):
     """
     Update multiple keys, skipping items where pred(val) is false.
     items: iterable of (key, val) or (key, val, pred).
@@ -383,11 +383,11 @@ def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, 
     for item in items:
         key, val, *rest = item
         p = rest[0] if rest else pred
-        obj = update_if(obj, key, val, pred=p, mutable=mutable, apply_transforms=apply_transforms)
+        obj = update_if(obj, key, val, pred=p, mutable=mutable, apply_transforms=apply_transforms, strict=strict)
     return obj
 
 
-def update(obj, key, val, mutable=True, apply_transforms=True):
+def update(obj, key, val, mutable=True, apply_transforms=True, strict=False):
     """
     Update obj with all matches to dotted key with val
     >>> d = {'hello': {'there': {'stuff': 1}}}
@@ -427,10 +427,10 @@ def update(obj, key, val, mutable=True, apply_transforms=True):
     >>> result
     {'a': 2}
     """
-    return update_if(obj, key, val, pred=None, mutable=mutable, apply_transforms=apply_transforms)
+    return update_if(obj, key, val, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict)
 
 
-def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
+def update_multi(obj, keyvalues, mutable=True, apply_transforms=True, strict=False):
     """
     Update obj with all keyvalues.  Pass AUTO as obj to infer the root
     container type from the first key.
@@ -446,10 +446,10 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True):
     if obj is AUTO:
         keyvalues = list(keyvalues)
         obj = _auto_root(keyvalues)
-    return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms)
+    return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict)
 
 
-def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True):
+def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True, strict=False):
     """
     Remove only when pred(key) is true.  Default pred skips None keys.
     Use pred=None for unconditional remove (same as remove).
@@ -468,10 +468,10 @@ def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True)
     if pred is not None and not pred(key):
         return obj
 
-    return el.removes(parse(key), obj, val)
+    return el.removes(parse(key), obj, val, strict=strict)
 
 
-def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None, mutable=True):
+def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None, mutable=True, strict=False):
     """
     Remove by keys or (key, val, pred), skipping items where pred(key) is false.
     Default pred skips None keys.
@@ -484,17 +484,17 @@ def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None
 
     if keys_only:
         for k in items:
-            obj = remove_if(obj, k, pred=pred, val=ANY, mutable=mutable)
+            obj = remove_if(obj, k, pred=pred, val=ANY, mutable=mutable, strict=strict)
         return obj
 
     for item in items:
         k, v, *rest = item
         p = rest[0] if rest else pred
-        obj = remove_if(obj, k, pred=p, val=v, mutable=mutable)
+        obj = remove_if(obj, k, pred=p, val=v, mutable=mutable, strict=strict)
     return obj
 
 
-def remove(obj, key, val=ANY, mutable=True):
+def remove(obj, key, val=ANY, mutable=True, strict=False):
     """
     To remove all matches to `key`
         remove(obj, key) or remove(obj, key, ANY)
@@ -522,20 +522,20 @@ def remove(obj, key, val=ANY, mutable=True):
     >>> result
     {'b': 2}
     """
-    return remove_if(obj, key, pred=None, val=val, mutable=mutable)
+    return remove_if(obj, key, pred=None, val=val, mutable=mutable, strict=strict)
 
 
-def remove_multi(obj, iterable, keys_only=True, mutable=True):
+def remove_multi(obj, iterable, keys_only=True, mutable=True, strict=False):
     """
     Remove by keys or key-values
     >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
     {'my': {}}
     """
     if keys_only:
-        return remove_if_multi(obj, iterable, keys_only=True, pred=None, mutable=mutable)
+        return remove_if_multi(obj, iterable, keys_only=True, pred=None, mutable=mutable, strict=strict)
     if hasattr(iterable, 'items') and callable(iterable.items):
         iterable = iterable.items()
-    return remove_if_multi(obj, iterable, keys_only=False, pred=None, mutable=mutable)
+    return remove_if_multi(obj, iterable, keys_only=False, pred=None, mutable=mutable, strict=strict)
 
 
 def _match_ops(pats, keys, partial):
@@ -582,7 +582,7 @@ def _match_ops(pats, keys, partial):
     return None
 
 
-def match(pattern, key, groups=False, partial=True):
+def match(pattern, key, groups=False, partial=True, strict=False):
     """
     Returns `key` if `pattern` matches; otherwise `None`
     >>> match('*.there', 'hello.there')
@@ -659,13 +659,13 @@ def match(pattern, key, groups=False, partial=True):
     return returns(key, _matches)
 
 
-def match_multi(pattern, iterable, groups=False, partial=True):
+def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
     """
     Match pattern to all in iterable; returns iterable
     >>> list(match_multi('/h.*/', ['hello', 'there', 'hi']))
     ['hello', 'hi']
     """
-    matches = (match(pattern, k, groups=groups, partial=partial) for k in iterable)
+    matches = (match(pattern, k, groups=groups, partial=partial, strict=strict) for k in iterable)
     if groups:
         return (m for m in matches if m[0])
     return (m for m in matches if m)
@@ -720,7 +720,7 @@ def assemble(keys):
     return assemble_multi((keys,))[0]
 
 
-def expand_multi(obj, patterns):
+def expand_multi(obj, patterns, strict=False):
     """
     Expand across a set of patterns
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
@@ -729,14 +729,14 @@ def expand_multi(obj, patterns):
     """
     seen = {}
     for pat in patterns:
-        keys = (o.assemble() for o in el.expands(parse(pat), obj))
+        keys = (o.assemble() for o in el.expands(parse(pat), obj, strict=strict))
         for found in keys:
             if found not in seen:
                 seen[found] = None
     return tuple(seen)
 
 
-def expand(obj, pattern):
+def expand(obj, pattern, strict=False):
     """
     Return all keys that match `pattern` in `obj`
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
@@ -749,10 +749,10 @@ def expand(obj, pattern):
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    return expand_multi(obj, (pattern,))
+    return expand_multi(obj, (pattern,), strict=strict)
 
 
-def apply_multi(obj, patterns):
+def apply_multi(obj, patterns, strict=False):
     """
     Update `obj` with transforms at `patterns`
     >>> d = {'hello': 7, 'there': 9}
@@ -762,29 +762,29 @@ def apply_multi(obj, patterns):
     seen = {}
     _marker = object()
     for pat in patterns:
-        for ops in el.expands(parse(pat), obj):
+        for ops in el.expands(parse(pat), obj, strict=strict):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(el.iter_until_cut(el.gets(ops, obj)), _marker)
+            first = next(el.iter_until_cut(el.gets(ops, obj, strict=strict)), _marker)
             if first is _marker:
                 continue
             val = ops.apply(first)
-            obj = el.updates(ops, obj, val)
+            obj = el.updates(ops, obj, val, strict=strict)
     return obj
 
 
-def apply(obj, pattern):
+def apply(obj, pattern, strict=False):
     """
     Update `obj` with transforms at `pattern`
     >>> d = {'hello': 7}
     >>> apply(d, 'hello|str')
     {'hello': '7'}
     """
-    return apply_multi(obj, (pattern,))
+    return apply_multi(obj, (pattern,), strict=strict)
 
 
-def pluck_multi(obj, patterns, default=None):
+def pluck_multi(obj, patterns, default=None, strict=False):
     """
     Return the concrete field,value pairs from obj given patterns
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
@@ -795,7 +795,7 @@ def pluck_multi(obj, patterns, default=None):
     seen = {}
     for pattern in patterns:
         ops = parse(pattern)
-        for path, val in el.walk(ops, obj, paths=True):
+        for path, val in el.walk(ops, obj, paths=True, strict=strict):
             if path is el._CUT_SENTINEL:
                 break
             field = el.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
@@ -806,7 +806,7 @@ def pluck_multi(obj, patterns, default=None):
     return out
 
 
-def pluck(obj, pattern, default=None):
+def pluck(obj, pattern, default=None, strict=False):
     """
     Return the concrete field,value pairs from obj given pattern
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
@@ -815,7 +815,7 @@ def pluck(obj, pattern, default=None):
     >>> pluck(d, 'a.b')
     ('a.b', 'seven')
     """
-    out = pluck_multi(obj, (pattern,), default=default)
+    out = pluck_multi(obj, (pattern,), default=default, strict=strict)
     if not out:
         return ()
     if is_pattern(pattern):
