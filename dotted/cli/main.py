@@ -198,7 +198,7 @@ def build_parser():
         help='Flatten result to dotted normal form',
     )
     parser.add_argument(
-        '--attrs',
+        '--unpack-attrs',
         nargs='+',
         choices=[e.value for e in dotted.Attrs],
         default=None,
@@ -324,7 +324,7 @@ def main(argv=None):
             elif args.operation == 'remove':
                 result = process_remove(doc, entries)
             if args.unpack:
-                attrs = [dotted.Attrs(a) for a in args.attrs] if args.attrs else None
+                attrs = [dotted.Attrs(a) for a in args.unpack_attrs] if args.unpack_attrs else None
                 result = dict(dotted.unpack(result, attrs=attrs))
             writer.write(result)
     except ParseError as e:

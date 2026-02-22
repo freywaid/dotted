@@ -480,7 +480,11 @@ original object. Use `AUTO` as the base object to infer the root container type.
     >>> dotted.update_multi(dotted.AUTO, dotted.unpack(d)) == d
     True
 
-Pass `attrs=` to also descend into object attributes:
+Pass `attrs=` to also descend into object attributes. The `Attrs` enum controls
+which attributes are included:
+
+- `Attrs.standard` — non-dunder attributes
+- `Attrs.special` — dunder attributes (`__name__`, etc.)
 
     >>> class Pt:
     ...     def __init__(self, x, y):
@@ -488,6 +492,8 @@ Pass `attrs=` to also descend into object attributes:
     ...         self.y = y
     >>> dotted.unpack({'point': Pt(3, 4)}, attrs=[dotted.Attrs.standard])
     (('point@x', 3), ('point@y', 4))
+
+Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
 
 <a id="build"></a>
 ### Build
@@ -2232,6 +2238,9 @@ are fully expanded with indexed paths:
 
     echo '{"a": {"x": 1}, "b": {"c": 2}}' | dq --unpack update -p a.x 99
     # {"a.x": 99, "b.c": 2}
+
+Add `--unpack-attrs standard` to include object attributes (excluding dunders),
+or `--unpack-attrs standard special` for all attributes.
 
 <a id="pack"></a>
 ### Pack
