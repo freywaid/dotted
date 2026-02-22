@@ -2976,21 +2976,14 @@ def _process(stack, paths):
         yield from op.push_children(stack, frame, paths)
 
 
-def _walk_engine(ops, node, paths):
-    """
-    Stack-based traversal engine. Single loop, explicit DepthStack.
-    """
-    stack = DepthStack()
-    stack.push(Frame(ops, node, ()))
-    yield from _process(stack, paths)
-
-
 def walk(ops, node, paths=True):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
-    yield from _walk_engine(ops, node, paths)
+    stack = DepthStack()
+    stack.push(Frame(ops, node, ()))
+    yield from _process(stack, paths)
 
 
 def gets(ops, node):
