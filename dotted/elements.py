@@ -1527,6 +1527,13 @@ class SimpleOp(BaseOp):
         """
         Push matching children onto the traversal stack.
         Reverse order so first match is popped first (LIFO).
+
+        NOTE: We tried skipping list()+reversed() for concrete (non-pattern)
+        keys since they match at most one item.  Benchmarked as neutral —
+        the is_pattern() check costs roughly what the single-item reversal
+        saves.  We also tried removing the ``or {}`` guard on kwargs
+        (always passing a dict instead of None).  Also neutral.  Keeping
+        the simple uniform path for clarity.
         """
         children = list(self.items(frame.node, **(frame.kwargs or {})))
         for k, v in reversed(children):
@@ -1606,6 +1613,7 @@ class Empty(SimpleOp):
         return node
 
     @classmethod
+    @functools.lru_cache()
     def concrete(cls, val):
         """
         Return a concrete Empty op for the given key value.
@@ -1639,6 +1647,14 @@ class AccessOp(SimpleOp):
 class Key(AccessOp):
     @classmethod
     def concrete(cls, val):
+        """
+        Return a concrete Key op for the given key value.
+        """
+        return cls._concrete_cached(type(val), val)
+
+    @classmethod
+    @functools.lru_cache()
+    def _concrete_cached(cls, _type, val):
         import numbers
         if isinstance(val, numbers.Number):
             return cls(NumericQuoted(val))
@@ -1777,6 +1793,7 @@ class Key(AccessOp):
 
 class Attr(Key):
     @classmethod
+    @functools.lru_cache()
     def concrete(cls, val):
         return cls(Word(val))
 
@@ -1885,6 +1902,14 @@ class Attr(Key):
 class Slot(Key):
     @classmethod
     def concrete(cls, val):
+        """
+        Return a concrete Slot op for the given key value.
+        """
+        return cls._concrete_cached(type(val), val)
+
+    @classmethod
+    @functools.lru_cache()
+    def _concrete_cached(cls, _type, val):
         import numbers
         if isinstance(val, numbers.Number):
             return cls(Numeric(val))
@@ -2027,6 +2052,7 @@ class Slot(Key):
 
 class SlotSpecial(Slot):
     @classmethod
+    @functools.lru_cache()
     def concrete(cls, val):
         return cls(val)
     def default(self):
@@ -2270,6 +2296,7 @@ class Slice(SimpleOp):
 
 class Invert(SimpleOp):
     @classmethod
+    @functools.lru_cache()
     def concrete(cls, val):
         return cls(val)
     def __repr__(self):
