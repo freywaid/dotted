@@ -473,14 +473,48 @@ def _make_recursive(t, first=False):
     if len(depth_vals) >= 3:
         depth_step = depth_vals[2]
     cls = el.RecursiveFirst if first else el.Recursive
-    r = cls(inner, depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
+    # *(expr) form: inner is an OpGroup — extract accessor ops
+    accessors = None
+    if isinstance(inner, el.OpGroup):
+        accessors = _extract_accessors(inner)
+        inner = el.Wildcard()
+    r = cls(inner, accessors=accessors, depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
     if filt:
         r.filters = tuple(filt)
     return r
 
+
+def _extract_accessors(opgroup):
+    """
+    Extract accessor branches from an OpGroup for *(expr) syntax.
+    Each branch should be a single AccessOp (Key, Slot, Attr).
+    Nested OpGroups are flattened (e.g. *((*#, [*]), @*) → *(*#, [*], @*)).
+    Returns a branches tuple preserving cut/softcut sentinels.
+    """
+    from .elements import _branches_only, _BRANCH_CUT, _BRANCH_SOFTCUT, OpGroup
+    result = []
+    for item in opgroup.branches:
+        if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
+            result.append(item)
+            continue
+        branch = item
+        if len(branch) == 1 and isinstance(branch[0], OpGroup):
+            # Flatten nested group: inline its branches
+            result.extend(_extract_accessors(branch[0]))
+        elif len(branch) == 1 and isinstance(branch[0], el.AccessOp):
+            result.append(branch)
+        else:
+            raise ValueError(
+                f"*(expr) branches must be single access ops (Key, Slot, Attr), "
+                f"got {branch!r}"
+            )
+    return tuple(result)
+
 # ** and *pattern base expressions (no parse actions — shared by guarded/first/plain variants)
 _rec_dstar_prefix = S(L('*') + L('*'))
-_rec_inner = string | regex_first | regex | numeric_quoted | numeric_extended | non_integer | numeric_key | word
+# *(expr) grouped form: inner is a group expression containing accessor ops
+_rec_group_inner = (lparen + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
+_rec_inner = _rec_group_inner | string | regex_first | regex | numeric_quoted | numeric_extended | non_integer | numeric_key | word
 _rec_pat_prefix = S(L('*'))
 
 def _dstar_body():

@@ -71,6 +71,39 @@ def test_unpack_mixed_depth():
     assert ('shallow', 1) in r
 
 
+# --- attrs tests ---
+
+def test_unpack_attrs():
+    """
+    attrs=True descends into object attributes via @*.
+    """
+    class Pt:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    d = {'point': Pt(3, 4)}
+    r = dotted.unpack(d, attrs=True)
+    assert ('point@x', 3) in r
+    assert ('point@y', 4) in r
+
+
+def test_unpack_attrs_false_skips_attrs():
+    """
+    Default attrs=False does not descend into object attributes.
+    """
+    class Pt:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    d = {'point': Pt(3, 4)}
+    r = dotted.unpack(d)
+    # With attrs=False, the object is a leaf — returned as-is
+    assert len(r) == 1
+    assert r[0][0] == 'point'
+
+
 # --- AUTO tests ---
 
 def test_auto_update_dict():

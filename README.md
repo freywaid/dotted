@@ -69,11 +69,11 @@ Or pick only what you need:
   - [Slicing vs Patterns](#slicing-vs-patterns)
 - [Recursive Traversal](#recursive-traversal)
   - [The recursive operator `*`](#the-recursive-operator-)
-  - [Recursive wildcard `**`](#recursive-wildcard-)
+  - [Recursive patterns](#recursive-accessors)
   - [Depth slicing](#depth-slicing)
-  - [Recursive with value guard](#recursive-with-value-guard)
+  - [Recursive patterns with value guard](#recursive-with-value-guard)
   - [Recursive update and remove](#recursive-update-and-remove)
-  - [Recursive match](#recursive-match)
+  - [Recursive pattern matching](#recursive-match)
 - [Grouping](#grouping)
   - [Path grouping](#path-grouping)
   - [Precedence](#precedence)
@@ -154,7 +154,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Filters | ✅ | ❌ | ✅ | ❌ |
 | AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
 | Grouping `(a,b)`, `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
-| Recursive traversal (`**`, `*key`) | ✅ | ✅ | ❌ | ❌ |
+| Recursive patterns (`**`, `*key`, `*([*])`, `*(@*)`) | ✅ | ✅ | ❌ | ❌ |
 | Depth slicing (`**:-1`, `**:2`) | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
@@ -169,10 +169,10 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Pattern matching with wildcards (`*`) and regex (`/pattern/`)
 - Both read and write operations on nested structures
 - Transforms to coerce types inline (`path|int`, `path|str:fmt`)
-- Recursive traversal with `**` (any depth) and `*key` (chain-following), with Python-style depth slicing
+- Recursive patterns with `*key` (dict keys), `*([*])` (slots), `*(@*)` (attrs), and `*(expr)` (mixed), with depth slicing
 - Path grouping `(a,b).c` / `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
-- **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(**:-2(.*, [])##, *)` for "recurse into containers, fall back to `*` for the rest"
+- **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(*(*#, [*]):-2(.*, [])##, (*, []))` for "recurse into containers, fall back for the rest"
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
 - **String/bytes glob patterns**—match by prefix, suffix, or substring: `*="user_"...`, `*=b"header"...b"footer"`
 - **Value groups**—disjunction over filter values: `*=(1, 2, 3)`, `[*&status=("active", "pending")]`
@@ -477,6 +477,15 @@ original object. Use `AUTO` as the base object to infer the root container type.
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
     >>> dotted.update_multi(dotted.AUTO, dotted.unpack(d)) == d
     True
+
+Pass `attrs=True` to also descend into object attributes:
+
+    >>> class Pt:
+    ...     def __init__(self, x, y):
+    ...         self.x = x
+    ...         self.y = y
+    >>> dotted.unpack({'point': Pt(3, 4)}, attrs=True)
+    (('point@x', 3), ('point@y', 4))
 
 <a id="build"></a>
 ### Build
@@ -924,11 +933,17 @@ The inner pattern can be any key pattern — a literal key, a wildcard, or a reg
     >>> dotted.get(d, '*/x.*/')
     ({'x2': 1}, 1)
 
-<a id="recursive-wildcard-"></a>
-### Recursive wildcard `**`
+<a id="recursive-accessors"></a>
+### Recursive patterns
 
-`**` is the recursive wildcard — it matches all path segments and visits every
-value at every depth:
+Recursive pattern matching works across different accessor types:
+`*<pat>` for keys, `*([<pat>])` for slots, and `*(@<pat>)` for attrs.
+The accessor determines which children are followed at each level.
+
+**`*key`** — recursive dict keys. Since bare `*` means `.*` (dict key
+access), `**` recursively matches all dict keys. Any key pattern works —
+`*/regex/` recursively matches keys against a regex, `*literal` follows
+only keys named `literal`:
 
     >>> d = {'a': {'b': {'c': 1}}, 'x': {'y': 2}}
     >>> dotted.get(d, '**')
@@ -944,13 +959,39 @@ Use `**?` to get only the first match:
     >>> dotted.get(d, '**?')
     ({'b': {'c': 1}},)
 
+**`*([slot])`** — recursive slots. Recurses through lists, dicts, and
+anything with `__getitem__`. Since slots fall through to dict keys, this
+also matches dicts. Any slot pattern works — `*([*])` matches all slots,
+`*([/regex/])` matches slots by regex:
+
+    >>> d = {'a': [{'b': 1}, {'c': 2}]}
+    >>> dotted.get(d, '*([*])')
+    ([{'b': 1}, {'c': 2}], {'b': 1}, 1, {'c': 2}, 2)
+
+**`*(@attr)`** — recursive attrs. Recurses through object attributes. Any
+attr pattern works — `*(@*)` matches all attrs, `*(@/regex/)` matches attrs
+by regex:
+
+    >>> dotted.get(data, '*(@*)')  # doctest: +SKIP
+
+To recurse through multiple accessor types at once, use `*(expr)` with a
+comma-separated list of access ops. Use `#` (cut) after an accessor to
+prevent double-matching — this is needed because `[*]` falls through to
+dict keys:
+
+    >>> d = {'a': [{'b': 1}, {'c': 2}]}
+    >>> dotted.get(d, '*(*#, [*])')
+    ([{'b': 1}, {'c': 2}], {'b': 1}, 1, {'c': 2}, 2)
+
+    >>> dotted.get(data, '*(*#, [*], @*)')  # doctest: +SKIP
+
 <a id="depth-slicing"></a>
 ### Depth slicing
 
 Control which depths are visited using slice notation: `**:start`, `**:start:stop`,
 or `**:::step`. Note the leading `:` — depth slicing looks a little different from
 regular Python slicing since it follows the `**` operator. Depth 0 is the values of
-the first-level path segments. Lists increment depth (their elements are one level deeper).
+the first-level path segments.
 
     >>> d = {'a': {'x': 1}, 'b': {'y': {'z': 2}}}
     >>> dotted.get(d, '**:0')
@@ -969,10 +1010,16 @@ Range slicing works like Python slices: `**:start:stop` and `**:::step`:
     >>> dotted.get(d, '**:0:1')
     ({'x': 1}, 1, {'y': {'z': 2}}, {'z': 2})
 
-<a id="recursive-with-value-guard"></a>
-### Recursive with value guard
+Depth slicing also works with accessor groups:
 
-Combine `**` with value guards to find specific values at any depth:
+    >>> d = {'a': {'b': [1, 2, 3]}, 'extra': 'stuff'}
+    >>> dotted.get(d, '*(*#, [*]):-2')
+    ([1, 2, 3],)
+
+<a id="recursive-with-value-guard"></a>
+### Recursive patterns with value guard
+
+Combine recursive patterns with value guards to find specific values at any depth:
 
     >>> d = {'a': {'b': 7, 'c': 3}, 'd': {'e': 7}}
     >>> dotted.get(d, '**=7')
@@ -983,7 +1030,7 @@ Combine `**` with value guards to find specific values at any depth:
 <a id="recursive-update-and-remove"></a>
 ### Recursive update and remove
 
-Recursive operators work with `update` and `remove`:
+Recursive patterns work with `update` and `remove`:
 
     >>> d = {'a': {'b': 7, 'c': 3}, 'd': 7}
     >>> dotted.update(d, '**=7', 99)
@@ -994,7 +1041,7 @@ Recursive operators work with `update` and `remove`:
     {'a': {'c': 3}}
 
 <a id="recursive-match"></a>
-### Recursive match
+### Recursive pattern matching
 
 Recursive patterns work with `match`. `**` matches any key path, `*key` matches
 chains of a specific key:
@@ -1114,17 +1161,17 @@ what the soft-cut branch already yielded. Use soft cut when a branch handles som
 keys and you want a fallback branch to handle the rest.
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
-    >>> dotted.pluck(d, '(**:-2(.*, [])##, *)')
+    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])##, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
 
-Here `**:-2(.*, [])` recurses into containers (dicts and lists) and yields their
-leaf containers. The `##` means: for keys that recursion covered (like `a` and `x`),
-don't try the `*` fallback. But `extra` was not covered by the recursive branch,
-so `*` picks it up.
+Here `*(*#, [*]):-2(.*, [])` recurses into containers (dicts and lists) and yields
+their leaf containers. The `##` means: for keys that recursion covered (like `a`
+and `x`), don't try the `(*, [])` fallback. But `extra` was not covered by the
+recursive branch, so the fallback picks it up.
 
 Compare with hard cut (`#`), which would lose `extra` entirely:
 
-    >>> dotted.pluck(d, '(**:-2(.*, [])#, *)')
+    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])#, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]))
 
 #### Conjunction (AND)
@@ -1327,11 +1374,11 @@ This is especially useful with recursive patterns where one branch handles neste
 structures and a fallback handles the rest:
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
-    >>> dotted.pluck(d, '(**:-2(.*, [])##, *)')
+    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])##, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
 
-The recursive branch covers `a` and `x`, so `*` skips those. But `extra` was not
-covered, so `*` picks it up. With hard cut, `extra` would be lost entirely.
+The recursive branch covers `a` and `x`, so `(*, [])` skips those. But `extra` was
+not covered, so the fallback picks it up. With hard cut, `extra` would be lost entirely.
 
 Two paths "overlap" if one is a prefix of the other (e.g. `a` and `a.b.c` overlap,
 but `a.b` and `a.c` do not). You can test this directly:
@@ -2030,9 +2077,9 @@ The `ANY` constant is used with `remove` and `update` to match any value:
 Raised when dotted notation cannot be parsed:
 
     >>> import dotted
-    >>> dotted.get({}, '[invalid')
+    >>> dotted.get({}, '[invalid')  # doctest: +ELLIPSIS
     Traceback (most recent call last):
-    ...
+        ...
     dotted.api.ParseError: Invalid dotted notation: ...
 
 <a id="cli-dq"></a>

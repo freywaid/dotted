@@ -84,9 +84,15 @@ class TestGetChainFollowing:
 
 class TestGetLists:
     def test_dstar_with_list(self):
+        """** is dict-key only — does not recurse into lists."""
         d = {'a': [{'b': 1}]}
         result = dotted.get(d, '**')
-        # depth 0: [{'b': 1}], depth 1: {'b': 1}, depth 2: 1
+        assert result == ([{'b': 1}],)
+
+    def test_dstar_dict_list_with_accessor_group(self):
+        """*(*#, [*]) recurses through both dicts and lists."""
+        d = {'a': [{'b': 1}]}
+        result = dotted.get(d, '*(*#, [*])')
         assert result == ([{'b': 1}], {'b': 1}, 1)
 
     def test_dstar_depth0_with_list(self):
@@ -95,9 +101,27 @@ class TestGetLists:
         assert result == ([{'b': 1}],)
 
     def test_star_key_root_list(self):
-        """Root list iterates elements looking for key matches."""
+        """*name on root list: no dict keys to match."""
         d = [{'name': 'alice'}, {'name': 'bob'}]
         result = dotted.get(d, '*name')
+        assert result == ()
+
+    def test_accessor_group_root_list(self):
+        """
+        *(name#, [*]) on root list: recurses into list slots and dict keys.
+        Returns all matches at every depth — list entries AND name values.
+        """
+        d = [{'name': 'alice'}, {'name': 'bob'}]
+        result = dotted.get(d, '*(name#, [*])')
+        assert result == ({'name': 'alice'}, 'alice', {'name': 'bob'}, 'bob')
+
+    def test_accessor_group_root_list_with_continuation(self):
+        """
+        *(*#, [*]).name on root list: recurse through dicts+lists, then
+        continue with .name to extract just the name values.
+        """
+        d = [{'name': 'alice'}, {'name': 'bob'}]
+        result = dotted.get(d, '*(*#, [*]).name')
         assert result == ('alice', 'bob')
 
 
@@ -127,11 +151,10 @@ class TestGetDepthSlicing:
 
     def test_negative_stop(self):
         d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}}
-        # ::-2 = all depths from 0 up to penultimate (excludes leaves)
+        # ** is dict-only: ::-2 = all depths up to penultimate (lists are leaves)
         result = dotted.get(d, '**::-2')
-        assert [1, 2, 3] in result
-        assert [4, 5] in result
-        assert 1 not in result  # leaves excluded
+        assert {'b': [1, 2, 3]} in result
+        assert {'z': [4, 5]} in result
 
 
 # Get -- filters
@@ -235,8 +258,20 @@ class TestValueGuard:
         assert result == {'a': {'c': 3}}
 
     def test_dstar_eq_remove_from_list(self):
+        """
+        ** is dict-only — doesn't recurse into the list, so =7 can't
+        find the 7s inside.  The list is a leaf value.
+        """
         d = {'a': [1, 7, 3, 7]}
         result = dotted.remove(d, '**=7')
+        assert result == {'a': [1, 7, 3, 7]}
+
+    def test_accessor_group_eq_remove_from_list(self):
+        """
+        *(*, [*])=7 recurses into dicts AND lists, finding and removing 7s.
+        """
+        d = {'a': [1, 7, 3, 7]}
+        result = dotted.remove(d, '*(*, [*])=7')
         assert result == {'a': [1, 3]}
 
 
@@ -269,12 +304,33 @@ class TestComplexPaths:
         assert result == (('users.alice.scores', [90, 85]), ('users.bob.scores', [70, 95]))
 
     def test_recursive_list_continuation(self):
+        """
+        ** is dict-only — doesn't enter the list, so .name finds nothing.
+        """
         d = {'items': [{'name': 'a'}, {'name': 'b'}]}
-        assert dotted.get(d, '**.name') == ('a', 'b')
+        assert dotted.get(d, '**.name') == ()
+
+    def test_recursive_list_continuation_with_accessor_group(self):
+        """
+        *(*#, [*]).name recurses into dicts AND lists, finding names inside.
+        """
+        d = {'items': [{'name': 'a'}, {'name': 'b'}]}
+        assert dotted.get(d, '*(*#, [*]).name') == ('a', 'b')
 
     def test_recursive_list_continuation_pluck_paths(self):
+        """
+        ** is dict-only — list not entered, no paths found.
+        """
         d = {'items': [{'name': 'a'}, {'name': 'b'}]}
         result = dotted.pluck(d, '**.name')
+        assert result == ()
+
+    def test_recursive_list_continuation_pluck_paths_with_accessor_group(self):
+        """
+        *(*#, [*]).name recurses into dicts AND lists, yielding full paths.
+        """
+        d = {'items': [{'name': 'a'}, {'name': 'b'}]}
+        result = dotted.pluck(d, '*(*#, [*]).name')
         assert result == (('items[0].name', 'a'), ('items[1].name', 'b'))
 
     def test_star_key_chain(self):

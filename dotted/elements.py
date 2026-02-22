@@ -20,6 +20,8 @@ _CUT_SENTINEL = object()
 _BRANCH_CUT = object()
 # Structural marker: soft cut (##) — after previous branch, suppress later branches for keys already yielded.
 _BRANCH_SOFTCUT = object()
+# Types that are terminal for recursive traversal — never descended into.
+_RECURSIVE_TERMINALS = (str, bytes)
 
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
 # the user's data when it is a generator/iterator (e.g. a sequence at some path, or values from
@@ -1896,6 +1898,9 @@ class Slot(Key):
         if hasattr(node, 'keys'):
             return super().items(node, filtered)
 
+        if not hasattr(node, '__getitem__'):
+            return ()
+
         if not filtered:
             keys = range(len(node))
         elif self.is_pattern():
@@ -2487,30 +2492,51 @@ class ValueGuard(Wrap):
 class Recursive(BaseOp):
     """
     Recursive traversal operator. Matches a pattern at each level and recurses
-    into matched values. Handles type detection and iteration directly.
+    into matched values.
 
-    *key    = follow key chains (inner = Word('key'))
-    **      = recursive wildcard (inner = Wildcard())
-    */re/   = recursive regex (inner = Regex('re'))
+    *key        = follow key chains (inner = Word('key'))
+    **          = recursive dict-key wildcard (inner = Wildcard())
+    */re/       = recursive regex (inner = Regex('re'))
+    *(*, [*])   = recurse through dict keys and list slots
+    *(*, @*)    = recurse through dict keys and attributes
+    *(*, [*], @*) = recurse through all accessor types
     """
 
-    def __init__(self, inner, *args, depth_start=None, depth_stop=None, depth_step=None, **kwargs):
+    def __init__(self, inner, *args, accessors=None, depth_start=None, depth_stop=None, depth_step=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = inner          # Pattern op: Wildcard, Word, Regex, etc.
+        self.accessors = accessors  # None = dict-key only, or branches tuple with cuts
         self.depth_start = depth_start
         self.depth_stop = depth_stop
         self.depth_step = depth_step
 
+    def _render_accessors(self):
+        """
+        Render accessor branches including cut markers.
+        """
+        parts = []
+        for item in self.accessors:
+            if item is _BRANCH_CUT:
+                parts[-1] += '#'
+            elif item is _BRANCH_SOFTCUT:
+                parts[-1] += '##'
+            else:
+                parts.append(item[0].operator(top=True))
+        return ', '.join(parts)
+
     def __repr__(self):
+        if self.accessors is not None:
+            return f'*({self._render_accessors()})'
         if isinstance(self.inner, Wildcard):
             return f'**'
         return f'*{self.inner!r}'
 
     def __hash__(self):
-        return hash(('recursive', self.inner, self.depth_start, self.depth_stop, self.depth_step, self.filters))
+        return hash(('recursive', self.inner, self.accessors, self.depth_start, self.depth_stop, self.depth_step, self.filters))
 
     def __eq__(self, other):
         return (isinstance(other, Recursive) and self.inner == other.inner
+                and self.accessors == other.accessors
                 and self.depth_start == other.depth_start
                 and self.depth_stop == other.depth_stop
                 and self.depth_step == other.depth_step
@@ -2523,7 +2549,9 @@ class Recursive(BaseOp):
         return True
 
     def operator(self, top=False):
-        if isinstance(self.inner, Wildcard):
+        if self.accessors is not None:
+            s = f'*({self._render_accessors()})'
+        elif isinstance(self.inner, Wildcard):
             s = '**'
         else:
             q = normalize(self.inner.value) if isinstance(self.inner, (Word, String, Numeric, NumericQuoted)) else repr(self.inner)
@@ -2544,6 +2572,39 @@ class Recursive(BaseOp):
 
     def match(self, op, specials=False):
         return self.inner.matchable(op, specials=specials)
+
+    def _effective_branches(self):
+        """
+        Return accessor branches that drive recursion.
+        Default (no explicit accessors): single branch with Key(self.inner).
+        """
+        if self.accessors is not None:
+            return self.accessors
+        return ((Key(self.inner),),)
+
+    def _iter_node(self, node):
+        """
+        Yield (accessor, key, value) for all matching accessors on this node.
+        Respects hard cuts: if a cut-marked branch matched, stop.
+        _RECURSIVE_TERMINALS are never recursed into.
+        """
+        if isinstance(node, _RECURSIVE_TERMINALS):
+            return
+        branches = self._effective_branches()
+        i = 0
+        while i < len(branches):
+            item = branches[i]
+            if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
+                i += 1
+                continue
+            acc = item[0]
+            matched = False
+            for k, v in acc.items(node):
+                matched = True
+                yield acc, k, v
+            if matched and i + 1 < len(branches) and branches[i + 1] is _BRANCH_CUT:
+                break
+            i += 1
 
     def _has_negative_depth(self):
         return ((self.depth_start is not None and self.depth_start < 0) or
@@ -2599,56 +2660,48 @@ class Recursive(BaseOp):
             return eff_start <= depth <= stop
         return depth >= eff_start
 
-    def _matching_keys(self, node):
-        """
-        Yield (key, value) pairs for keys matching inner pattern in a mapping.
-        """
-        for k in self.inner.matches(node.keys()):
-            yield k, node[k]
-
-    def _max_depth_to_leaf(self, node):
+    def _max_depth_to_leaf(self, node, seen=frozenset()):
         """
         Compute max depth to leaf from this node (structural, ignores filters/depth range).
+        Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
         """
-        if is_dict_like(node):
-            child_depths = [self._max_depth_to_leaf(v) for k, v in self._matching_keys(node)]
-            if child_depths:
-                return max(child_depths) + 1
-        elif is_list_like(node):
-            child_depths = [self._max_depth_to_leaf(item) for item in node]
-            if child_depths:
-                return max(child_depths) + 1
-        return 0
+        node_id = id(node)
+        if node_id in seen:
+            return 0
+        seen = seen | {node_id}
+        items = list(self._iter_node(node))
+        if not items:
+            return 0
+        child_depths = [self._max_depth_to_leaf(v, seen) for _, _, v in items]
+        return max(child_depths) + 1 if child_depths else 0
 
-    def _collect_matches(self, node, paths, depth=0, prefix=()):
+    def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset()):
         """
         Yield (prefix, value) for all nodes matching the recursive pattern.
 
         Traverses the tree depth-first, yielding matches at each level
         before recursing into children (parent-before-children ordering).
+        Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
         """
-        if is_dict_like(node):
-            iterable = self._matching_keys(node)
-            matched = True
-            concrete = Key.concrete
-        elif is_list_like(node):
-            iterable = enumerate(node)
-            matched = any(True for _ in self.inner.matches(range(len(node))))
-            concrete = Slot.concrete
-        else:
+        node_id = id(node)
+        if node_id in seen:
+            return
+        seen = seen | {node_id}
+        items = list(self._iter_node(node))
+        if not items:
             return
 
-        for k, v in iterable:
-            cp = prefix + (concrete(k),) if paths else prefix
-            if not matched or not any(True for _ in self.filtered((v,))):
-                yield from self._collect_matches(v, paths, depth + 1, cp)
+        for acc, k, v in items:
+            cp = prefix + (acc.concrete(k),) if paths else prefix
+            if not any(True for _ in self.filtered((v,))):
+                yield from self._collect_matches(v, paths, depth + 1, cp, seen)
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
-                yield from self._collect_matches(v, paths, depth + 1, cp)
+                yield from self._collect_matches(v, paths, depth + 1, cp, seen)
                 continue
             yield (cp, v)
-            yield from self._collect_matches(v, paths, depth + 1, cp)
+            yield from self._collect_matches(v, paths, depth + 1, cp, seen)
 
     def push_children(self, stack, frame, paths):
         matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix))
@@ -2656,22 +2709,28 @@ class Recursive(BaseOp):
             stack.push(Frame(frame.ops, v, cp))
         return ()
 
-    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None):
-        if is_dict_like(node):
-            iterable = list(self._matching_keys(node))
-            matched = True
-        elif is_list_like(node):
-            iterable = list(enumerate(node))
-            matched = any(True for _ in self.inner.matches(range(len(node))))
-        else:
+    def _assign(self, acc, node, k, v):
+        """
+        Assign value v to key k on node using the appropriate accessor method.
+        """
+        if isinstance(acc, Attr):
+            return acc.update(node, k, v)
+        node[k] = v
+        return node
+
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset()):
+        node_id = id(node)
+        if node_id in seen:
+            return node
+        seen = seen | {node_id}
+        items = list(self._iter_node(node))
+        if not items:
             return node
 
-        for k, v in iterable:
+        for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard)
-            node[k] = v
-            if not matched:
-                continue
+            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen)
+            node = self._assign(acc, node, k, v)
             if not any(True for _ in self.filtered((v,))):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
@@ -2680,31 +2739,28 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node[k] = updates(ops, v, val, has_defaults, _path + [(self, k)], nop)
+                node = self._assign(acc, node, k, updates(ops, v, val, has_defaults, _path + [(self, k)], nop))
             elif not nop:
-                node[k] = val
+                node = self._assign(acc, node, k, val)
         return node
 
     def do_update(self, ops, node, val, has_defaults, _path, nop):
         return self._update_recursive(ops, node, val, has_defaults, _path, nop)
 
-    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None):
-        if is_dict_like(node):
-            iterable = list(self._matching_keys(node))
-            matched = True
-        elif is_list_like(node):
-            iterable = list(enumerate(node))
-            matched = any(True for _ in self.inner.matches(range(len(node))))
-        else:
+    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset()):
+        node_id = id(node)
+        if node_id in seen:
+            return node
+        seen = seen | {node_id}
+        items = list(self._iter_node(node))
+        if not items:
             return node
 
         to_remove = []
-        for k, v in iterable:
+        for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard)
-            node[k] = v
-            if not matched:
-                continue
+            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen)
+            node = self._assign(acc, node, k, v)
             if not any(True for _ in self.filtered((v,))):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
@@ -2713,11 +2769,14 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node[k] = removes(ops, v, val, nop=False)
+                node = self._assign(acc, node, k, removes(ops, v, val, nop=False))
             elif not nop:
-                to_remove.append(k)
-        for k in reversed(to_remove):
-            del node[k]
+                to_remove.append((acc, k))
+        for acc, k in reversed(to_remove):
+            if isinstance(acc, Attr):
+                node = acc.pop(node, k)
+            else:
+                del node[k]
         return node
 
     def do_remove(self, ops, node, val, nop):

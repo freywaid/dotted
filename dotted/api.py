@@ -823,11 +823,12 @@ def pluck(obj, pattern, default=None):
     return out[0]
 
 
-def unpack(obj):
+def unpack(obj, attrs=False):
     """
     Convert obj to dotted normal form.  A tuple of (path, value) pairs which
     can be replayed to regenerate the obj.  Internally, this calls:
-         pluck(obj, '(**:-2(.*, [])##, *)')
+         pluck(obj, '*(*#, [*]):-2(.*, [])##, (*, [])')
+
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     >>> r = unpack(d)
     >>> r
@@ -835,7 +836,8 @@ def unpack(obj):
     >>> update_multi(AUTO, r) == d
     True
     """
-    return pluck(obj, '(**:-2(.*, [])##, *)')
+    extra = ', @*' if attrs else ''
+    return pluck(obj, f'*(*#, [*]{extra}):-2(.*, []{extra})##, (*, []{extra})')
 
 
 #
