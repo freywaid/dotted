@@ -114,7 +114,7 @@ class Frame:
     """
     __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'kwargs')
 
-    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, **kwargs):
+    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, kwargs=None):
         self.ops = ops
         self.node = node
         self.prefix = prefix
@@ -129,28 +129,27 @@ class DepthStack:
     OpGroups push a new level for branch isolation; simple ops push
     onto the current level.
     """
-    __slots__ = ('_stacks', 'level')
+    __slots__ = ('_stacks', 'level', 'current')
 
     def __init__(self):
         self._stacks = collections.defaultdict(collections.deque)
         self.level = 0
+        self.current = self._stacks[0]
 
     def push(self, frame):
-        self._stacks[self.level].append(frame)
+        self.current.append(frame)
 
     def pop(self):
-        return self._stacks[self.level].pop()
+        return self.current.pop()
 
     def push_level(self):
         self.level += 1
+        self.current = self._stacks[self.level]
 
     def pop_level(self):
         del self._stacks[self.level]
         self.level -= 1
-
-    @property
-    def current(self):
-        return self._stacks[self.level]
+        self.current = self._stacks[self.level]
 
     def __bool__(self):
         return bool(self._stacks)
@@ -945,14 +944,14 @@ class OpGroupOr(OpGroup):
             item = br[i]
             if item in (_BRANCH_CUT, _BRANCH_SOFTCUT):
                 continue
-            branch_ops = list(item) + list(frame.ops)
+            branch_ops = tuple(item) + tuple(frame.ops)
             if not branch_ops:
                 continue
             marker = self._next_marker(i)
             is_softcut = marker is _BRANCH_SOFTCUT
             use_paths = paths or bool(softcut_paths) or is_softcut
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
             found = False
             for path, val in _process(stack, use_paths):
                 if path is _CUT_SENTINEL:
@@ -1074,11 +1073,11 @@ class OpGroupFirst(OpGroup):
         Try branches in order, return first result found.
         """
         for branch in _branches_only(self.branches):
-            branch_ops = list(branch) + list(frame.ops)
+            branch_ops = tuple(branch) + tuple(frame.ops)
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
             for pair in _process(stack, paths):
                 stack.pop_level()
                 return [pair]
@@ -1148,11 +1147,11 @@ class OpGroupAnd(OpGroup):
         """
         all_results = []
         for branch in self.branches:
-            branch_ops = list(branch) + list(frame.ops)
+            branch_ops = tuple(branch) + tuple(frame.ops)
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(Frame(branch_ops, frame.node, frame.prefix, **frame.kwargs))
+            stack.push(Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
             branch_results = list(_process(stack, paths))
             stack.pop_level()
             if not branch_results:
@@ -1253,10 +1252,10 @@ class OpGroupNot(OpGroup):
         if not inner:
             return ()
         leaf = inner[0].leaf_op()
-        children = list(self._not_items(frame.node, **frame.kwargs))
+        children = list(self._not_items(frame.node, **(frame.kwargs or {})))
         for k, v in reversed(children):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
-            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+            stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
@@ -1529,10 +1528,10 @@ class SimpleOp(BaseOp):
         Push matching children onto the traversal stack.
         Reverse order so first match is popped first (LIFO).
         """
-        children = list(self.items(frame.node, **frame.kwargs))
+        children = list(self.items(frame.node, **(frame.kwargs or {})))
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+            stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
 
 
@@ -2136,7 +2135,7 @@ class SliceFilter(BaseOp):
         """
         filtered = type(frame.node)(self.filtered(frame.node))
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
-        stack.push(Frame(frame.ops, filtered, cp, **frame.kwargs))
+        stack.push(Frame(frame.ops, filtered, cp, kwargs=frame.kwargs))
         return ()
 
 
@@ -2479,15 +2478,15 @@ class ValueGuard(Wrap):
         Recursive: collect matches from inner, filter by guard, push survivors.
         """
         if not self.inner.is_recursive():
-            children = list(self.items(frame.node, **frame.kwargs))
+            children = list(self.items(frame.node, **(frame.kwargs or {})))
             for k, v in reversed(children):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+                stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
             return ()
         matches = [(cp, v) for cp, v in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix, **frame.kwargs) if self._guard_matches(v)]
+            frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})) if self._guard_matches(v)]
         for cp, v in reversed(matches):
-            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+            stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
@@ -2718,9 +2717,9 @@ class Recursive(BaseOp):
             yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
 
     def push_children(self, stack, frame, paths):
-        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, **frame.kwargs))
+        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})))
         for cp, v in reversed(matches):
-            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+            stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
 
     def _assign(self, acc, node, k, v):
@@ -2811,8 +2810,8 @@ class RecursiveFirst(Recursive):
         return s + '?'
 
     def push_children(self, stack, frame, paths):
-        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix, **frame.kwargs):
-            stack.push(Frame(frame.ops, v, cp, **frame.kwargs))
+        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})):
+            stack.push(Frame(frame.ops, v, cp, kwargs=frame.kwargs))
             return ()
         return ()
 
@@ -3044,8 +3043,8 @@ def _process(stack, paths):
         if not frame.ops:
             yield (frame.prefix if paths else None, frame.node)
             continue
-        op, *rest = frame.ops
-        frame.ops = rest
+        op = frame.ops[0]
+        frame.ops = frame.ops[1:]
         yield from op.push_children(stack, frame, paths)
 
 
@@ -3055,7 +3054,7 @@ def walk(ops, node, paths=True, **kwargs):
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
     stack = DepthStack()
-    stack.push(Frame(ops, node, (), **kwargs))
+    stack.push(Frame(tuple(ops), node, (), kwargs=kwargs or None))
     yield from _process(stack, paths)
 
 
