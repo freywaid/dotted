@@ -163,7 +163,6 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | String/bytes glob patterns (`"pre"..."suf"`) | ✅ | ❌ | ❌ | ❌ |
 | Value groups (`(val1, val2)`) | ✅ | ❌ | ❌ | ❌ |
 | Bytes literal support (`b"..."`) | ✅ | ❌ | ❌ | ❌ |
-| Strict mode (`strict=True`) | ✅ | ❌ | ❌ | ❌ |
 | Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
 
 **Choose dotted if you want:**
