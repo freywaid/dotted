@@ -531,8 +531,27 @@ slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_p
 # Atoms are op_seqs (which subsume bare keys as single-item sequences).
 # Precedence: ! (tightest) > & > , (loosest)
 inner_expr = pp.Forward()
-inner_grouped = (lparen + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
-inner_grouped_first = (lparen + inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
+def _grouped_with_type_restriction(parsed_result, first=False):
+    """
+    Parse action for grouped expressions with optional type restriction.
+    Last token may be a _TypeSpec; if so, wrap the OpGroup in TypeRestriction.
+    """
+    items = list(parsed_result)
+    tr = None
+    if items and isinstance(items[-1], el._TypeSpec):
+        tr = items.pop()
+    if first:
+        grp = el._inner_to_opgroup_first(items)
+    else:
+        grp = el._inner_to_opgroup(items)
+    if tr:
+        grp = tr.wrap(grp)
+    return grp
+
+inner_grouped = (lparen + inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t))
+inner_grouped_first = (lparen + inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t, first=True))
 # Explicit-op grouped: used mid-path where bare-key inference is not allowed.
 # Uses a separate precedence tower (_explicit_inner_expr) that only allows
 # op_seqs built from _op_seq_cont (no bare keys even in first position).
@@ -540,14 +559,18 @@ inner_grouped_first = (lparen + inner_expr + rparen + S('?')).set_parse_action(e
 # start an explicit branch, don't even try the tower.
 _explicit_op_start = pp.FollowedBy(pp.Char('.@[!~('))
 _explicit_inner_expr = pp.Forward()
-_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
-_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
+_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t))
+_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t, first=True))
 # Bare-key grouped: first branch does NOT start with an access op.
 # Used with prefix shorthand (.(a,b), @(a,b)) where the prefix distributes.
 # Allows ! and ~ (modifiers) but rejects . @ [ ( (access ops / nested groups).
 _bare_key_start = ~pp.FollowedBy(pp.Char('.@[('))
-_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
-_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?')).set_parse_action(el._inner_to_opgroup_first)
+_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t))
+_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t, first=True))
 
 # Recursive operator: ** (recursive wildcard) and *pattern (recursive chain-following)
 # Depth slice: :start:stop:step — uses sentinel for missing values to preserve position
@@ -564,9 +587,12 @@ def _make_recursive(t, first=False):
     depth_start = depth_stop = depth_step = None
     filt = []
     depth_vals = []
+    type_spec = None
     for item in rest:
         if isinstance(item, el.FilterOp):
             filt.append(item)
+        elif isinstance(item, el._TypeSpec):
+            type_spec = item
         else:
             depth_vals.append(item)
     if len(depth_vals) >= 1:
@@ -576,12 +602,20 @@ def _make_recursive(t, first=False):
     if len(depth_vals) >= 3:
         depth_step = depth_vals[2]
     cls = el.RecursiveFirst if first else el.Recursive
-    # *(expr) form: inner is an OpGroup — extract accessor ops
+    # *(expr) form: inner is an OpGroup or TypeRestriction wrapping one
     accessors = None
-    if isinstance(inner, el.OpGroup):
+    if isinstance(inner, (el.OpGroup, el.TypeRestriction)):
         accessors = _extract_accessors(inner)
         inner = el.Wildcard()
-    r = cls(inner, accessors=accessors, depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
+    # Type restriction on the recursive operator (e.g. **:!(str, bytes))
+    # Distribute to each accessor branch via TypeRestriction wrapper
+    if type_spec is not None:
+        if accessors is not None:
+            accessors = _distribute_type_restriction(accessors, type_spec)
+        else:
+            accessors = ((type_spec.wrap(el.Key(inner)),),)
+    r = cls(inner, accessors=accessors,
+            depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
     if filt:
         r.filters = tuple(filt)
     return r
@@ -592,9 +626,14 @@ def _extract_accessors(opgroup):
     Extract accessor branches from an OpGroup for *(expr) syntax.
     Each branch should be a single AccessOp (Key, Slot, Attr).
     Nested OpGroups are flattened (e.g. *((*#, [*]), @*) → *(*#, [*], @*)).
+    TypeRestriction wrapping an OpGroup distributes the restriction to each branch.
     Returns a branches tuple preserving cut/softcut sentinels.
     """
     from .elements import _branches_only, _BRANCH_CUT, _BRANCH_SOFTCUT, OpGroup
+    # TypeRestriction wrapping an OpGroup: distribute to each accessor
+    if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, OpGroup):
+        spec = el._TypeSpec(*opgroup.types, negate=opgroup.negate)
+        return _distribute_type_restriction(_extract_accessors(opgroup.inner), spec)
     result = []
     for item in opgroup.branches:
         if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
@@ -613,18 +652,34 @@ def _extract_accessors(opgroup):
             )
     return tuple(result)
 
+
+def _distribute_type_restriction(branches, type_spec):
+    """
+    Wrap each accessor in branches with a TypeRestriction from type_spec.
+    Preserves cut/softcut sentinels.
+    """
+    from .elements import _BRANCH_CUT, _BRANCH_SOFTCUT
+    result = []
+    for item in branches:
+        if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
+            result.append(item)
+        else:
+            result.append((type_spec.wrap(item[0]),))
+    return tuple(result)
+
 # ** and *pattern base expressions (no parse actions — shared by guarded/first/plain variants)
 _rec_dstar_prefix = S(L('*') + L('*'))
 # *(expr) grouped form: inner is a group expression containing accessor ops
-_rec_group_inner = (lparen + inner_expr + rparen).set_parse_action(el._inner_to_opgroup)
+_rec_group_inner = (lparen + inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+    lambda t: _grouped_with_type_restriction(t))
 _rec_inner = _rec_group_inner | string | regex_first | regex | numeric_quoted | numeric_extended | non_integer | numeric_key | word
 _rec_pat_prefix = S(L('*'))
 
 def _dstar_body():
-    return _rec_dstar_prefix + Opt(_rec_depth) + ZM(amp + filters)
+    return _rec_dstar_prefix + Opt(type_restriction) + Opt(_rec_depth) + ZM(amp + filters)
 
 def _pat_body():
-    return _rec_pat_prefix + _rec_inner + Opt(_rec_depth) + ZM(amp + filters)
+    return _rec_pat_prefix + _rec_inner + Opt(type_restriction) + Opt(_rec_depth) + ZM(amp + filters)
 
 # ValueGuard composition: **=7, *name!=None, etc. (must try before plain forms)
 rec_dstar_guarded_neq = (_dstar_body() + _guard_neq).set_parse_action(

@@ -240,7 +240,7 @@ def test_dstar_still_skips_str():
 
 def test_recursive_with_typed_accessors():
     """
-    *(*:dict#, [*]:!(str, bytes)) recurses without string decomposition.
+    *(*#, [*]:!(str, bytes)) recurses without string decomposition.
     """
     d = {'a': {'b': [1, 2]}, 'c': 'hello'}
     result = list(dotted.pluck(d, '*(*#, [*]:!(str, bytes))'))
@@ -252,3 +252,96 @@ def test_recursive_with_typed_accessors():
     assert 'hello' in vals
     # No character decomposition
     assert 'h' not in vals
+
+
+# -- Type restrictions on OpGroups --
+
+@pytest.mark.parametrize('expr,expected', [
+    ('(*, [*]):!(str, bytes)', '(*,[*]):!(str, bytes)'),
+    ('(*#, [*]):dict', '(*#,[*]):dict'),
+    ('(*, [*]):!str', '(*,[*]):!str'),
+])
+def test_group_type_restriction_round_trip(expr, expected):
+    """
+    OpGroup with type restriction parses and assembles.
+    """
+    ops = dotted.api.parse(expr)
+    assert ops.assemble() == expected
+
+
+def test_group_type_restriction_skips_str():
+    """
+    (*, [*]):!(str, bytes) skips strings in non-recursive context.
+    """
+    d = {'items': [1, 2], 'name': 'hello'}
+    # The group wraps in TypeRestriction — skips str/bytes nodes
+    result = dotted.get(d, '*(*, [*]):!(str, bytes)')
+    vals = list(result)
+    assert 1 in vals
+    assert 2 in vals
+    # 'hello' is yielded by * (key access on dict), but [*] won't decompose it
+    assert 'hello' in vals
+    assert 'h' not in vals
+
+
+# -- Recursive + type restriction + depth slicing --
+
+@pytest.mark.parametrize('expr,expected', [
+    ('**:!(str, bytes)', '*(*:!(str, bytes))'),
+    ('**:!(str, bytes):-2', '*(*:!(str, bytes)):-2'),
+    ('**:dict', '*(*:dict)'),
+    ('**:dict:0', '*(*:dict):0'),
+    ('*(*#, [*]):!(str, bytes)', '*(*:!(str, bytes)#, [*]:!(str, bytes))'),
+    ('*(*#, [*]):!(str, bytes):0', '*(*:!(str, bytes)#, [*]:!(str, bytes)):0'),
+    ('*([*]):!(str, bytes)', '*([*]:!(str, bytes))'),
+    ('*(@*):!dict', '*(@*:!dict)'),
+])
+def test_recursive_type_restriction_round_trip(expr, expected):
+    """
+    Recursive + type restriction parses and distributes to accessors.
+    """
+    ops = dotted.api.parse(expr)
+    assert ops.assemble() == expected
+
+
+def test_dstar_type_restriction():
+    """
+    **:!(str, bytes) restricts recursive key traversal.
+    """
+    d = {'a': {'b': 1}, 'c': 'hello'}
+    result = dotted.get(d, '**:!(str, bytes)')
+    assert result == ({'b': 1}, 1, 'hello')
+
+
+def test_dstar_type_restriction_with_depth():
+    """
+    **:!(str, bytes):-2 combines type restriction and depth slicing.
+    """
+    d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': 3}}}
+    result = dotted.get(d, '**:!(str, bytes):-2')
+    # -2 = penultimate level: {'b': [1,2,3]} and {'z': 3}
+    assert result == ({'b': [1, 2, 3]}, {'z': 3})
+
+
+def test_recursive_group_type_restriction():
+    """
+    *(*#, [*]):!(str, bytes) distributes restriction to all accessors.
+    """
+    d = {'a': {'b': [1, 2]}, 'c': 'hello'}
+    result = dotted.get(d, '*(*#, [*]):!(str, bytes)')
+    vals = list(result)
+    assert {'b': [1, 2]} in vals
+    assert [1, 2] in vals
+    assert 1 in vals
+    assert 2 in vals
+    assert 'hello' in vals
+    assert 'h' not in vals
+
+
+def test_recursive_group_type_restriction_with_depth():
+    """
+    *(*#, [*]):!(str, bytes):0 combines group restriction and depth slice.
+    """
+    d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
+    result = dotted.get(d, '*(*#, [*]):!(str, bytes):0')
+    assert result == ({'b': [1, 2, 3]}, {'y': {'z': [4, 5]}}, 'stuff')

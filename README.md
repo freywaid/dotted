@@ -1046,6 +1046,20 @@ which containers are traversed:
 Without `:!(str, bytes)`, the `[*]` slot accessor would decompose `'hello'`
 into individual characters.
 
+A type restriction can also be applied to an entire group, which distributes it
+to every accessor in the group:
+
+    >>> d = {'a': {'b': [1, 2]}, 'c': 'hello'}
+    >>> dotted.get(d, '*(*#, [*]):!(str, bytes)')
+    ({'b': [1, 2]}, [1, 2], 1, 2, 'hello')
+
+The `**` shorthand accepts a type restriction too. It can be combined with a
+depth slice — the type restriction comes first:
+
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': 3}}}
+    >>> dotted.get(d, '**:!(str, bytes):-2')
+    ({'b': [1, 2, 3]}, {'z': 3})
+
 <a id="recursive-traversal"></a>
 ## Recursive Traversal
 
