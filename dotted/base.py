@@ -4,7 +4,6 @@ Base classes, sentinels, and infrastructure for the dotted element system.
 import collections
 import pyparsing as pp
 
-from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT  # noqa: F401
 
 

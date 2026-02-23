@@ -7,7 +7,6 @@ import types
 
 from . import base, match
 from .base import Op
-from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
 
 def itemof(node, val):

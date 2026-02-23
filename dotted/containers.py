@@ -27,8 +27,8 @@ Type prefix semantics:
 import re
 from itertools import combinations
 
+from . import utils
 from .elements import Op, Const, Wildcard, Regex
-from .utils import is_dict_like, is_list_like, is_set_like
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ class ContainerList(Op):
         Check if v passes the type constraint.
         """
         if self.type_prefix is None:
-            return is_list_like(v)
+            return utils.is_list_like(v)
         if self.type_prefix == 'l':
             return isinstance(v, list)
         if self.type_prefix == 't':
@@ -212,7 +212,7 @@ class ContainerDict(Op):
         """
         if self.type_prefix == 'd':
             return isinstance(v, dict)
-        return is_dict_like(v)
+        return utils.is_dict_like(v)
 
     def matches(self, vals):
         """
@@ -269,7 +269,7 @@ class ContainerSet(Op):
         Check if v passes the type constraint.
         """
         if self.type_prefix is None:
-            return is_set_like(v)
+            return utils.is_set_like(v)
         if self.type_prefix == 's':
             return isinstance(v, set)
         if self.type_prefix == 'fs':

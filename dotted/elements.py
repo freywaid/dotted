@@ -29,8 +29,7 @@ from .access import (  # noqa: F401 — re-export
 from .recursive import (  # noqa: F401 — re-export
     Recursive, RecursiveFirst,
 )
-from . import utypes
-from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
+from . import utypes, utils
 
 from . import filters
 from .filters import (  # noqa: F401 — re-export
@@ -1012,11 +1011,11 @@ class Dotted:
         """
         Recursively convert unhashable types to hashable equivalents.
         """
-        if is_list_like(obj):
+        if utils.is_list_like(obj):
             return tuple(Dotted._hashable(x) for x in obj)
-        if is_set_like(obj):
+        if utils.is_set_like(obj):
             return frozenset(Dotted._hashable(x) for x in obj)
-        if is_dict_like(obj):
+        if utils.is_dict_like(obj):
             if hasattr(obj, 'items') and callable(obj.items):
                 iterable = obj.items()
             else:
