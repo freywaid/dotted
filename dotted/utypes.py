@@ -1,6 +1,17 @@
 """
-Type specification and registry for dotted path type restrictions.
+Type specification, sentinels, and registry for the dotted element system.
 """
+
+# Sentinel used as a "missing" marker and as the ANY constant for remove.
+marker = object()
+ANY = marker
+
+# When a branch with cut (#) matches, we yield this after its results; consumer stops.
+CUT_SENTINEL = object()
+# Structural marker: in OpGroup.branches, means "after previous branch, emit CUT_SENTINEL and stop".
+BRANCH_CUT = object()
+# Structural marker: soft cut (##) — after previous branch, suppress later branches for keys already yielded.
+BRANCH_SOFTCUT = object()
 
 # Registry of recognized type names for path segment type restrictions.
 TYPE_REGISTRY = {

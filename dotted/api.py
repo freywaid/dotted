@@ -805,7 +805,7 @@ def pluck_multi(obj, patterns, default=None, strict=False):
     for pattern in patterns:
         ops = parse(pattern)
         for path, val in el.walk(ops, obj, paths=True, strict=strict):
-            if path is el._CUT_SENTINEL:
+            if path is el.CUT_SENTINEL:
                 break
             field = el.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
             if field in seen:

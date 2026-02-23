@@ -5,7 +5,7 @@ import re
 
 import pyparsing as pp
 
-from .base import MatchOp, NOP, _marker
+from .base import MatchOp, NOP, marker
 
 
 class Const(MatchOp):
@@ -125,8 +125,8 @@ class WildcardFirst(Wildcard):
     def value(self):
         return '*?'
     def matches(self, vals):
-        v = next(super().matches(vals), _marker)
-        return iter(() if v is _marker else (v,))
+        v = next(super().matches(vals), marker)
+        return iter(() if v is marker else (v,))
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or \
             (specials and isinstance(op, (Special, WildcardFirst, RegexFirst)))
@@ -162,8 +162,8 @@ class RegexFirst(Regex):
         return f'/{self.args[0]}/?'
     def matches(self, vals):
         iterable = super().matches(vals)
-        v = next(iterable, _marker)
-        return iter(() if v is _marker else (v,))
+        v = next(iterable, marker)
+        return iter(() if v is marker else (v,))
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or (specials and isinstance(op, (Special, RegexFirst)))
 

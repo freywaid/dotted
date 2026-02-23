@@ -201,9 +201,9 @@ class FilterKeyValue(FilterOp):
             return None
         if not self.key.matchable(op.key) or not self.val.matchable(op.val):
             return None
-        mk = next(self.key.matches((op.key.value,)), base._marker)
-        mv = next(self.val.matches((op.val.value,)), base._marker)
-        if base._marker in (mk, mv):
+        mk = next(self.key.matches((op.key.value,)), base.marker)
+        mv = next(self.val.matches((op.val.value,)), base.marker)
+        if base.marker in (mk, mv):
             return None
         return type(op)(op.key, op.val)
 
@@ -264,9 +264,9 @@ class FilterKeyValueNot(FilterOp):
             return None
         if not self.key.matchable(op.key) or not self.val.matchable(op.val):
             return None
-        mk = next(self.key.matches((op.key.value,)), base._marker)
-        mv = next(self.val.matches((op.val.value,)), base._marker)
-        if base._marker in (mk, mv):
+        mk = next(self.key.matches((op.key.value,)), base.marker)
+        mv = next(self.val.matches((op.val.value,)), base.marker)
+        if base.marker in (mk, mv):
             return None
         return type(op)(op.key, op.val)
 

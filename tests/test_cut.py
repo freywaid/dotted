@@ -165,7 +165,7 @@ def test_iter_until_cut_stops_on_sentinel():
     def gen():
         yield 1
         yield 2
-        yield el._CUT_SENTINEL
+        yield el.CUT_SENTINEL
         yield 3
 
     out = tuple(el.iter_until_cut(gen()))

@@ -5,17 +5,7 @@ import collections
 import pyparsing as pp
 
 from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
-
-
-_marker = object()
-ANY = _marker
-
-# When a branch with cut (#) matches, we yield this after its results; consumer stops.
-_CUT_SENTINEL = object()
-# Structural marker: in OpGroup.branches, means "after previous branch, emit _CUT_SENTINEL and stop".
-_BRANCH_CUT = object()
-# Structural marker: soft cut (##) — after previous branch, suppress later branches for keys already yielded.
-_BRANCH_SOFTCUT = object()
+from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT  # noqa: F401
 
 
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
@@ -28,10 +18,10 @@ _BRANCH_SOFTCUT = object()
 
 def _branches_only(branches):
     """
-    Yield branch tuples from OpGroup.branches, skipping _BRANCH_CUT and _BRANCH_SOFTCUT.
+    Yield branch tuples from OpGroup.branches, skipping BRANCH_CUT and BRANCH_SOFTCUT.
     """
     for b in branches:
-        if b not in (_BRANCH_CUT, _BRANCH_SOFTCUT):
+        if b not in (BRANCH_CUT, BRANCH_SOFTCUT):
             yield b
 
 

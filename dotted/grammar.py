@@ -630,14 +630,14 @@ def _extract_accessors(opgroup):
     TypeRestriction wrapping an OpGroup distributes the restriction to each branch.
     Returns a branches tuple preserving cut/softcut sentinels.
     """
-    from .elements import _branches_only, _BRANCH_CUT, _BRANCH_SOFTCUT, OpGroup
+    from .elements import _branches_only, OpGroup
     # TypeRestriction wrapping an OpGroup: distribute to each accessor
     if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, OpGroup):
         spec = utypes.TypeSpec(*opgroup.types, negate=opgroup.negate)
         return _distribute_type_restriction(_extract_accessors(opgroup.inner), spec)
     result = []
     for item in opgroup.branches:
-        if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
+        if item is utypes.BRANCH_CUT or item is utypes.BRANCH_SOFTCUT:
             result.append(item)
             continue
         branch = item
@@ -659,10 +659,9 @@ def _distribute_type_restriction(branches, type_spec):
     Wrap each accessor in branches with a TypeRestriction from type_spec.
     Preserves cut/softcut sentinels.
     """
-    from .elements import _BRANCH_CUT, _BRANCH_SOFTCUT
     result = []
     for item in branches:
-        if item is _BRANCH_CUT or item is _BRANCH_SOFTCUT:
+        if item is utypes.BRANCH_CUT or item is utypes.BRANCH_SOFTCUT:
             result.append(item)
         else:
             result.append((type_spec.wrap(item[0]),))

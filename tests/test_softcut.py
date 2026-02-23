@@ -21,7 +21,7 @@ def test_parse_path_group_with_softcut():
     """
     ops = dotted.parse('(a##, b)')
     grp = ops.ops[0]
-    assert grp.branches[1] is el._BRANCH_SOFTCUT
+    assert grp.branches[1] is el.BRANCH_SOFTCUT
 
 
 def test_parse_op_group_with_softcut():
@@ -30,7 +30,7 @@ def test_parse_op_group_with_softcut():
     """
     ops = dotted.parse('x(.a##,.b)')
     grp = ops.ops[1]
-    assert grp.branches[1] is el._BRANCH_SOFTCUT
+    assert grp.branches[1] is el.BRANCH_SOFTCUT
 
 
 def test_parse_slot_group_with_softcut():
@@ -39,7 +39,7 @@ def test_parse_slot_group_with_softcut():
     """
     ops = dotted.parse('items[(*##,+)]')
     grp = ops.ops[1]
-    assert grp.branches[1] is el._BRANCH_SOFTCUT
+    assert grp.branches[1] is el.BRANCH_SOFTCUT
 
 
 def test_parse_hardcut_still_works():
@@ -48,7 +48,7 @@ def test_parse_hardcut_still_works():
     """
     ops = dotted.parse('(a#, b)')
     grp = ops.ops[0]
-    assert grp.branches[1] is el._BRANCH_CUT
+    assert grp.branches[1] is el.BRANCH_CUT
 
 
 # -----------------------------------------------------------------------------

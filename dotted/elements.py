@@ -8,7 +8,7 @@ from . import base, match, access, recursive
 from .base import (  # noqa: F401 — re-export
     Op, TraversalOp, MatchOp, MatchResult,
     MetaNOP, NOP, Frame, DepthStack,
-    ANY, _marker, _CUT_SENTINEL, _BRANCH_CUT, _BRANCH_SOFTCUT,
+    ANY, marker, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT,
     _branches_only, _path_overlaps, _has_any,
 )
 from .match import (  # noqa: F401 — re-export
@@ -29,7 +29,7 @@ from .access import (  # noqa: F401 — re-export
 from .recursive import (  # noqa: F401 — re-export
     Recursive, RecursiveFirst,
 )
-from .utypes import TYPE_REGISTRY  # used by TypeRestriction._type_suffix
+from . import utypes
 from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
 from . import filters
@@ -43,14 +43,14 @@ class OpGroup(base.TraversalOp):
     """
     Base class for all operation groups (disjunction, conjunction, negation, first-match).
 
-    branches is a sequence of (branch_tuple, base._BRANCH_CUT/base._BRANCH_SOFTCUT?, branch_tuple, ...).
+    branches is a sequence of (branch_tuple, base.BRANCH_CUT/base.BRANCH_SOFTCUT?, branch_tuple, ...).
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # args may contain base._BRANCH_CUT/base._BRANCH_SOFTCUT; normalize branch tuples
+        # args may contain base.BRANCH_CUT/base.BRANCH_SOFTCUT; normalize branch tuples
         out = []
         for x in self.args:
-            if x in (base._BRANCH_CUT, base._BRANCH_SOFTCUT):
+            if x in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
                 out.append(x)
             else:
                 b = tuple(x) if isinstance(x, (list, tuple)) else (x,)
@@ -109,8 +109,8 @@ class OpGroupOr(OpGroup):
         a(.b#, .c)   - from a, first branch that matches wins (cut); if .b matches, stop
         a(.b##, .c)  - soft cut: like hard cut but later branches still run for keys not covered
 
-    base._BRANCH_CUT in the sequence means: after yielding from the previous branch, yield base._CUT_SENTINEL and stop.
-    base._BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
+    base.BRANCH_CUT in the sequence means: after yielding from the previous branch, yield base.CUT_SENTINEL and stop.
+    base.BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
     """
     def leaf_op(self):
         """
@@ -134,10 +134,10 @@ class OpGroupOr(OpGroup):
     def _render(self, top=True):
         parts = []
         for item in self.branches:
-            if item is base._BRANCH_CUT:
+            if item is base.BRANCH_CUT:
                 if parts:
                     parts[-1] += '#'
-            elif item is base._BRANCH_SOFTCUT:
+            elif item is base.BRANCH_SOFTCUT:
                 if parts:
                     parts[-1] += '##'
             else:
@@ -150,13 +150,13 @@ class OpGroupOr(OpGroup):
 
     def _next_marker(self, i):
         """
-        Return the marker (base._BRANCH_CUT or base._BRANCH_SOFTCUT) following branch at index i, or None.
+        Return the marker (base.BRANCH_CUT or base.BRANCH_SOFTCUT) following branch at index i, or None.
         """
         br = self.branches
         if i >= len(br) - 1:
             return None
         nxt = br[i + 1]
-        if nxt in (base._BRANCH_CUT, base._BRANCH_SOFTCUT):
+        if nxt in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
             return nxt
         return None
 
@@ -170,19 +170,19 @@ class OpGroupOr(OpGroup):
         results = []
         for i in range(len(br)):
             item = br[i]
-            if item in (base._BRANCH_CUT, base._BRANCH_SOFTCUT):
+            if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
                 continue
             branch_ops = tuple(item) + tuple(frame.ops)
             if not branch_ops:
                 continue
             marker = self._next_marker(i)
-            is_softcut = marker is base._BRANCH_SOFTCUT
+            is_softcut = marker is base.BRANCH_SOFTCUT
             use_paths = paths or bool(softcut_paths) or is_softcut
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
             found = False
             for path, val in _process(stack, use_paths):
-                if path is base._CUT_SENTINEL:
+                if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base._path_overlaps(softcut_paths, path):
                     continue
@@ -193,8 +193,8 @@ class OpGroupOr(OpGroup):
             stack.pop_level()
             if not found:
                 continue
-            if marker is base._BRANCH_CUT:
-                results.append((base._CUT_SENTINEL, None))
+            if marker is base.BRANCH_CUT:
+                results.append((base.CUT_SENTINEL, None))
                 return results
         return results
 
@@ -204,7 +204,7 @@ class OpGroupOr(OpGroup):
         softcut_paths = []
         for i in range(len(br)):
             item = br[i]
-            if item in (base._BRANCH_CUT, base._BRANCH_SOFTCUT):
+            if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
                 continue
             branch_ops = list(item) + list(ops)
             if not branch_ops:
@@ -212,7 +212,7 @@ class OpGroupOr(OpGroup):
             marker = self._next_marker(i)
             paths = []
             for path, _ in walk(branch_ops, node, paths=True, **kwargs):
-                if path is base._CUT_SENTINEL:
+                if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base._path_overlaps(softcut_paths, path):
                     continue
@@ -220,7 +220,7 @@ class OpGroupOr(OpGroup):
             if not paths:
                 continue
             matched_any = True
-            if marker is base._BRANCH_SOFTCUT:
+            if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
                 branch_nop = nop or any(isinstance(op, NopWrap) for op in item)
@@ -228,7 +228,7 @@ class OpGroupOr(OpGroup):
                     node = updates(list(path), node, val, has_defaults, _path, branch_nop, **kwargs)
             else:
                 node = updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
-            if marker is base._BRANCH_CUT:
+            if marker is base.BRANCH_CUT:
                 return node
         if not matched_any:
             return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
@@ -239,7 +239,7 @@ class OpGroupOr(OpGroup):
         softcut_paths = []
         for i in range(len(br)):
             item = br[i]
-            if item in (base._BRANCH_CUT, base._BRANCH_SOFTCUT):
+            if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
                 continue
             branch_ops = list(item) + list(ops)
             if not branch_ops:
@@ -247,21 +247,21 @@ class OpGroupOr(OpGroup):
             marker = self._next_marker(i)
             paths = []
             for path, _ in walk(branch_ops, node, paths=True, **kwargs):
-                if path is base._CUT_SENTINEL:
+                if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base._path_overlaps(softcut_paths, path):
                     continue
                 paths.append(path)
             if not paths:
                 continue
-            if marker is base._BRANCH_SOFTCUT:
+            if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
                 for path in paths:
                     node = removes(list(path), node, val, **kwargs)
             else:
                 node = removes(branch_ops, node, val, **kwargs)
-            if marker is base._BRANCH_CUT:
+            if marker is base.BRANCH_CUT:
                 return node
         return node
 
@@ -565,9 +565,9 @@ def _inner_or_action(t):
         out.append(_to_branch(item))
         if len(term) >= 2:
             if term[1] == '##':
-                out.append(base._BRANCH_SOFTCUT)
+                out.append(base.BRANCH_SOFTCUT)
             elif term[1] == '#':
-                out.append(base._BRANCH_CUT)
+                out.append(base.BRANCH_CUT)
     return OpGroupOr(*out)
 
 
@@ -608,7 +608,7 @@ def _inner_to_opgroup_first(parsed_result):
 def _slot_to_opgroup(parsed_result):
     """
     Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
-    Each slot item becomes a branch; # inserts base._BRANCH_CUT after that branch.
+    Each slot item becomes a branch; # inserts base.BRANCH_CUT after that branch.
     Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
     """
     _slot_types = (Slot, SlotSpecial, NopWrap)
@@ -625,9 +625,9 @@ def _slot_to_opgroup(parsed_result):
         if isinstance(first, _slot_types):
             out.append((first,))
             if len(item) >= 2 and item[1] == '##':
-                out.append(base._BRANCH_SOFTCUT)
+                out.append(base.BRANCH_SOFTCUT)
             elif len(item) >= 2 and item[1] == '#':
-                out.append(base._BRANCH_CUT)
+                out.append(base.BRANCH_CUT)
     return OpGroupOr(*out)
 
 
@@ -921,7 +921,7 @@ class TypeRestriction(Wrap):
         """
         Render the :type or :!type suffix.
         """
-        _reverse = {v: k for k, v in TYPE_REGISTRY.items()}
+        _reverse = {v: k for k, v in utypes.TYPE_REGISTRY.items()}
         names = [_reverse[t] for t in self.types if t in _reverse]
         if len(names) == 1:
             inner = names[0]
@@ -1101,10 +1101,10 @@ def build(ops, node, deepcopy=True, **kwargs):
 
 def iter_until_cut(gen):
     """
-    Consume a get generator until base._CUT_SENTINEL; yield values, stop on sentinel.
+    Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.
     """
     for x in gen:
-        if x is base._CUT_SENTINEL:
+        if x is base.CUT_SENTINEL:
             return
         yield x
 
@@ -1140,8 +1140,8 @@ def gets(ops, node, **kwargs):
     Yield values for all matches. Thin wrapper around walk().
     """
     for path, val in walk(ops, node, paths=False, **kwargs):
-        if path is base._CUT_SENTINEL:
-            yield base._CUT_SENTINEL
+        if path is base.CUT_SENTINEL:
+            yield base.CUT_SENTINEL
         else:
             yield val
 
@@ -1247,7 +1247,7 @@ def expands(ops, node, **kwargs):
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
     for path, val in walk(ops, node, paths=True, **kwargs):
-        if path is base._CUT_SENTINEL:
+        if path is base.CUT_SENTINEL:
             return
         yield Dotted({'ops': path, 'transforms': ops.transforms})
 

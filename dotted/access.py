@@ -389,8 +389,8 @@ class Key(AccessOp):
             return None
 
         # match key
-        val = next(self.op.matches((op.op.value,)), base._marker)
-        if val is base._marker:
+        val = next(self.op.matches((op.op.value,)), base.marker)
+        if val is base.marker:
             return None
         results += (base.MatchResult(val),)
         return results

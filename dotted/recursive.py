@@ -31,9 +31,9 @@ class Recursive(BaseOp):
         """
         parts = []
         for item in self.accessors:
-            if item is base._BRANCH_CUT:
+            if item is base.BRANCH_CUT:
                 parts[-1] += '#'
-            elif item is base._BRANCH_SOFTCUT:
+            elif item is base.BRANCH_SOFTCUT:
                 parts[-1] += '##'
             else:
                 parts.append(item[0].operator(top=True))
@@ -106,7 +106,7 @@ class Recursive(BaseOp):
         i = 0
         while i < len(branches):
             item = branches[i]
-            if item is base._BRANCH_CUT or item is base._BRANCH_SOFTCUT:
+            if item is base.BRANCH_CUT or item is base.BRANCH_SOFTCUT:
                 i += 1
                 continue
             acc = item[0]
@@ -114,7 +114,7 @@ class Recursive(BaseOp):
             for k, v in acc.items(node, **kwargs):
                 matched = True
                 yield acc, k, v
-            if matched and i + 1 < len(branches) and branches[i + 1] is base._BRANCH_CUT:
+            if matched and i + 1 < len(branches) and branches[i + 1] is base.BRANCH_CUT:
                 break
             i += 1
 
