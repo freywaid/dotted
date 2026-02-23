@@ -68,6 +68,12 @@ Or pick only what you need:
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
+- [Type Restrictions](#type-restrictions)
+  - [Positive restrictions](#positive-restrictions)
+  - [Negative restrictions](#negative-restrictions)
+  - [Slot and attr restrictions](#slot-and-attr-restrictions)
+  - [Combining with filters](#combining-with-filters)
+  - [Recursive traversal with type restrictions](#recursive-traversal-with-type-restrictions)
 - [Recursive Traversal](#recursive-traversal)
   - [The recursive operator `*`](#the-recursive-operator-)
   - [Recursive patterns](#recursive-accessors)
@@ -173,7 +179,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - Recursive patterns with `*key` (dict keys), `*([*])` (slots), `*(@*)` (attrs), and `*(expr)` (mixed), with depth slicing
 - Path grouping `(a,b).c` / `prefix(.a,.b)` for multi-access
 - **Cut (`#`) in disjunction**—first matching branch wins; e.g. `(a#, b)` or `emails[(*&email="x"#, +)]` for "update if exists, else append"
-- **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(*(*#, [*]):-2(.*, [])##, (*, []))` for "recurse into containers, fall back for the rest"
+- **Soft cut (`##`) in disjunction**—suppress later branches only for overlapping paths; e.g. `(*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, []))` for "recurse into containers, fall back for the rest"
 - NOP (`~`) to match without updating—e.g. `(name.~first#, name.first)` for conditional updates
 - **String/bytes glob patterns**—match by prefix, suffix, or substring: `*="user_"...`, `*=b"header"...b"footer"`
 - **Value groups**—disjunction over filter values: `*=(1, 2, 3)`, `[*&status=("active", "pending")]`
@@ -181,6 +187,14 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
+
+### v0.35.0
+- **Recursive traversal now walks into `str` and `bytes`**: Previously, recursive
+  patterns like `*(*#, [*])` hardcoded a skip for strings and bytes. This is now
+  controlled by [type restrictions](#type-restrictions) instead. If you use custom
+  recursive accessor groups with `[*]`, add `:!(str, bytes)` to prevent character
+  decomposition: `*(*#, [*]:!(str, bytes))`. The default `**` (key-only recursion)
+  is unaffected — it never entered strings because strings have no dict keys.
 
 ### v0.31.0
 - **`{` and `}` are now reserved characters**: Curly braces are used for container
@@ -954,6 +968,84 @@ To chain through the items, use a pattern instead:
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
 
+<a id="type-restrictions"></a>
+## Type Restrictions
+
+A **type restriction** constrains a path segment so it only applies when the
+current node is a specific type. Append `:type` after any accessor — key,
+slot, or attr:
+
+    >>> import dotted
+    >>> d = {'a': {'b': 1}, 'c': [1, 2], 'd': 'hello'}
+    >>> dotted.get(d, '*:dict.*')
+    (1,)
+
+Here `*:dict` matches all keys but only descends into values that are dicts.
+The list and string are skipped.
+
+Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
+`set`, `frozenset`, `bool`.
+
+<a id="positive-restrictions"></a>
+### Positive restrictions
+
+`:type` allows only that type. `:(type1, type2)` allows any of the listed types:
+
+    >>> d = {'x': {'y': 1}}
+    >>> dotted.get(d, 'x:dict.y')
+    1
+    >>> dotted.get(d, 'x:list', 'missing')
+    'missing'
+
+<a id="negative-restrictions"></a>
+### Negative restrictions
+
+`:!type` excludes a type. `:!(type1, type2)` excludes multiple types:
+
+    >>> d = {'a': 'hello', 'b': {'c': 1}}
+    >>> dotted.get(d, '*:!(str).*')
+    (1,)
+
+<a id="slot-and-attr-restrictions"></a>
+### Slot and attr restrictions
+
+Type restrictions work on slot and attr accessors too:
+
+    >>> dotted.get([10, 20], '[0]:list')
+    10
+    >>> dotted.get((10, 20), '[0]:list', 'missing')
+    'missing'
+    >>> dotted.get((10, 20), '[0]:tuple')
+    10
+
+Use `:!(str, bytes)` on slot wildcards to prevent string and bytes decomposition:
+
+    >>> d = {'s': 'abc', 'b': b'xyz', 'l': [1, 2]}
+    >>> dotted.get(d, '*[*]:!(str, bytes)')
+    (1, 2)
+
+<a id="combining-with-filters"></a>
+### Combining with filters
+
+Type restrictions compose with filters. The restriction goes before the filter:
+
+    >>> d = {'a': {'x': 1, 'y': 2}, 'b': {'x': 3, 'y': 4}}
+    >>> dotted.get(d, '*:dict&x=1.*')
+    (1, 2)
+
+<a id="recursive-traversal-with-type-restrictions"></a>
+### Recursive traversal with type restrictions
+
+Type restrictions are especially useful in recursive accessor groups to control
+which containers are traversed:
+
+    >>> d = {'a': {'b': [1, 2]}, 'c': 'hello'}
+    >>> dotted.get(d, '*(*#, [*]:!(str, bytes))')
+    ({'b': [1, 2]}, [1, 2], 1, 2, 'hello')
+
+Without `:!(str, bytes)`, the `[*]` slot accessor would decompose `'hello'`
+into individual characters.
+
 <a id="recursive-traversal"></a>
 ## Recursive Traversal
 
@@ -1066,7 +1158,7 @@ Range slicing works like Python slices: `**:start:stop` and `**:::step`:
 Depth slicing also works with accessor groups:
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'extra': 'stuff'}
-    >>> dotted.get(d, '*(*#, [*]):-2')
+    >>> dotted.get(d, '*(*#, [*]:!(str, bytes)):-2')
     ([1, 2, 3],)
 
 <a id="recursive-with-value-guard"></a>
@@ -1214,17 +1306,17 @@ what the soft-cut branch already yielded. Use soft cut when a branch handles som
 keys and you want a fallback branch to handle the rest.
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
-    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])##, (*, []))')
+    >>> dotted.pluck(d, '(*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
 
-Here `*(*#, [*]):-2(.*, [])` recurses into containers (dicts and lists) and yields
-their leaf containers. The `##` means: for keys that recursion covered (like `a`
-and `x`), don't try the `(*, [])` fallback. But `extra` was not covered by the
-recursive branch, so the fallback picks it up.
+Here `*(*#, [*]:!(str, bytes)):-2(.*, [])` recurses into containers (dicts and lists)
+and yields their leaf containers. The `##` means: for keys that recursion covered
+(like `a` and `x`), don't try the `(*, [])` fallback. But `extra` was not covered
+by the recursive branch, so the fallback picks it up.
 
 Compare with hard cut (`#`), which would lose `extra` entirely:
 
-    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])#, (*, []))')
+    >>> dotted.pluck(d, '(*(*#, [*]:!(str, bytes)):-2(.*, [])#, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]))
 
 #### Conjunction (AND)
@@ -1427,7 +1519,7 @@ This is especially useful with recursive patterns where one branch handles neste
 structures and a fallback handles the rest:
 
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
-    >>> dotted.pluck(d, '(*(*#, [*]):-2(.*, [])##, (*, []))')
+    >>> dotted.pluck(d, '(*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, []))')
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
 
 The recursive branch covers `a` and `x`, so `(*, [])` skips those. But `extra` was

@@ -20,8 +20,31 @@ _CUT_SENTINEL = object()
 _BRANCH_CUT = object()
 # Structural marker: soft cut (##) — after previous branch, suppress later branches for keys already yielded.
 _BRANCH_SOFTCUT = object()
-# Types that are terminal for recursive traversal — never descended into.
-_RECURSIVE_TERMINALS = (str, bytes)
+# Registry of recognized type names for path segment type restrictions.
+_TYPE_REGISTRY = {
+    'str': str, 'bytes': bytes, 'int': int, 'float': float,
+    'dict': dict, 'list': list, 'tuple': tuple,
+    'set': set, 'frozenset': frozenset, 'bool': bool,
+}
+
+
+class _TypeSpec:
+    """
+    Intermediate parse result for type restriction grammar rules.
+    Holds types and negate flag until the access op parse action wraps it.
+    """
+
+    def __init__(self, *types, negate=False):
+        self.types = types
+        self.negate = negate
+
+    def wrap(self, inner):
+        """
+        Wrap an access op with a TypeRestriction.
+        Import is deferred because TypeRestriction is defined later in this module.
+        """
+        return TypeRestriction(inner, *self.types, negate=self.negate)
+
 
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
 # the user's data when it is a generator/iterator (e.g. a sequence at some path, or values from
@@ -2326,44 +2349,12 @@ class Invert(SimpleOp):
 
 
 class Wrap(TraversalOp):
-    """Abstract base for ops that wrap another op; use .inner to get the wrapped op."""
+    """
+    Abstract base for ops that wrap another op; use .inner to get the wrapped op.
+    Provides default delegation for all access-op methods.
+    """
 
     inner = None  # subclasses set in __init__
-
-
-class NopWrap(Wrap):
-    """
-    Wraps a path segment so that update/remove matches but does not mutate.
-    Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
-    """
-    def __init__(self, inner, *args, **kwargs):
-        super().__init__(inner, *args, **kwargs)
-        self.inner = inner
-
-    def __repr__(self):
-        return f'~{self.inner!r}'
-
-    def __hash__(self):
-        return hash(('nop', self.inner))
-
-    def __eq__(self, other):
-        return isinstance(other, NopWrap) and self.inner == other.inner
-
-    def operator(self, top=False):
-        s = self.inner.operator(top)
-        # Empty slice: canonical ~[]
-        if s == '[]':
-            return '~[]'
-        # Slots: always [~stuff] (tilde inside brackets)
-        if s.startswith('['):
-            return '[~' + s[1:]
-        if top:
-            return '~' + s
-        if s.startswith('.'):
-            return '.~' + s[1:]
-        if s.startswith('@'):
-            return '@~' + s[1:]
-        return '~' + s
 
     def is_pattern(self):
         return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
@@ -2394,8 +2385,53 @@ class NopWrap(Wrap):
         except TypeError:
             return self.inner.match(op)
 
+    def concrete(self, val):
+        return self.inner.concrete(val)
+
+    def pop(self, node, key):
+        return self.inner.pop(node, key)
+
+    def remove(self, node, val, **kwargs):
+        return self.inner.remove(node, val, **kwargs)
+
     def push_children(self, stack, frame, paths):
         return self.inner.push_children(stack, frame, paths)
+
+
+class NopWrap(Wrap):
+    """
+    Wraps a path segment so that update/remove matches but does not mutate.
+    Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
+    """
+
+    def __init__(self, inner, *args, **kwargs):
+        super().__init__(inner, *args, **kwargs)
+        self.inner = inner
+
+    def __repr__(self):
+        return f'~{self.inner!r}'
+
+    def __hash__(self):
+        return hash(('nop', self.inner))
+
+    def __eq__(self, other):
+        return isinstance(other, NopWrap) and self.inner == other.inner
+
+    def operator(self, top=False):
+        s = self.inner.operator(top)
+        # Empty slice: canonical ~[]
+        if s == '[]':
+            return '~[]'
+        # Slots: always [~stuff] (tilde inside brackets)
+        if s.startswith('['):
+            return '[~' + s[1:]
+        if top:
+            return '~' + s
+        if s.startswith('.'):
+            return '.~' + s[1:]
+        if s.startswith('@'):
+            return '@~' + s[1:]
+        return '~' + s
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, **kwargs)
@@ -2529,6 +2565,88 @@ class ValueGuard(Wrap):
         return BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
 
 
+class TypeRestriction(Wrap):
+    """
+    Wraps an access op with a node-type constraint.
+    :type (positive) or :!type / :!(t1, t2) (negative).
+    """
+
+    def __init__(self, inner, *types, negate=False, **kwargs):
+        super().__init__(inner, **kwargs)
+        self.inner = inner
+        self.types = tuple(types)
+        self.negate = negate
+
+    def allows(self, node):
+        """
+        Return True if node's type is allowed by this restriction.
+        """
+        match = isinstance(node, self.types)
+        return not match if self.negate else match
+
+    def _type_suffix(self):
+        """
+        Render the :type or :!type suffix.
+        """
+        _reverse = {v: k for k, v in _TYPE_REGISTRY.items()}
+        names = [_reverse[t] for t in self.types if t in _reverse]
+        if len(names) == 1:
+            inner = names[0]
+        else:
+            inner = f'({", ".join(names)})'
+        if self.negate:
+            return f':!{inner}'
+        return f':{inner}'
+
+    def __repr__(self):
+        return f'{self.inner!r}{self._type_suffix()}'
+
+    def __hash__(self):
+        return hash(('tr', self.inner, self.types, self.negate))
+
+    def __eq__(self, other):
+        return (isinstance(other, TypeRestriction)
+                and self.inner == other.inner
+                and self.types == other.types
+                and self.negate == other.negate)
+
+    def operator(self, top=False):
+        return self.inner.operator(top) + self._type_suffix()
+
+    def items(self, node, **kwargs):
+        if not self.allows(node):
+            return ()
+        return self.inner.items(node, **kwargs)
+
+    def values(self, node, **kwargs):
+        if not self.allows(node):
+            return ()
+        return self.inner.values(node, **kwargs)
+
+    def keys(self, node, **kwargs):
+        if not self.allows(node):
+            return ()
+        return self.inner.keys(node, **kwargs)
+
+    def push_children(self, stack, frame, paths):
+        """
+        Short-circuit if node type is not allowed; otherwise delegate to inner.
+        """
+        if not self.allows(frame.node):
+            return ()
+        return self.inner.push_children(stack, frame, paths)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
+        if not self.allows(node):
+            return node
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
+
+    def do_remove(self, ops, node, val, nop, **kwargs):
+        if not self.allows(node):
+            return node
+        return self.inner.do_remove(ops, node, val, nop, **kwargs)
+
+
 class Recursive(BaseOp):
     """
     Recursive traversal operator. Matches a pattern at each level and recurses
@@ -2626,10 +2744,7 @@ class Recursive(BaseOp):
         """
         Yield (accessor, key, value) for all matching accessors on this node.
         Respects hard cuts: if a cut-marked branch matched, stop.
-        _RECURSIVE_TERMINALS are never recursed into.
         """
-        if isinstance(node, _RECURSIVE_TERMINALS):
-            return
         branches = self._effective_branches()
         i = 0
         while i < len(branches):

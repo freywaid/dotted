@@ -367,41 +367,144 @@ filter_keyvalue_first = (filter_expr + S('?')).set_parse_action(el.FilterKeyValu
 
 filters = filter_keyvalue_first | filter_expr
 
+# Path segment type restrictions: :type, :(t1, t2), :!type, :!(t1, t2)
+_type_name = pp.one_of(list(el._TYPE_REGISTRY.keys()))
+_type_tuple = S('(') + _type_name + ZM(_comma_ws + _type_name) + S(')')
+_type_spec = _type_tuple | _type_name
+
+_type_neg = (colon + S('!') + _type_spec).set_parse_action(
+    lambda t: el._TypeSpec(*(el._TYPE_REGISTRY[n] for n in t), negate=True))
+_type_pos = (colon + _type_spec).set_parse_action(
+    lambda t: el._TypeSpec(*(el._TYPE_REGISTRY[n] for n in t)))
+type_restriction = _type_neg | _type_pos
+
 # Value guard: key=value, key!=value, [slot]=value, [slot]!=value (direct value test)
 _guard_eq = equal + value
 _guard_neq = not_equal + value
 
-keycmd_guarded_neq = (key + ZM(amp + filters) + _guard_neq).set_parse_action(
-    lambda t: el.ValueGuard(el.Key(*t[:-1]), t[-1], negate=True))
-keycmd_guarded = (key + ZM(amp + filters) + _guard_eq).set_parse_action(
-    lambda t: el.ValueGuard(el.Key(*t[:-1]), t[-1]))
-
-keycmd = (key + ZM(amp + filters)).set_parse_action(el.Key)
-
-_slotguts = (_commons | numeric_extended | numeric_slot) + ZM(amp + filters)
-
-def _slotcmd_guarded_action(negate):
+def _keycmd_guarded_action(negate):
+    """
+    Parse action for key with optional type restriction and value guard.
+    """
     def action(t):
         t = list(t)
         guard = t[-1]
         rest = t[:-1]
-        if rest and rest[0] == '~':
-            inner = el.NopWrap(el.Slot(*rest[1:]))
-        else:
-            inner = el.Slot(*rest)
+        tr = None
+        args = []
+        for item in rest:
+            if isinstance(item, el._TypeSpec):
+                tr = item
+            else:
+                args.append(item)
+        inner = el.Key(*args)
+        if tr:
+            inner = tr.wrap(inner)
         return el.ValueGuard(inner, guard, negate=negate)
     return action
 
-slotcmd_guarded_neq = (lb + Opt(L('~')) + _slotguts + rb + _guard_neq).set_parse_action(_slotcmd_guarded_action(True))
-slotcmd_guarded = (lb + Opt(L('~')) + _slotguts + rb + _guard_eq).set_parse_action(_slotcmd_guarded_action(False))
+keycmd_guarded_neq = (key + Opt(type_restriction) + ZM(amp + filters) + _guard_neq).set_parse_action(_keycmd_guarded_action(True))
+keycmd_guarded = (key + Opt(type_restriction) + ZM(amp + filters) + _guard_eq).set_parse_action(_keycmd_guarded_action(False))
 
-slotcmd = (lb + Opt(L('~')) + _slotguts + rb).set_parse_action(
-    lambda t: el.NopWrap(el.Slot(*t[1:])) if t[0] == '~' else el.Slot(*t))
+def _keycmd_action(t):
+    """
+    Parse action for key with optional type restriction.
+    """
+    t = list(t)
+    tr = None
+    args = []
+    for item in t:
+        if isinstance(item, el._TypeSpec):
+            tr = item
+        else:
+            args.append(item)
+    result = el.Key(*args)
+    if tr:
+        result = tr.wrap(result)
+    return result
+
+keycmd = (key + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(_keycmd_action)
+
+_slotguts = (_commons | numeric_extended | numeric_slot) + ZM(amp + filters)
+
+def _slotcmd_guarded_action(negate):
+    """
+    Parse action for slot with optional type restriction and value guard.
+    """
+    def action(t):
+        t = list(t)
+        guard = t[-1]
+        rest = t[:-1]
+        tr = None
+        nop = False
+        args = []
+        for item in rest:
+            if isinstance(item, el._TypeSpec):
+                tr = item
+            elif item == '~':
+                nop = True
+            else:
+                args.append(item)
+        inner = el.Slot(*args)
+        if tr:
+            inner = tr.wrap(inner)
+        if nop:
+            inner = el.NopWrap(inner)
+        return el.ValueGuard(inner, guard, negate=negate)
+    return action
+
+slotcmd_guarded_neq = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction) + _guard_neq).set_parse_action(_slotcmd_guarded_action(True))
+slotcmd_guarded = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction) + _guard_eq).set_parse_action(_slotcmd_guarded_action(False))
+
+def _slotcmd_action(t):
+    """
+    Parse action for slot with optional type restriction.
+    """
+    t = list(t)
+    tr = None
+    nop = False
+    args = []
+    for item in t:
+        if isinstance(item, el._TypeSpec):
+            tr = item
+        elif item == '~':
+            nop = True
+        else:
+            args.append(item)
+    result = el.Slot(*args)
+    if tr:
+        result = tr.wrap(result)
+    if nop:
+        result = el.NopWrap(result)
+    return result
+
+slotcmd = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction)).set_parse_action(_slotcmd_action)
 
 # @~ and ~@ both produce NopWrap (canonical form @~)
-_attr_nop = ((at + tilde) | (tilde + at)) + (nameop | _common_pats) + ZM(amp + filters)
-_attr_nop = _attr_nop.set_parse_action(lambda t: el.NopWrap(el.Attr(*t[1:])))  # t=[~,nameop,...] or [nameop,...]
-_attr_plain = (at + (nameop | _common_pats) + ZM(amp + filters)).set_parse_action(lambda t: el.Attr(*t))
+def _attr_action(t, nop=False):
+    """
+    Parse action for attr with optional type restriction.
+    """
+    t = list(t)
+    tr = None
+    args = []
+    for item in t:
+        if isinstance(item, el._TypeSpec):
+            tr = item
+        elif item == '~':
+            pass  # consumed by grammar, marks nop
+        else:
+            args.append(item)
+    result = el.Attr(*args)
+    if tr:
+        result = tr.wrap(result)
+    if nop:
+        result = el.NopWrap(result)
+    return result
+
+_attr_nop = ((at + tilde) | (tilde + at)) + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)
+_attr_nop = _attr_nop.set_parse_action(lambda t: _attr_action(t, nop=True))
+_attr_plain = (at + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(lambda t: _attr_action(t))
 attrcmd = _attr_nop | _attr_plain
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
@@ -501,7 +604,7 @@ def _extract_accessors(opgroup):
         if len(branch) == 1 and isinstance(branch[0], OpGroup):
             # Flatten nested group: inline its branches
             result.extend(_extract_accessors(branch[0]))
-        elif len(branch) == 1 and isinstance(branch[0], el.AccessOp):
+        elif len(branch) == 1 and isinstance(branch[0], (el.AccessOp, el.TypeRestriction)):
             result.append(branch)
         else:
             raise ValueError(

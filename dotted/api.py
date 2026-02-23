@@ -836,7 +836,7 @@ def unpack(obj, attrs=None):
     """
     Convert obj to dotted normal form.  A tuple of (path, value) pairs which
     can be replayed to regenerate the obj.  Internally, this calls:
-         pluck(obj, '*(*#, [*]):-2(.*, [])##, (*, [])')
+         pluck(obj, '*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, [])')
 
     Pass attrs= to include object attributes:
         attrs=[Attrs.standard]            non-dunder attrs
@@ -858,7 +858,7 @@ def unpack(obj, attrs=None):
         extra = ', @/(?!__).*/'
     else:
         extra = ', @/__.*/'
-    return pluck(obj, f'*(*#, [*]{extra}):-2(.*, []{extra})##, (*, []{extra})')
+    return pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})')
 
 
 #
