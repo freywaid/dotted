@@ -29,9 +29,7 @@ from .access import (  # noqa: F401 — re-export
 from .recursive import (  # noqa: F401 — re-export
     Recursive, RecursiveFirst,
 )
-from .utypes import (  # noqa: F401 — re-export
-    _TYPE_REGISTRY, _TypeSpec,
-)
+from .utypes import _TYPE_REGISTRY  # used by TypeRestriction._type_suffix
 from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
 from . import filters
