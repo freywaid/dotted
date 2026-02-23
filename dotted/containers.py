@@ -27,7 +27,9 @@ Type prefix semantics:
 import re
 from itertools import combinations
 
-from . import utils, base, match
+from . import utils
+from . import base
+from . import match
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ branches for overlapping paths.
 """
 import pytest
 import dotted
-import dotted.elements as el
+from dotted import engine
 from dotted import utypes
 
 
@@ -358,7 +358,7 @@ def test_overlaps_with_tuples():
     """
     d = {'a': {'b': 1}}
     ops = dotted.parse('a.b')
-    paths = [path for path, _ in el.walk(ops.ops, d, paths=True)]
+    paths = [path for path, _ in engine.walk(ops.ops, d, paths=True)]
     assert len(paths) == 1
     assert dotted.overlaps(paths[0], 'a')
     assert dotted.overlaps(paths[0], 'a.b')

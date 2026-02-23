@@ -231,7 +231,7 @@ class Recursive(BaseOp):
         return node
 
     def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
-        from . import elements
+        from . import engine
         node_id = id(node)
         if node_id in seen:
             return node
@@ -252,7 +252,7 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, elements.updates(ops, v, val, has_defaults, _path + [(self, k)], nop, **kwargs))
+                node = self._assign(acc, node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], nop, **kwargs))
             elif not nop:
                 node = self._assign(acc, node, k, val)
         return node
@@ -261,7 +261,7 @@ class Recursive(BaseOp):
         return self._update_recursive(ops, node, val, has_defaults, _path, nop, **kwargs)
 
     def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
-        from . import elements
+        from . import engine
         node_id = id(node)
         if node_id in seen:
             return node
@@ -283,7 +283,7 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, elements.removes(ops, v, val, nop=False, **kwargs))
+                node = self._assign(acc, node, k, engine.removes(ops, v, val, nop=False, **kwargs))
             elif not nop:
                 to_remove.append((acc, k))
         for acc, k in reversed(to_remove):

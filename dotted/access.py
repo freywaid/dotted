@@ -129,7 +129,8 @@ class BaseOp(base.TraversalOp):
         return (v for _, v in self.items(node, **kwargs))
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        from . import elements
+        from . import engine
+        from . import wrappers
         if not ops:
             if nop:
                 return node
@@ -137,19 +138,19 @@ class BaseOp(base.TraversalOp):
                 return node
             return self.upsert(node, val)
         if self.is_empty(node) and not has_defaults:
-            if nop or isinstance(ops[0], elements.NopWrap):
+            if nop or isinstance(ops[0], wrappers.NopWrap):
                 return node
-            built = elements.updates(ops, elements.build_default(ops), val, True, _path, nop, **kwargs)
+            built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, **kwargs)
             return self.upsert(node, built)
         pass_nop = nop and not nop_from_unwrap
         for k, v in self.items(node, **kwargs):
             if v is None:
-                v = elements.build_default(ops)
-            node = self.update(node, k, elements.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **kwargs))
+                v = engine.build_default(ops)
+            node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **kwargs))
         return node
 
     def do_remove(self, ops, node, val, nop, **kwargs):
-        from . import elements
+        from . import engine
         if not ops:
             if nop:
                 return node
@@ -157,7 +158,7 @@ class BaseOp(base.TraversalOp):
                 return node
             return self.remove(node, val)
         for k, v in self.items(node, **kwargs):
-            node = self.update(node, k, elements.removes(ops, v, val, nop=False, **kwargs))
+            node = self.update(node, k, engine.removes(ops, v, val, nop=False, **kwargs))
         return node
 
 
@@ -962,10 +963,10 @@ class Invert(SimpleOp):
         yield node
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        from . import elements
-        return elements.removes(ops, node, val, **kwargs)
+        from . import engine
+        return engine.removes(ops, node, val, **kwargs)
 
     def do_remove(self, ops, node, val, nop, **kwargs):
-        from . import elements
+        from . import engine
         assert val is not base.ANY, 'Value required'
-        return elements.updates(ops, node, val, **kwargs)
+        return engine.updates(ops, node, val, **kwargs)

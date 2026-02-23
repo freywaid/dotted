@@ -34,7 +34,7 @@ class TypeSpec:
     def wrap(self, inner):
         """
         Wrap an access op with a TypeRestriction.
-        Import is deferred because TypeRestriction lives in elements.py.
+        Import is deferred because TypeRestriction lives in wrappers.py.
         """
-        from . import elements
-        return elements.TypeRestriction(inner, *self.types, negate=self.negate)
+        from . import wrappers
+        return wrappers.TypeRestriction(inner, *self.types, negate=self.negate)

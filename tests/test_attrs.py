@@ -158,25 +158,25 @@ def test_attr_with_transform():
 
 def test_format_path_attr_segment():
     """_format_path consumes (op, k) segments and renders obj@attr (no dot before @)."""
-    import dotted.elements as el
+    from dotted import engine
     from dotted.access import Key, Attr, Slot
     from dotted.match import Word, Wildcard
     # Segments: (Key, 'obj'), (Attr, 'name') -> obj@name
     path = [(Key(Word('obj')), 'obj'), (Attr(Word('name')), 'name')]
-    assert el._format_path(path) == 'obj@name'
+    assert engine._format_path(path) == 'obj@name'
     # Key, Key, Attr -> obj.foo@name
     path2 = [
         (Key(Word('obj')), 'obj'),
         (Key(Word('foo')), 'foo'),
         (Attr(Word('name')), 'name'),
     ]
-    assert el._format_path(path2) == 'obj.foo@name'
+    assert engine._format_path(path2) == 'obj.foo@name'
     # First segment Attr -> @name (no leading dot)
     path3 = [(Attr(Word('name')), 'name')]
-    assert el._format_path(path3) == '@name'
+    assert engine._format_path(path3) == '@name'
     # Slot segment -> [0]
     path4 = [(Key(Word('items')), 'items'), (Slot(Wildcard()), 0)]
-    assert el._format_path(path4) == 'items[0]'
+    assert engine._format_path(path4) == 'items[0]'
 
 
 # =============================================================================

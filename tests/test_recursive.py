@@ -3,7 +3,7 @@ import dotted
 from dotted.grammar import template
 from dotted.recursive import Recursive, RecursiveFirst
 from dotted.match import Wildcard, Word
-from dotted.elements import ValueGuard
+from dotted.wrappers import ValueGuard
 
 
 # -- Parse / assemble round-trip --

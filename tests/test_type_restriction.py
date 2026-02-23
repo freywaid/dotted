@@ -4,8 +4,8 @@ Tests for path segment type restrictions.
 import types
 import pytest
 import dotted
-from dotted import elements as el
 from dotted import access
+from dotted import wrappers
 from dotted.match import Wildcard
 
 
@@ -45,7 +45,7 @@ def test_allows_positive_single():
     """
     Positive single type: allows matching type, rejects others.
     """
-    tr = el.TypeRestriction(_w(), dict)
+    tr = wrappers.TypeRestriction(_w(), dict)
     assert tr.allows({'a': 1})
     assert not tr.allows([1, 2])
     assert not tr.allows('hello')
@@ -55,7 +55,7 @@ def test_allows_positive_multiple():
     """
     Positive multiple types: allows any listed type.
     """
-    tr = el.TypeRestriction(_w(), dict, list)
+    tr = wrappers.TypeRestriction(_w(), dict, list)
     assert tr.allows({'a': 1})
     assert tr.allows([1, 2])
     assert not tr.allows('hello')
@@ -65,7 +65,7 @@ def test_allows_negative_single():
     """
     Negated single type: rejects matching type, allows others.
     """
-    tr = el.TypeRestriction(_w(), str, negate=True)
+    tr = wrappers.TypeRestriction(_w(), str, negate=True)
     assert tr.allows({'a': 1})
     assert tr.allows([1, 2])
     assert not tr.allows('hello')
@@ -75,7 +75,7 @@ def test_allows_negative_multiple():
     """
     Negated multiple types: rejects any listed type.
     """
-    tr = el.TypeRestriction(_w(), str, bytes, negate=True)
+    tr = wrappers.TypeRestriction(_w(), str, bytes, negate=True)
     assert tr.allows({'a': 1})
     assert tr.allows([1, 2])
     assert not tr.allows('hello')
@@ -88,7 +88,7 @@ def test_repr_single():
     """
     Single positive type renders as inner:type.
     """
-    tr = el.TypeRestriction(_w(), dict)
+    tr = wrappers.TypeRestriction(_w(), dict)
     assert repr(tr) == '*:dict'
 
 
@@ -96,7 +96,7 @@ def test_repr_single_negated():
     """
     Single negated type renders as inner:!type.
     """
-    tr = el.TypeRestriction(_w(), str, negate=True)
+    tr = wrappers.TypeRestriction(_w(), str, negate=True)
     assert repr(tr) == '*:!str'
 
 
@@ -104,7 +104,7 @@ def test_repr_multiple():
     """
     Multiple positive types render as inner:(t1, t2).
     """
-    tr = el.TypeRestriction(_w(), str, bytes)
+    tr = wrappers.TypeRestriction(_w(), str, bytes)
     assert repr(tr) == '*:(str, bytes)'
 
 
@@ -112,7 +112,7 @@ def test_repr_multiple_negated():
     """
     Multiple negated types render as inner:!(t1, t2).
     """
-    tr = el.TypeRestriction(_w(), str, bytes, negate=True)
+    tr = wrappers.TypeRestriction(_w(), str, bytes, negate=True)
     assert repr(tr) == '*:!(str, bytes)'
 
 

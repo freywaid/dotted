@@ -1,0 +1,240 @@
+"""
+Traversal engine for dotted path operations.
+
+Core traversal functions (walk, gets, updates, removes, expands) and the
+Dotted result model with transform registry.
+"""
+import copy
+import itertools
+
+from . import base
+from . import match
+from . import utils
+from . import wrappers
+from .access import Attr, Slot, Invert
+
+
+class rdoc(str):
+    def expandtabs(*args, **kwargs):
+        title = 'Supported transforms\n\n'
+        return title + '\n'.join(f'{name}\t{fn.__doc__ or ""}' for name,fn in Dotted._registry.items())
+
+
+class Dotted:
+    _registry = {}
+
+    def registry(self):
+        return self._registry
+
+    @classmethod
+    def register(cls, name, fn):
+        cls._registry[name] = fn
+
+    def __init__(self, results):
+        self.ops = tuple(results['ops'])
+        self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
+
+    def assemble(self, start=0, pedantic=False):
+        return assemble(self, start, pedantic=pedantic)
+    def __repr__(self):
+        return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
+    @staticmethod
+    def _hashable(obj):
+        """
+        Recursively convert unhashable types to hashable equivalents.
+        """
+        if utils.is_list_like(obj):
+            return tuple(Dotted._hashable(x) for x in obj)
+        if utils.is_set_like(obj):
+            return frozenset(Dotted._hashable(x) for x in obj)
+        if utils.is_dict_like(obj):
+            if hasattr(obj, 'items') and callable(obj.items):
+                iterable = obj.items()
+            else:
+                iterable = ((k, obj[k]) for k in obj)
+            return tuple(sorted((k, Dotted._hashable(v)) for k, v in iterable))
+        return obj
+    def __hash__(self):
+        try:
+            return hash((self.ops, self.transforms))
+        except TypeError:
+            return hash((self.ops, Dotted._hashable(self.transforms)))
+    def __len__(self):
+        return len(self.ops)
+    def __iter__(self):
+        return iter(self.ops)
+    def __eq__(self, ops):
+        return self.ops == ops.ops and self.transforms == ops.transforms
+    def __getitem__(self, key):
+        return self.ops[key]
+    def apply(self, val):
+        for name,*args in self.transforms:
+            fn = self._registry[name]
+            val = fn(val, *args)
+        return val
+
+Dotted.registry.__doc__ = rdoc()
+
+
+def assemble(ops, start=0, pedantic=False):
+    """
+    Reassemble ops into a dotted notation string.
+
+    By default, strips a redundant trailing [] (e.g. hello[] -> hello)
+    unless it follows another [] (hello[][] is preserved as-is).
+    Set pedantic=True to always preserve trailing [].
+    """
+    parts = []
+    top = True
+    for op in itertools.islice(ops, start, None):
+        parts.append(op.operator(top))
+        if not isinstance(op, Invert):
+            top = False
+    if not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]':
+        parts.pop()
+    return ''.join(parts)
+
+
+def transform(name):
+    """
+    Transform decorator
+    """
+    def _fn(fn):
+        Dotted.register(name, fn)
+        return fn
+    return _fn
+
+
+def build_default(ops):
+    cur, *ops = ops
+    if not ops:
+        # At leaf - for numeric Slot, populate index with None
+        if isinstance(cur, Slot) and isinstance(cur.op, match.Numeric) and cur.op.is_int():
+            idx = cur.op.value
+            return [None] * (idx + 1)
+        return cur.default()
+    built = cur.default()
+    return cur.upsert(built, build_default(ops))
+
+
+def build(ops, node, deepcopy=True, **kwargs):
+    cur, *ops = ops
+    built = node.__class__()
+    for k,v in cur.items(node, **kwargs):
+        if not ops:
+            built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
+        else:
+            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy, **kwargs))
+    return built or build_default([cur]+ops)
+
+
+def iter_until_cut(gen):
+    """
+    Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.
+    """
+    for x in gen:
+        if x is base.CUT_SENTINEL:
+            return
+        yield x
+
+
+def process(stack, paths):
+    """
+    Process frames at the current depth level and any nested levels
+    pushed by ops within it. Yields (path, value) results.
+    """
+    level = stack.level
+    while stack.level >= level and stack.current:
+        frame = stack.pop()
+        if not frame.ops:
+            yield (frame.prefix if paths else None, frame.node)
+            continue
+        op = frame.ops[0]
+        frame.ops = frame.ops[1:]
+        yield from op.push_children(stack, frame, paths)
+
+
+def walk(ops, node, paths=True, **kwargs):
+    """
+    Yield (path_tuple, value) for all matches.
+    path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
+    """
+    stack = base.DepthStack()
+    stack.push(base.Frame(tuple(ops), node, (), kwargs=kwargs or None))
+    yield from process(stack, paths)
+
+
+def gets(ops, node, **kwargs):
+    """
+    Yield values for all matches. Thin wrapper around walk().
+    """
+    for path, val in walk(ops, node, paths=False, **kwargs):
+        if path is base.CUT_SENTINEL:
+            yield base.CUT_SENTINEL
+        else:
+            yield val
+
+
+def _is_container(obj):
+    """
+    Check if object can be used as a container for dotted updates.
+    """
+    if obj is None:
+        return False
+    # Dict-like, sequence-like, or has attributes
+    return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or
+            hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
+
+
+def _format_path(segments):
+    """
+    Consume an iterable of (op, k) segments and assemble the path string for error messages.
+    Uses position and op type to decide .key, @attr, [k] and no leading dot on first segment.
+    """
+    result = []
+    for i, (op, k) in enumerate(segments):
+        cur = op.inner if isinstance(op, wrappers.Wrap) else op
+        first = i == 0
+        if isinstance(cur, Attr):
+            result.append('@' + str(k))
+        elif isinstance(cur, Slot):
+            result.append(f'[{k}]')
+        elif isinstance(k, int):
+            # Assume int => slot (bracket index) when op type is unknown
+            result.append(f'[{k}]')
+        else:
+            # Key or other key-like
+            result.append('.' + str(k) if not first else str(k))
+    return ''.join(result)
+
+
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
+    if _path is None:
+        _path = []
+    if not has_defaults and not _is_container(node):
+        path_str = _format_path(_path)
+        location = f" at '{path_str}'" if path_str else ""
+        raise TypeError(
+            f"Cannot update {type(node).__name__}{location} - "
+            "use a dict, list, or other container"
+        )
+    cur, *ops = ops
+    return cur.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
+
+
+def removes(ops, node, val=base.ANY, nop=False, **kwargs):
+    cur, *ops = ops
+    return cur.do_remove(ops, node, val, nop, **kwargs)
+
+
+def expands(ops, node, **kwargs):
+    """
+    Yield Dotted objects for all matched paths. Thin wrapper around walk().
+    """
+    for path, val in walk(ops, node, paths=True, **kwargs):
+        if path is base.CUT_SENTINEL:
+            return
+        yield Dotted({'ops': path, 'transforms': ops.transforms})
+
+# default transforms
+from . import transforms

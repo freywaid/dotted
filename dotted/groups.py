@@ -1,11 +1,11 @@
 """
 """
-import copy
-import itertools
 import pyparsing as pp
 
-from . import base, match, access, recursive, filters, utypes, utils
-from .access import BaseOp, Key, Attr, Slot, SlotSpecial, Invert
+from . import base
+from . import wrappers
+from . import engine
+from .access import Key, Attr, Slot, SlotSpecial, Invert
 
 class OpGroup(base.TraversalOp):
     """
@@ -42,7 +42,7 @@ class OpGroup(base.TraversalOp):
                 first_op = branch[0]
                 # Unwrap NopWrap/ValueGuard to find the underlying op
                 inner = first_op
-                while isinstance(inner, (NopWrap, ValueGuard)):
+                while isinstance(inner, (wrappers.NopWrap, wrappers.ValueGuard)):
                     inner = inner.inner
                 # Slot groups operate on lists
                 if isinstance(inner, Slot):
@@ -149,7 +149,7 @@ class OpGroupOr(OpGroup):
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
             found = False
-            for path, val in _process(stack, use_paths):
+            for path, val in engine.process(stack, use_paths):
                 if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base.path_overlaps(softcut_paths, path):
@@ -179,7 +179,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in walk(branch_ops, node, paths=True, **kwargs):
+            for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base.path_overlaps(softcut_paths, path):
@@ -191,11 +191,11 @@ class OpGroupOr(OpGroup):
             if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
-                branch_nop = nop or any(isinstance(op, NopWrap) for op in item)
+                branch_nop = nop or any(isinstance(op, wrappers.NopWrap) for op in item)
                 for path in paths:
-                    node = updates(list(path), node, val, has_defaults, _path, branch_nop, **kwargs)
+                    node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, **kwargs)
             else:
-                node = updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
             if marker is base.BRANCH_CUT:
                 return node
         if not matched_any:
@@ -214,7 +214,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in walk(branch_ops, node, paths=True, **kwargs):
+            for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and base.path_overlaps(softcut_paths, path):
@@ -226,9 +226,9 @@ class OpGroupOr(OpGroup):
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
                 for path in paths:
-                    node = removes(list(path), node, val, **kwargs)
+                    node = engine.removes(list(path), node, val, **kwargs)
             else:
-                node = removes(branch_ops, node, val, **kwargs)
+                node = engine.removes(branch_ops, node, val, **kwargs)
             if marker is base.BRANCH_CUT:
                 return node
         return node
@@ -274,7 +274,7 @@ class OpGroupFirst(OpGroup):
                 continue
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
-            for pair in _process(stack, paths):
+            for pair in engine.process(stack, paths):
                 stack.pop_level()
                 return [pair]
             stack.pop_level()
@@ -285,8 +285,8 @@ class OpGroupFirst(OpGroup):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base.has_any(gets(branch_ops, node, **kwargs)):
-                return updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+            if base.has_any(engine.gets(branch_ops, node, **kwargs)):
+                return engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
         return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
 
     def do_remove(self, ops, node, val, nop, **kwargs):
@@ -294,8 +294,8 @@ class OpGroupFirst(OpGroup):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base.has_any(gets(branch_ops, node, **kwargs)):
-                return removes(branch_ops, node, val, **kwargs)
+            if base.has_any(engine.gets(branch_ops, node, **kwargs)):
+                return engine.removes(branch_ops, node, val, **kwargs)
         return node
 
 
@@ -348,7 +348,7 @@ class OpGroupAnd(OpGroup):
                 continue
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
-            branch_results = list(_process(stack, paths))
+            branch_results = list(engine.process(stack, paths))
             stack.pop_level()
             if not branch_results:
                 return ()
@@ -365,7 +365,7 @@ class OpGroupAnd(OpGroup):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
         return node
 
     def do_remove(self, ops, node, val, nop, **kwargs):
@@ -373,12 +373,12 @@ class OpGroupAnd(OpGroup):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if not base.has_any(gets(branch_ops, node, **kwargs)):
+            if not base.has_any(engine.gets(branch_ops, node, **kwargs)):
                 return node
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = removes(branch_ops, node, val, **kwargs)
+                node = engine.removes(branch_ops, node, val, **kwargs)
         return node
 
 
@@ -462,7 +462,7 @@ class OpGroupNot(OpGroup):
         remaining_ops = list(inner[1:]) + list(ops)
         for k, v in self._not_items(node, **kwargs):
             if remaining_ops:
-                node = leaf.update(node, k, updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, **kwargs))
+                node = leaf.update(node, k, engine.updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, **kwargs))
             else:
                 node = leaf.update(node, k, val)
         return node
@@ -476,7 +476,7 @@ class OpGroupNot(OpGroup):
         items = list(self._not_items(node, **kwargs))
         for k, v in reversed(items):
             if remaining_ops:
-                node = leaf.update(node, k, removes(remaining_ops, v, val, **kwargs))
+                node = leaf.update(node, k, engine.removes(remaining_ops, v, val, **kwargs))
             else:
                 node = leaf.pop(node, k)
         return node
@@ -498,7 +498,7 @@ def _to_branch(item):
     return (item,)
 
 
-def _inner_not_action(t):
+def inner_not_action(t):
     """
     Parse action for unified negation: ! atom.
     The atom is either an OpGroup (from grouped expression) or an op_seq.
@@ -509,7 +509,7 @@ def _inner_not_action(t):
     return OpGroupNot(branch)
 
 
-def _inner_and_action(t):
+def inner_and_action(t):
     """
     Parse action for unified conjunction: atom & atom & ...
     """
@@ -517,7 +517,7 @@ def _inner_and_action(t):
     return OpGroupAnd(*branches)
 
 
-def _inner_or_action(t):
+def inner_or_action(t):
     """
     Parse action for unified disjunction: term , term , ...
     Each term is a Group containing [inner_and_result, optional_cut_marker].
@@ -539,7 +539,7 @@ def _inner_or_action(t):
     return OpGroupOr(*out)
 
 
-def _inner_to_opgroup(parsed_result):
+def inner_to_opgroup(parsed_result):
     """
     Parse action: convert (inner_expr) to OpGroup.
     Unwraps single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot,
@@ -566,20 +566,20 @@ def _inner_to_opgroup(parsed_result):
     return OpGroupOr(branch)
 
 
-def _inner_to_opgroup_first(parsed_result):
+def inner_to_opgroup_first(parsed_result):
     """
     Parse action: convert (inner_expr)? to OpGroupFirst.
     """
-    return OpGroupFirst(*_inner_to_opgroup(parsed_result).branches)
+    return OpGroupFirst(*inner_to_opgroup(parsed_result).branches)
 
 
-def _slot_to_opgroup(parsed_result):
+def slot_to_opgroup(parsed_result):
     """
     Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
     Each slot item becomes a branch; # inserts base.BRANCH_CUT after that branch.
     Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
     """
-    _slot_types = (Slot, SlotSpecial, NopWrap)
+    _slot_types = (Slot, SlotSpecial, wrappers.NopWrap)
     out = []
     for item in parsed_result:
         if isinstance(item, _slot_types):
@@ -599,11 +599,11 @@ def _slot_to_opgroup(parsed_result):
     return OpGroupOr(*out)
 
 
-def _slot_to_opgroup_first(parsed_result):
+def slot_to_opgroup_first(parsed_result):
     """
     Convert slot grouping [(*&filter, +)?] to OpGroupFirst.
     """
-    return OpGroupFirst(*_slot_to_opgroup(parsed_result).branches)
+    return OpGroupFirst(*slot_to_opgroup(parsed_result).branches)
 
 
 def _attr_branch(branch):
@@ -616,7 +616,7 @@ def _attr_branch(branch):
     return branch
 
 
-def _attr_transform_opgroup(group):
+def attr_transform_opgroup(group):
     """
     Transform an OpGroup, converting leading Keys to Attrs in all branches.
     Used by @(group) syntax to infer attribute access for bare keys.
@@ -648,512 +648,13 @@ def _attr_transform_opgroup(group):
 
 
 
-
-class Wrap(base.TraversalOp):
-    """
-    Abstract base for ops that wrap another op; use .inner to get the wrapped op.
-    Provides default delegation for all access-op methods.
-    """
-
-    inner = None  # subclasses set in __init__
-
-    def is_pattern(self):
-        return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
-
-    def default(self):
-        return self.inner.default() if hasattr(self.inner, 'default') else {}
-
-    def upsert(self, node, val):
-        return self.inner.upsert(node, val) if hasattr(self.inner, 'upsert') else val
-
-    def items(self, node, **kwargs):
-        return self.inner.items(node, **kwargs) if hasattr(self.inner, 'items') else iter(())
-
-    def values(self, node, **kwargs):
-        return self.inner.values(node, **kwargs) if hasattr(self.inner, 'values') else iter(())
-
-    def is_empty(self, node):
-        return self.inner.is_empty(node) if hasattr(self.inner, 'is_empty') else True
-
-    def update(self, node, key, val):
-        return self.inner.update(node, key, val) if hasattr(self.inner, 'update') else node
-
-    def match(self, op, specials=False):
-        if not hasattr(self.inner, 'match'):
-            return None
-        try:
-            return self.inner.match(op, specials=specials)
-        except TypeError:
-            return self.inner.match(op)
-
-    def concrete(self, val):
-        return self.inner.concrete(val)
-
-    def pop(self, node, key):
-        return self.inner.pop(node, key)
-
-    def remove(self, node, val, **kwargs):
-        return self.inner.remove(node, val, **kwargs)
-
-    def push_children(self, stack, frame, paths):
-        return self.inner.push_children(stack, frame, paths)
-
-
-class NopWrap(Wrap):
-    """
-    Wraps a path segment so that update/remove matches but does not mutate.
-    Use ~ prefix: ~a.b, .~a, ~(name.first), [~*&filter], @~a, ~@a.
-    """
-
-    def __init__(self, inner, *args, **kwargs):
-        super().__init__(inner, *args, **kwargs)
-        self.inner = inner
-
-    def __repr__(self):
-        return f'~{self.inner!r}'
-
-    def __hash__(self):
-        return hash(('nop', self.inner))
-
-    def __eq__(self, other):
-        return isinstance(other, NopWrap) and self.inner == other.inner
-
-    def operator(self, top=False):
-        s = self.inner.operator(top)
-        # Empty slice: canonical ~[]
-        if s == '[]':
-            return '~[]'
-        # Slots: always [~stuff] (tilde inside brackets)
-        if s.startswith('['):
-            return '[~' + s[1:]
-        if top:
-            return '~' + s
-        if s.startswith('.'):
-            return '.~' + s[1:]
-        if s.startswith('@'):
-            return '@~' + s[1:]
-        return '~' + s
-
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, **kwargs)
-
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        return self.inner.do_remove(ops, node, val, nop=True, **kwargs)
-
-
-def _guard_repr(guard):
-    """
-    Produce the repr string for a guard value (the RHS of key=value).
-    """
-    return repr(guard)
-
-
-class ValueGuard(Wrap):
-    """
-    Wraps Key/Slot with a direct value test: key=value, [slot]=value.
-    """
-
-    def __init__(self, inner, guard, negate=False, *args, **kwargs):
-        super().__init__(inner, *args, **kwargs)
-        self.inner = inner    # Key or Slot
-        self.guard = guard    # value op (match.Numeric, match.String, match.Wildcard, match.Regex, etc.)
-        self.negate = negate
-
-    def __repr__(self):
-        eq = '!=' if self.negate else '='
-        return f'{self.inner!r}{eq}{self.guard!r}'
-
-    def __hash__(self):
-        return hash(('guard', self.inner, self.guard, self.negate))
-
-    def __eq__(self, other):
-        return (isinstance(other, ValueGuard) and self.inner == other.inner
-                and self.guard == other.guard and self.negate == other.negate)
-
-    def _guard_matches(self, val):
-        """
-        True if val matches the guard value.
-        """
-        matched = any(True for _ in self.guard.matches((val,)))
-        return not matched if self.negate else matched
-
-    def operator(self, top=False):
-        eq = '!=' if self.negate else '='
-        return self.inner.operator(top) + eq + _guard_repr(self.guard)
-
-    def is_pattern(self):
-        return self.inner.is_pattern()
-
-    def is_recursive(self):
-        return self.inner.is_recursive()
-
-    def default(self):
-        return self.inner.default()
-
-    def is_empty(self, node):
-        return self.inner.is_empty(node)
-
-    def values(self, node, **kwargs):
-        return (v for v in self.inner.values(node, **kwargs) if self._guard_matches(v))
-
-    def items(self, node, **kwargs):
-        return ((k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
-
-    def keys(self, node, **kwargs):
-        return (k for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
-
-    def upsert(self, node, val):
-        # Only update entries where guard matches
-        matched_keys = set(self.keys(node))
-        if not matched_keys:
-            return node
-        # Delegate per-key update to inner
-        for k in matched_keys:
-            node = self.inner.update(node, k, val)
-        return node
-
-    def update(self, node, key, val):
-        return self.inner.update(node, key, val)
-
-    def remove(self, node, val, **kwargs):
-        # Only remove entries where guard matches
-        to_remove = [(k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v)]
-        for k, v in reversed(to_remove):
-            if val is base.ANY or v == val:
-                node = self.inner.pop(node, k)
-        return node
-
-    def pop(self, node, key):
-        return self.inner.pop(node, key)
-
-    def concrete(self, val):
-        return self.inner.concrete(val)
-
-    def match(self, op, specials=False):
-        # Guard ignored for structural matching — delegate to inner
-        try:
-            return self.inner.match(op, specials=specials)
-        except TypeError:
-            return self.inner.match(op)
-
-    def push_children(self, stack, frame, paths):
-        """
-        Non-recursive: items() already filters by guard, push onto stack.
-        Recursive: collect matches from inner, filter by guard, push survivors.
-        """
-        if not self.inner.is_recursive():
-            children = list(self.items(frame.node, **(frame.kwargs or {})))
-            for k, v in reversed(children):
-                cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
-            return ()
-        matches = [(cp, v) for cp, v in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})) if self._guard_matches(v)]
-        for cp, v in reversed(matches):
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
-        return ()
-
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
-        if self.inner.is_recursive():
-            return self.inner._update_recursive(
-                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches, **kwargs)
-        return BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)
-
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        if self.inner.is_recursive():
-            return self.inner._remove_recursive(
-                ops, node, val, nop, guard=self._guard_matches, **kwargs)
-        return BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
-
-
-class TypeRestriction(Wrap):
-    """
-    Wraps an access op with a node-type constraint.
-    :type (positive) or :!type / :!(t1, t2) (negative).
-    """
-
-    def __init__(self, inner, *types, negate=False, **kwargs):
-        super().__init__(inner, **kwargs)
-        self.inner = inner
-        self.types = tuple(types)
-        self.negate = negate
-
-    def allows(self, node):
-        """
-        Return True if node's type is allowed by this restriction.
-        """
-        match = isinstance(node, self.types)
-        return not match if self.negate else match
-
-    def _type_suffix(self):
-        """
-        Render the :type or :!type suffix.
-        """
-        _reverse = {v: k for k, v in utypes.TYPE_REGISTRY.items()}
-        names = [_reverse[t] for t in self.types if t in _reverse]
-        if len(names) == 1:
-            inner = names[0]
-        else:
-            inner = f'({", ".join(names)})'
-        if self.negate:
-            return f':!{inner}'
-        return f':{inner}'
-
-    def __repr__(self):
-        return f'{self.inner!r}{self._type_suffix()}'
-
-    def __hash__(self):
-        return hash(('tr', self.inner, self.types, self.negate))
-
-    def __eq__(self, other):
-        return (isinstance(other, TypeRestriction)
-                and self.inner == other.inner
-                and self.types == other.types
-                and self.negate == other.negate)
-
-    def operator(self, top=False):
-        return self.inner.operator(top) + self._type_suffix()
-
-    def items(self, node, **kwargs):
-        if not self.allows(node):
-            return ()
-        return self.inner.items(node, **kwargs)
-
-    def values(self, node, **kwargs):
-        if not self.allows(node):
-            return ()
-        return self.inner.values(node, **kwargs)
-
-    def keys(self, node, **kwargs):
-        if not self.allows(node):
-            return ()
-        return self.inner.keys(node, **kwargs)
-
-    def push_children(self, stack, frame, paths):
-        """
-        Short-circuit if node type is not allowed; otherwise delegate to inner.
-        """
-        if not self.allows(frame.node):
-            return ()
-        return self.inner.push_children(stack, frame, paths)
-
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
-        if not self.allows(node):
-            return node
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
-
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        if not self.allows(node):
-            return node
-        return self.inner.do_remove(ops, node, val, nop, **kwargs)
-
-
-#
-#
-#
-class rdoc(str):
-    def expandtabs(*args, **kwargs):
-        title = 'Supported transforms\n\n'
-        return title + '\n'.join(f'{name}\t{fn.__doc__ or ""}' for name,fn in Dotted._registry.items())
-
-
-class Dotted:
-    _registry = {}
-
-    def registry(self):
-        return self._registry
-
-    @classmethod
-    def register(cls, name, fn):
-        cls._registry[name] = fn
-
-    def __init__(self, results):
-        self.ops = tuple(results['ops'])
-        self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
-
-    def assemble(self, start=0, pedantic=False):
-        return assemble(self, start, pedantic=pedantic)
-    def __repr__(self):
-        return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
-    @staticmethod
-    def _hashable(obj):
-        """
-        Recursively convert unhashable types to hashable equivalents.
-        """
-        if utils.is_list_like(obj):
-            return tuple(Dotted._hashable(x) for x in obj)
-        if utils.is_set_like(obj):
-            return frozenset(Dotted._hashable(x) for x in obj)
-        if utils.is_dict_like(obj):
-            if hasattr(obj, 'items') and callable(obj.items):
-                iterable = obj.items()
-            else:
-                iterable = ((k, obj[k]) for k in obj)
-            return tuple(sorted((k, Dotted._hashable(v)) for k, v in iterable))
-        return obj
-    def __hash__(self):
-        try:
-            return hash((self.ops, self.transforms))
-        except TypeError:
-            return hash((self.ops, Dotted._hashable(self.transforms)))
-    def __len__(self):
-        return len(self.ops)
-    def __iter__(self):
-        return iter(self.ops)
-    def __eq__(self, ops):
-        return self.ops == ops.ops and self.transforms == ops.transforms
-    def __getitem__(self, key):
-        return self.ops[key]
-    def apply(self, val):
-        for name,*args in self.transforms:
-            fn = self._registry[name]
-            val = fn(val, *args)
-        return val
-
-Dotted.registry.__doc__ = rdoc()
-
-
-def assemble(ops, start=0, pedantic=False):
-    """
-    Reassemble ops into a dotted notation string.
-
-    By default, strips a redundant trailing [] (e.g. hello[] -> hello)
-    unless it follows another [] (hello[][] is preserved as-is).
-    Set pedantic=True to always preserve trailing [].
-    """
-    parts = []
-    top = True
-    for op in itertools.islice(ops, start, None):
-        parts.append(op.operator(top))
-        if not isinstance(op, Invert):
-            top = False
-    if not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]':
-        parts.pop()
-    return ''.join(parts)
-
-
-def transform(name):
-    """
-    Transform decorator
-    """
-    def _fn(fn):
-        Dotted.register(name, fn)
-        return fn
-    return _fn
-
-
-def build_default(ops):
-    cur, *ops = ops
-    if not ops:
-        # At leaf - for numeric Slot, populate index with None
-        if isinstance(cur, Slot) and isinstance(cur.op, match.Numeric) and cur.op.is_int():
-            idx = cur.op.value
-            return [None] * (idx + 1)
-        return cur.default()
-    built = cur.default()
-    return cur.upsert(built, build_default(ops))
-
-
-def build(ops, node, deepcopy=True, **kwargs):
-    cur, *ops = ops
-    built = node.__class__()
-    for k,v in cur.items(node, **kwargs):
-        if not ops:
-            built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
-        else:
-            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy, **kwargs))
-    return built or build_default([cur]+ops)
-
-
-
-
-def iter_until_cut(gen):
-    """
-    Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.
-    """
-    for x in gen:
-        if x is base.CUT_SENTINEL:
-            return
-        yield x
-
-
-def _process(stack, paths):
-    """
-    Process frames at the current depth level and any nested levels
-    pushed by ops within it. Yields (path, value) results.
-    """
-    level = stack.level
-    while stack.level >= level and stack.current:
-        frame = stack.pop()
-        if not frame.ops:
-            yield (frame.prefix if paths else None, frame.node)
-            continue
-        op = frame.ops[0]
-        frame.ops = frame.ops[1:]
-        yield from op.push_children(stack, frame, paths)
-
-
-def walk(ops, node, paths=True, **kwargs):
-    """
-    Yield (path_tuple, value) for all matches.
-    path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
-    """
-    stack = base.DepthStack()
-    stack.push(base.Frame(tuple(ops), node, (), kwargs=kwargs or None))
-    yield from _process(stack, paths)
-
-
-def gets(ops, node, **kwargs):
-    """
-    Yield values for all matches. Thin wrapper around walk().
-    """
-    for path, val in walk(ops, node, paths=False, **kwargs):
-        if path is base.CUT_SENTINEL:
-            yield base.CUT_SENTINEL
-        else:
-            yield val
-
-
-def _is_container(obj):
-    """
-    Check if object can be used as a container for dotted updates.
-    """
-    if obj is None:
-        return False
-    # Dict-like, sequence-like, or has attributes
-    return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or
-            hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
-
-
-def _format_path(segments):
-    """
-    Consume an iterable of (op, k) segments and assemble the path string for error messages.
-    Uses position and op type to decide .key, @attr, [k] and no leading dot on first segment.
-    """
-    result = []
-    for i, (op, k) in enumerate(segments):
-        cur = op.inner if isinstance(op, Wrap) else op
-        first = i == 0
-        if isinstance(cur, Attr):
-            result.append('@' + str(k))
-        elif isinstance(cur, Slot):
-            result.append(f'[{k}]')
-        elif isinstance(k, int):
-            # Assume int => slot (bracket index) when op type is unknown
-            result.append(f'[{k}]')
-        else:
-            # Key or other key-like
-            result.append('.' + str(k) if not first else str(k))
-    return ''.join(result)
-
-
 def _is_concrete_path(branch_ops):
     """
     Return True if branch_ops represents a concrete path (no wildcards/patterns).
     Concrete paths can be created when missing; wildcard paths cannot.
     """
     for op in branch_ops:
-        cur = op.inner if isinstance(op, Wrap) else op
+        cur = op.inner if isinstance(op, wrappers.Wrap) else op
         if getattr(cur, 'is_pattern', lambda: False)():
             return False
     return True
@@ -1166,16 +667,15 @@ def _can_update_conjunctive_branch(branch_ops, node):
     concrete path we can create. We cannot update if: filter doesn't match
     or path is a wildcard.
     """
-    if base.has_any(gets(branch_ops, node)):
+    if base.has_any(engine.gets(branch_ops, node)):
         return True
     if not _is_concrete_path(branch_ops):
         return False
     first_op = branch_ops[0]
-    cur = first_op.inner if isinstance(first_op, Wrap) else first_op
+    cur = first_op.inner if isinstance(first_op, wrappers.Wrap) else first_op
     if isinstance(cur, Key) and getattr(cur, 'filters', ()):
         return False
     return True
-
 
 
 def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwargs):
@@ -1187,37 +687,5 @@ def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwarg
         if not branch_ops:
             continue
         if _is_concrete_path(branch_ops):
-            return updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+            return engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
     return node
-
-
-def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
-    if _path is None:
-        _path = []
-    if not has_defaults and not _is_container(node):
-        path_str = _format_path(_path)
-        location = f" at '{path_str}'" if path_str else ""
-        raise TypeError(
-            f"Cannot update {type(node).__name__}{location} - "
-            "use a dict, list, or other container"
-        )
-    cur, *ops = ops
-    return cur.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
-
-
-def removes(ops, node, val=base.ANY, nop=False, **kwargs):
-    cur, *ops = ops
-    return cur.do_remove(ops, node, val, nop, **kwargs)
-
-
-def expands(ops, node, **kwargs):
-    """
-    Yield Dotted objects for all matched paths. Thin wrapper around walk().
-    """
-    for path, val in walk(ops, node, paths=True, **kwargs):
-        if path is base.CUT_SENTINEL:
-            return
-        yield Dotted({'ops': path, 'transforms': ops.transforms})
-
-# default transforms
-from . import transforms

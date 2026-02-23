@@ -8,7 +8,7 @@ and the next branch is tried.
 """
 import pytest
 import dotted
-import dotted.elements as el
+from dotted import engine
 
 
 # -----------------------------------------------------------------------------
@@ -169,13 +169,13 @@ def test_iter_until_cut_stops_on_sentinel():
         yield CUT_SENTINEL
         yield 3
 
-    out = tuple(el.iter_until_cut(gen()))
+    out = tuple(engine.iter_until_cut(gen()))
     assert out == (1, 2)
 
 
 def test_iter_until_cut_no_sentinel():
     """iter_until_cut yields all if no _CUT_SENTINEL."""
-    out = tuple(el.iter_until_cut(iter([1, 2, 3])))
+    out = tuple(engine.iter_until_cut(iter([1, 2, 3])))
     assert out == (1, 2, 3)
 
 

@@ -168,5 +168,5 @@ class MatchOp(Op):
     directly in the ops list processed by the engine.
     """
     def to_branches(self):
-        from .elements import Key
+        from .access import Key
         return [tuple([Key(self)])]

@@ -7,7 +7,10 @@ import functools
 import itertools
 import pyparsing as pp
 from . import grammar
-from . import elements as el, base, access, utypes
+from . import engine
+from . import base
+from . import access
+from . import utypes
 
 
 class Attrs(enum.StrEnum):
@@ -55,7 +58,7 @@ def _parse(ops):
         results = grammar.template.parse_string(ops, parse_all=True)
     except pp.ParseException as e:
         raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
-    return el.Dotted(results)
+    return engine.Dotted(results)
 
 
 def parse(key):
@@ -64,10 +67,10 @@ def parse(key):
     >>> parse('hello.there|str:"=%s"')
     Dotted([hello, there], [('str', '=%s')])
     """
-    if isinstance(key, el.Dotted):
+    if isinstance(key, engine.Dotted):
         return key
     if isinstance(key, tuple):
-        return el.Dotted({'ops': key, 'transforms': ()})
+        return engine.Dotted({'ops': key, 'transforms': ()})
     return _parse(key)
 
 
@@ -127,7 +130,7 @@ def is_pattern(key):
     >>> is_pattern('hello.there')
     False
     """
-    if isinstance(key, el.Dotted):
+    if isinstance(key, engine.Dotted):
         return _is_pattern(key)
     return _is_pattern(parse(key))
 
@@ -243,7 +246,7 @@ def build_multi(obj, keys, strict=False):
     if obj is AUTO:
         obj = _auto_root(((k, None) for k in keys))
     for key in keys:
-        built = el.build(parse(key), obj, strict=strict)
+        built = engine.build(parse(key), obj, strict=strict)
         obj = update_multi(obj, pluck_multi(built, (key,), strict=strict), strict=strict)
     return obj
 
@@ -286,7 +289,7 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True, stric
     (7,)
     """
     ops = parse(key)
-    vals = el.iter_until_cut(el.gets(ops, obj, strict=strict))
+    vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )
     found = tuple(vals)
@@ -377,7 +380,7 @@ def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, app
         return obj
 
     ops = parse(key)
-    return el.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
+    return engine.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
 
 
 def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False):
@@ -478,7 +481,7 @@ def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True,
     if pred is not None and not pred(key):
         return obj
 
-    return el.removes(parse(key), obj, val, strict=strict)
+    return engine.removes(parse(key), obj, val, strict=strict)
 
 
 def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None, mutable=True, strict=False):
@@ -711,7 +714,7 @@ def assemble_multi(keys_list):
     def _assemble(keys):
         keys = ([k] if isinstance(k, base.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
         iterable = itertools.chain.from_iterable(keys)
-        return el.assemble(iterable)
+        return engine.assemble(iterable)
     return tuple(_assemble(keys) for keys in keys_list)
 
 
@@ -739,7 +742,7 @@ def expand_multi(obj, patterns, strict=False):
     """
     seen = {}
     for pat in patterns:
-        keys = (o.assemble() for o in el.expands(parse(pat), obj, strict=strict))
+        keys = (o.assemble() for o in engine.expands(parse(pat), obj, strict=strict))
         for found in keys:
             if found not in seen:
                 seen[found] = None
@@ -772,15 +775,15 @@ def apply_multi(obj, patterns, strict=False):
     seen = {}
     _marker = object()
     for pat in patterns:
-        for ops in el.expands(parse(pat), obj, strict=strict):
+        for ops in engine.expands(parse(pat), obj, strict=strict):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(el.iter_until_cut(el.gets(ops, obj, strict=strict)), _marker)
+            first = next(engine.iter_until_cut(engine.gets(ops, obj, strict=strict)), _marker)
             if first is _marker:
                 continue
             val = ops.apply(first)
-            obj = el.updates(ops, obj, val, strict=strict)
+            obj = engine.updates(ops, obj, val, strict=strict)
     return obj
 
 
@@ -805,10 +808,10 @@ def pluck_multi(obj, patterns, default=None, strict=False):
     seen = {}
     for pattern in patterns:
         ops = parse(pattern)
-        for path, val in el.walk(ops, obj, paths=True, strict=strict):
+        for path, val in engine.walk(ops, obj, paths=True, strict=strict):
             if path is utypes.CUT_SENTINEL:
                 break
-            field = el.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
+            field = engine.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
             if field in seen:
                 continue
             seen[field] = None
@@ -869,7 +872,7 @@ def register(name, fn):
     """
     Register a transform at `name` to call `fn`
     """
-    return el.Dotted.register(name, fn)
+    return engine.Dotted.register(name, fn)
 
 
 def transform(name):
@@ -880,10 +883,10 @@ def transform(name):
     ... def hello():
     ...     return 'hello'
     """
-    return el.transform(name)
+    return engine.transform(name)
 
 
 def registry():
-    return el.Dotted._registry
+    return engine.Dotted._registry
 
-registry.__doc__ = el.Dotted.registry.__doc__
+registry.__doc__ = engine.Dotted.registry.__doc__

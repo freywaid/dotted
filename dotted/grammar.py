@@ -3,7 +3,13 @@
 import decimal
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
-from . import elements as el, match, filters as flt, access, recursive, utypes
+from . import groups
+from . import match
+from . import filters as flt
+from . import access
+from . import recursive
+from . import utypes
+from . import wrappers
 from . import containers as ct
 
 S = pp.Suppress
@@ -400,7 +406,7 @@ def _keycmd_guarded_action(negate):
         inner = access.Key(*args)
         if tr:
             inner = tr.wrap(inner)
-        return el.ValueGuard(inner, guard, negate=negate)
+        return wrappers.ValueGuard(inner, guard, negate=negate)
     return action
 
 keycmd_guarded_neq = (key + Opt(type_restriction) + ZM(amp + filters) + _guard_neq).set_parse_action(_keycmd_guarded_action(True))
@@ -449,8 +455,8 @@ def _slotcmd_guarded_action(negate):
         if tr:
             inner = tr.wrap(inner)
         if nop:
-            inner = el.NopWrap(inner)
-        return el.ValueGuard(inner, guard, negate=negate)
+            inner = wrappers.NopWrap(inner)
+        return wrappers.ValueGuard(inner, guard, negate=negate)
     return action
 
 slotcmd_guarded_neq = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction) + _guard_neq).set_parse_action(_slotcmd_guarded_action(True))
@@ -475,7 +481,7 @@ def _slotcmd_action(t):
     if tr:
         result = tr.wrap(result)
     if nop:
-        result = el.NopWrap(result)
+        result = wrappers.NopWrap(result)
     return result
 
 slotcmd = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction)).set_parse_action(_slotcmd_action)
@@ -499,7 +505,7 @@ def _attr_action(t, nop=False):
     if tr:
         result = tr.wrap(result)
     if nop:
-        result = el.NopWrap(result)
+        result = wrappers.NopWrap(result)
     return result
 
 _attr_nop = ((at + tilde) | (tilde + at)) + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)
@@ -510,7 +516,7 @@ attrcmd = _attr_nop | _attr_plain
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(access.SlotSpecial)
 
 slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
-    lambda t: el.NopWrap(access.Slice(*t[1:])) if t and t[0] == '~' else access.Slice(*t))
+    lambda t: wrappers.NopWrap(access.Slice(*t[1:])) if t and t[0] == '~' else access.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(access.SliceFilter)
 
 # Cut markers: ## = soft cut, # = hard cut (try ## first so ## isn't parsed as # + #)
@@ -519,15 +525,15 @@ cut_marker = softcut_marker | L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
 _slot_item_plain = _slotguts.copy().set_parse_action(access.Slot)
-_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: el.NopWrap(access.Slot(*t[1:])))
+_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: wrappers.NopWrap(access.Slot(*t[1:])))
 _slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(access.SlotSpecial)
 _slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
 _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
-slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
-slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(el._slot_to_opgroup_first)
+slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(groups.slot_to_opgroup)
+slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(groups.slot_to_opgroup_first)
 
 # Unified inner expression: single precedence tower for !, &, , operators
-# Used both inside parens (inner_grouped) and at top level.
+# Used both inside parens (inner_grouped) and at top levgroups.
 # Atoms are op_seqs (which subsume bare keys as single-item sequences).
 # Precedence: ! (tightest) > & > , (loosest)
 inner_expr = pp.Forward()
@@ -541,9 +547,9 @@ def _grouped_with_type_restriction(parsed_result, first=False):
     if items and isinstance(items[-1], utypes.TypeSpec):
         tr = items.pop()
     if first:
-        grp = el._inner_to_opgroup_first(items)
+        grp = groups.inner_to_opgroup_first(items)
     else:
-        grp = el._inner_to_opgroup(items)
+        grp = groups.inner_to_opgroup(items)
     if tr:
         grp = tr.wrap(grp)
     return grp
@@ -604,7 +610,7 @@ def _make_recursive(t, first=False):
     cls = recursive.RecursiveFirst if first else recursive.Recursive
     # *(expr) form: inner is an OpGroup or TypeRestriction wrapping one
     accessors = None
-    if isinstance(inner, (el.OpGroup, el.TypeRestriction)):
+    if isinstance(inner, (groups.OpGroup, wrappers.TypeRestriction)):
         accessors = _extract_accessors(inner)
         inner = match.Wildcard()
     # Type restriction on the recursive operator (e.g. **:!(str, bytes))
@@ -630,7 +636,7 @@ def _extract_accessors(opgroup):
     Returns a branches tuple preserving cut/softcut sentinels.
     """
     # TypeRestriction wrapping an OpGroup: distribute to each accessor
-    if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, el.OpGroup):
+    if isinstance(opgroup, wrappers.TypeRestriction) and isinstance(opgroup.inner, groups.OpGroup):
         spec = utypes.TypeSpec(*opgroup.types, negate=opgroup.negate)
         return _distribute_type_restriction(_extract_accessors(opgroup.inner), spec)
     result = []
@@ -639,10 +645,10 @@ def _extract_accessors(opgroup):
             result.append(item)
             continue
         branch = item
-        if len(branch) == 1 and isinstance(branch[0], el.OpGroup):
+        if len(branch) == 1 and isinstance(branch[0], groups.OpGroup):
             # Flatten nested group: inline its branches
             result.extend(_extract_accessors(branch[0]))
-        elif len(branch) == 1 and isinstance(branch[0], (access.AccessOp, el.TypeRestriction)):
+        elif len(branch) == 1 and isinstance(branch[0], (access.AccessOp, wrappers.TypeRestriction)):
             result.append(branch)
         else:
             raise ValueError(
@@ -681,13 +687,13 @@ def _pat_body():
 
 # ValueGuard composition: **=7, *name!=None, etc. (must try before plain forms)
 rec_dstar_guarded_neq = (_dstar_body() + _guard_neq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1], negate=True))
+    lambda t: wrappers.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1], negate=True))
 rec_dstar_guarded = (_dstar_body() + _guard_eq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1]))
+    lambda t: wrappers.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1]))
 rec_pat_guarded_neq = (_pat_body() + _guard_neq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive(t[:-1]), t[-1], negate=True))
+    lambda t: wrappers.ValueGuard(_make_recursive(t[:-1]), t[-1], negate=True))
 rec_pat_guarded = (_pat_body() + _guard_eq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive(t[:-1]), t[-1]))
+    lambda t: wrappers.ValueGuard(_make_recursive(t[:-1]), t[-1]))
 
 # First-match: **?, *name?
 rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
@@ -710,13 +716,13 @@ empty = pp.Empty().set_parse_action(access.Empty)
 # An op_seq is a sequence of operations like .key, [slot], @attr
 # .~key and ~.key both produce NopWrap(key); .key produces key
 _dot_keycmd_guarded_neq = (((dot + tilde) | (tilde + dot)) + keycmd_guarded_neq).set_parse_action(
-    lambda t: el.NopWrap(t[-1]))
+    lambda t: wrappers.NopWrap(t[-1]))
 _dot_plain_keycmd_guarded_neq = (dot + keycmd_guarded_neq).set_parse_action(lambda t: t[0])
 _dot_keycmd_guarded = (((dot + tilde) | (tilde + dot)) + keycmd_guarded).set_parse_action(
-    lambda t: el.NopWrap(t[-1]))
+    lambda t: wrappers.NopWrap(t[-1]))
 _dot_plain_keycmd_guarded = (dot + keycmd_guarded).set_parse_action(lambda t: t[0])
 _dot_keycmd_nop = (((dot + tilde) | (tilde + dot)) + keycmd).set_parse_action(
-    lambda t: el.NopWrap(t[-1]))
+    lambda t: wrappers.NopWrap(t[-1]))
 _dot_keycmd = (dot + keycmd).set_parse_action(lambda t: t[0])
 # op_seq_item uses _nop_wrap (defined later); Forward for circular ref
 op_seq_item = pp.Forward()     # first item: allows bare (a,b)
@@ -726,22 +732,22 @@ op_seq = pp.Group(op_seq_item + ZM(_op_seq_cont))
 # Continuation items (absorbed from former multi grammar):
 # .~ and ~. with grouped expressions — prefix shorthand requires bare keys inside
 _dot_nop_grouped = ((dot + tilde) | (tilde + dot)) + (_inner_grouped_bare_first | _inner_grouped_bare)
-_dot_nop_grouped = _dot_nop_grouped.set_parse_action(lambda t: el.NopWrap(t[-1]))
+_dot_nop_grouped = _dot_nop_grouped.set_parse_action(lambda t: wrappers.NopWrap(t[-1]))
 _dot_plain_grouped = (dot + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(lambda t: t[0])
 # .recursive
 _dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
 # @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
 _at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
-    lambda t: el._attr_transform_opgroup(t[0])
+    lambda t: groups.attr_transform_opgroup(t[0])
 )
 _at_nop_grouped = ((at + tilde) | (tilde + at)) + (_inner_grouped_bare_first | _inner_grouped_bare)
 _at_nop_grouped = _at_nop_grouped.set_parse_action(
-    lambda t: el.NopWrap(el._attr_transform_opgroup(t[-1]))
+    lambda t: wrappers.NopWrap(groups.attr_transform_opgroup(t[-1]))
 )
 
 # NOP (~): match but don't update
 _nop_inner = inner_grouped_first | inner_grouped | recursive_op | keycmd_guarded_neq | keycmd_guarded | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd_guarded_neq | slotcmd_guarded | slotcmd | slotspecial | slicefilter | slicecmd
-_nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
+_nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
 # Explicit NOP (~): like _nop_wrap but inner must start with an access op (./@/[]).
 # Bare keys (keycmd) are excluded — ~key is not allowed inside explicit groups.
@@ -759,7 +765,7 @@ _explicit_nop_inner = (
     slotcmd_guarded_neq | slotcmd_guarded | slotcmd |
     slotspecial | slicefilter | slicecmd
 )
-_explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: el.NopWrap(t[1]))
+_explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
 # Resolve forward: op_seq_item is the atom of op_seq, used in the precedence tower
 # Continuation items: everything that can appear after the first item in an op_seq.
@@ -787,10 +793,10 @@ op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_cont_items)
 
 # Precedence tower (atoms are op_seqs)
 inner_atom = op_seq
-inner_not = (bang + inner_atom).set_parse_action(el._inner_not_action) | inner_atom
-inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(el._inner_and_action) | inner_not
+inner_not = (bang + inner_atom).set_parse_action(groups.inner_not_action) | inner_atom
+inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(groups.inner_and_action) | inner_not
 inner_or_term = pp.Group(inner_and + Opt(cut_marker))
-inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(el._inner_or_action) | inner_and
+inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(groups.inner_or_action) | inner_and
 inner_expr <<= inner_or
 
 # ---------------------------------------------------------------------------
@@ -815,10 +821,10 @@ _explicit_op_seq_cont_items = (
 )
 _explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
 _explicit_inner_atom = _explicit_op_seq
-_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(el._inner_not_action) | _explicit_inner_atom
-_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(el._inner_and_action) | _explicit_inner_not
+_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(groups.inner_not_action) | _explicit_inner_atom
+_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(groups.inner_and_action) | _explicit_inner_not
 _explicit_inner_or_term = pp.Group(_explicit_inner_and + Opt(cut_marker))
-_explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(el._inner_or_action) | _explicit_inner_and
+_explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(groups.inner_or_action) | _explicit_inner_and
 _explicit_inner_expr <<= _explicit_inner_or
 
 # Top-level: flatten op_seq Groups into flat ops list
@@ -830,7 +836,7 @@ def _top_level_flatten(t):
     """
     out = []
     for item in t:
-        if isinstance(item, (list, tuple, pp.ParseResults)) and not isinstance(item, el.OpGroup):
+        if isinstance(item, (list, tuple, pp.ParseResults)) and not isinstance(item, groups.OpGroup):
             out.extend(item)
         else:
             out.append(item)

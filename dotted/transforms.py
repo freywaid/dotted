@@ -3,10 +3,10 @@ Default transforms
 """
 import decimal
 import math
-from . import elements
+from . import engine
 
 
-@elements.transform('str')
+@engine.transform('str')
 def transform_str(val, fmt=None, *modes):
     """
     Transform to string with optional str format notation
@@ -24,7 +24,7 @@ def transform_str(val, fmt=None, *modes):
     return val
 
 
-@elements.transform('int')
+@engine.transform('int')
 def transform_int(val, base=None, *modes):
     """
     Transform to an int with optional base notation
@@ -49,7 +49,7 @@ def transform_int(val, base=None, *modes):
     return val
 
 
-@elements.transform('float')
+@engine.transform('float')
 def transform_float(val, *modes):
     """
     Transform to a float
@@ -64,7 +64,7 @@ def transform_float(val, *modes):
     return val
 
 
-@elements.transform('decimal')
+@engine.transform('decimal')
 def transform_decimal(val, *modes):
     """
     Transform to a decimal
@@ -82,7 +82,7 @@ def transform_decimal(val, *modes):
     return val
 
 
-@elements.transform('none')
+@engine.transform('none')
 def transform_none(val, *none_vals):
     """
     Transform to None
@@ -94,7 +94,7 @@ def transform_none(val, *none_vals):
     return None if val in none_vals else val
 
 
-@elements.transform('strip')
+@engine.transform('strip')
 def transform_strip(val, chars=None, *modes):
     """
     Strip val of chars
@@ -110,7 +110,7 @@ def transform_strip(val, chars=None, *modes):
     return val
 
 
-@elements.transform('len')
+@engine.transform('len')
 def transform_len(val, default=None):
     """
     Calculate length
@@ -126,7 +126,7 @@ def transform_len(val, default=None):
     return val
 
 
-@elements.transform('lowercase')
+@engine.transform('lowercase')
 def transform_lowercase(val, *modes):
     """
     Convert to lowercase
@@ -141,7 +141,7 @@ def transform_lowercase(val, *modes):
     return val
 
 
-@elements.transform('uppercase')
+@engine.transform('uppercase')
 def transform_uppercase(val, *modes):
     """
     Convert to uppercase
@@ -156,7 +156,7 @@ def transform_uppercase(val, *modes):
     return val
 
 
-@elements.transform('add')
+@engine.transform('add')
 def transform_add(val, rhs, *modes):
     """
     Add rhs to val
@@ -171,7 +171,7 @@ def transform_add(val, rhs, *modes):
     return val
 
 
-@elements.transform('sub')
+@engine.transform('sub')
 def transform_sub(val, rhs, *modes):
     """
     Subtract rhs from val
@@ -186,7 +186,7 @@ def transform_sub(val, rhs, *modes):
     return val
 
 
-@elements.transform('mul')
+@engine.transform('mul')
 def transform_mul(val, rhs, *modes):
     """
     Multiply val by rhs
@@ -201,7 +201,7 @@ def transform_mul(val, rhs, *modes):
     return val
 
 
-@elements.transform('div')
+@engine.transform('div')
 def transform_div(val, rhs, *modes):
     """
     Divide val by rhs
@@ -216,7 +216,7 @@ def transform_div(val, rhs, *modes):
     return val
 
 
-@elements.transform('mod')
+@engine.transform('mod')
 def transform_mod(val, rhs, *modes):
     """
     Modulo val by rhs
@@ -231,7 +231,7 @@ def transform_mod(val, rhs, *modes):
     return val
 
 
-@elements.transform('pow')
+@engine.transform('pow')
 def transform_pow(val, rhs, *modes):
     """
     Raise val to the power of rhs
@@ -246,7 +246,7 @@ def transform_pow(val, rhs, *modes):
     return val
 
 
-@elements.transform('neg')
+@engine.transform('neg')
 def transform_neg(val, *modes):
     """
     Negate val
@@ -261,7 +261,7 @@ def transform_neg(val, *modes):
     return val
 
 
-@elements.transform('abs')
+@engine.transform('abs')
 def transform_abs(val, *modes):
     """
     Absolute value
@@ -276,7 +276,7 @@ def transform_abs(val, *modes):
     return val
 
 
-@elements.transform('round')
+@engine.transform('round')
 def transform_round(val, ndigits=None, *modes):
     """
     Round val
@@ -294,7 +294,7 @@ def transform_round(val, ndigits=None, *modes):
     return val
 
 
-@elements.transform('ceil')
+@engine.transform('ceil')
 def transform_ceil(val, *modes):
     """
     Ceiling of val
@@ -309,7 +309,7 @@ def transform_ceil(val, *modes):
     return val
 
 
-@elements.transform('floor')
+@engine.transform('floor')
 def transform_floor(val, *modes):
     """
     Floor of val
@@ -324,7 +324,7 @@ def transform_floor(val, *modes):
     return val
 
 
-@elements.transform('min')
+@engine.transform('min')
 def transform_min(val, bound, *modes):
     """
     Clamp val to upper bound
@@ -339,7 +339,7 @@ def transform_min(val, bound, *modes):
     return val
 
 
-@elements.transform('max')
+@engine.transform('max')
 def transform_max(val, bound, *modes):
     """
     Clamp val to lower bound
@@ -354,7 +354,7 @@ def transform_max(val, bound, *modes):
     return val
 
 
-@elements.transform('eq')
+@engine.transform('eq')
 def transform_eq(val, rhs, *modes):
     """
     Equal comparison
@@ -369,7 +369,7 @@ def transform_eq(val, rhs, *modes):
     return val
 
 
-@elements.transform('ne')
+@engine.transform('ne')
 def transform_ne(val, rhs, *modes):
     """
     Not-equal comparison
@@ -384,7 +384,7 @@ def transform_ne(val, rhs, *modes):
     return val
 
 
-@elements.transform('gt')
+@engine.transform('gt')
 def transform_gt(val, rhs, *modes):
     """
     Greater-than comparison
@@ -399,7 +399,7 @@ def transform_gt(val, rhs, *modes):
     return val
 
 
-@elements.transform('ge')
+@engine.transform('ge')
 def transform_ge(val, rhs, *modes):
     """
     Greater-than-or-equal comparison
@@ -414,7 +414,7 @@ def transform_ge(val, rhs, *modes):
     return val
 
 
-@elements.transform('lt')
+@engine.transform('lt')
 def transform_lt(val, rhs, *modes):
     """
     Less-than comparison
@@ -429,7 +429,7 @@ def transform_lt(val, rhs, *modes):
     return val
 
 
-@elements.transform('le')
+@engine.transform('le')
 def transform_le(val, rhs, *modes):
     """
     Less-than-or-equal comparison
@@ -444,7 +444,7 @@ def transform_le(val, rhs, *modes):
     return val
 
 
-@elements.transform('in')
+@engine.transform('in')
 def transform_in(val, rhs, *modes):
     """
     Membership test
@@ -459,7 +459,7 @@ def transform_in(val, rhs, *modes):
     return val
 
 
-@elements.transform('not_in')
+@engine.transform('not_in')
 def transform_not_in(val, rhs, *modes):
     """
     Negative membership test
@@ -474,7 +474,7 @@ def transform_not_in(val, rhs, *modes):
     return val
 
 
-@elements.transform('list')
+@engine.transform('list')
 def transform_list(val, *modes):
     """
     Transform to list
@@ -489,7 +489,7 @@ def transform_list(val, *modes):
     return val
 
 
-@elements.transform('tuple')
+@engine.transform('tuple')
 def transform_tuple(val, *modes):
     """
     Transform to tuple
@@ -504,7 +504,7 @@ def transform_tuple(val, *modes):
     return val
 
 
-@elements.transform('set')
+@engine.transform('set')
 def transform_set(val, *modes):
     """
     Transform to set
