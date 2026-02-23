@@ -1003,7 +1003,7 @@ Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
 `:!type` excludes a type. `:!(type1, type2)` excludes multiple types:
 
     >>> d = {'a': 'hello', 'b': {'c': 1}}
-    >>> dotted.get(d, '*:!(str).*')
+    >>> dotted.get(d, '*:!str.*')
     (1,)
 
 <a id="slot-and-attr-restrictions"></a>
