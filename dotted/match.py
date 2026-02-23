@@ -5,7 +5,7 @@ import re
 
 import pyparsing as pp
 
-from ._base import MatchOp, NOP, _marker
+from .base import MatchOp, NOP, _marker
 
 
 class Const(MatchOp):
