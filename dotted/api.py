@@ -8,6 +8,8 @@ import itertools
 import pyparsing as pp
 from . import grammar
 from . import engine
+from . import results
+from . import transforms
 from . import base
 from . import access
 from . import utypes
@@ -55,10 +57,10 @@ class ParseError(Exception):
 @functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
     try:
-        results = grammar.template.parse_string(ops, parse_all=True)
+        parsed = grammar.template.parse_string(ops, parse_all=True)
     except pp.ParseException as e:
         raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
-    return engine.Dotted(results)
+    return results.Dotted(parsed)
 
 
 def parse(key):
@@ -67,10 +69,10 @@ def parse(key):
     >>> parse('hello.there|str:"=%s"')
     Dotted([hello, there], [('str', '=%s')])
     """
-    if isinstance(key, engine.Dotted):
+    if isinstance(key, results.Dotted):
         return key
     if isinstance(key, tuple):
-        return engine.Dotted({'ops': key, 'transforms': ()})
+        return results.Dotted({'ops': key, 'transforms': ()})
     return _parse(key)
 
 
@@ -130,7 +132,7 @@ def is_pattern(key):
     >>> is_pattern('hello.there')
     False
     """
-    if isinstance(key, engine.Dotted):
+    if isinstance(key, results.Dotted):
         return _is_pattern(key)
     return _is_pattern(parse(key))
 
@@ -714,7 +716,7 @@ def assemble_multi(keys_list):
     def _assemble(keys):
         keys = ([k] if isinstance(k, base.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
         iterable = itertools.chain.from_iterable(keys)
-        return engine.assemble(iterable)
+        return results.assemble(iterable)
     return tuple(_assemble(keys) for keys in keys_list)
 
 
@@ -811,7 +813,7 @@ def pluck_multi(obj, patterns, default=None, strict=False):
         for path, val in engine.walk(ops, obj, paths=True, strict=strict):
             if path is utypes.CUT_SENTINEL:
                 break
-            field = engine.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
+            field = results.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
             if field in seen:
                 continue
             seen[field] = None
@@ -872,7 +874,7 @@ def register(name, fn):
     """
     Register a transform at `name` to call `fn`
     """
-    return engine.Dotted.register(name, fn)
+    return results.Dotted.register(name, fn)
 
 
 def transform(name):
@@ -883,10 +885,10 @@ def transform(name):
     ... def hello():
     ...     return 'hello'
     """
-    return engine.transform(name)
+    return transforms.transform(name)
 
 
 def registry():
-    return engine.Dotted._registry
+    return results.Dotted._registry
 
-registry.__doc__ = engine.Dotted.registry.__doc__
+registry.__doc__ = results.Dotted.registry.__doc__
