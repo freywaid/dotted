@@ -35,7 +35,7 @@ class FilterKey(base.MatchOp):
         self.value = self.parts[0].value if len(self.parts) == 1 else None
 
     def __repr__(self):
-        from .elements import Slot, Slice
+        from .access import Slot, Slice
         out = []
         for i, p in enumerate(self.parts):
             if i and not isinstance(p, (Slot, Slice)) and not isinstance(self.parts[i - 1], (Slot, Slice)):
@@ -58,7 +58,7 @@ class FilterKey(base.MatchOp):
         yield from self._get_values(node, list(self.parts))
 
     def _get_values(self, node, parts):
-        from .elements import Slot, Slice
+        from .access import Slot, Slice
         if not parts:
             yield node, True
             return

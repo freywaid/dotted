@@ -1,7 +1,7 @@
 import dotted
 from dotted.grammar import value
 from dotted.containers import StringGlob, BytesGlob, ValueGroup
-from dotted.elements import Bytes
+from dotted.match import Bytes
 
 
 # ---------------------------------------------------------------------------

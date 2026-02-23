@@ -27,8 +27,7 @@ Type prefix semantics:
 import re
 from itertools import combinations
 
-from . import utils
-from .elements import Op, Const, Wildcard, Regex
+from . import utils, base, match
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +48,7 @@ def _element_matches(pattern, val):
 # Glob — the ... element
 # ---------------------------------------------------------------------------
 
-class Glob(Op):
+class Glob(base.Op):
     """
     The ... element: zero or more values with optional pattern and count.
 
@@ -93,7 +92,7 @@ class Glob(Op):
 # DictGlobEntry — a glob entry in a dict pattern
 # ---------------------------------------------------------------------------
 
-class DictGlobEntry(Op):
+class DictGlobEntry(base.Op):
     """
     A glob entry in a dict: glob on key side with value pattern.
 
@@ -134,7 +133,7 @@ class DictGlobEntry(Op):
 _LIST_TYPES = (list, tuple)
 
 
-class ContainerList(Op):
+class ContainerList(base.Op):
     """
     List/tuple pattern: [elem, elem, ...].
 
@@ -178,7 +177,7 @@ class ContainerList(Op):
         """
         ContainerList can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -189,7 +188,7 @@ class ContainerList(Op):
 # ContainerDict — {k: v, ...} pattern
 # ---------------------------------------------------------------------------
 
-class ContainerDict(Op):
+class ContainerDict(base.Op):
     """
     Dict pattern: {key: val, key: val, ...}.
 
@@ -228,7 +227,7 @@ class ContainerDict(Op):
         """
         ContainerDict can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -246,7 +245,7 @@ class ContainerDict(Op):
 # ContainerSet — {v, v, ...} pattern
 # ---------------------------------------------------------------------------
 
-class ContainerSet(Op):
+class ContainerSet(base.Op):
     """
     Set/frozenset pattern: {elem, elem, ...}.
 
@@ -290,7 +289,7 @@ class ContainerSet(Op):
         """
         ContainerSet can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -301,7 +300,7 @@ class ContainerSet(Op):
 # StringGlob — "prefix"..."suffix" string pattern
 # ---------------------------------------------------------------------------
 
-class StringGlob(Op):
+class StringGlob(base.Op):
     """
     String glob pattern: quoted fragments with ... between them.
 
@@ -329,7 +328,7 @@ class StringGlob(Op):
             if isinstance(p, str):
                 regex_parts.append(re.escape(p))
             elif isinstance(p, Glob):
-                if p.pattern is not None and isinstance(p.pattern, Regex):
+                if p.pattern is not None and isinstance(p.pattern, match.Regex):
                     char_pat = p.pattern.args[0]
                 else:
                     char_pat = '.'
@@ -357,7 +356,7 @@ class StringGlob(Op):
         """
         StringGlob can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         parts = []
@@ -373,7 +372,7 @@ class StringGlob(Op):
 # BytesGlob — b"prefix"...b"suffix" bytes pattern
 # ---------------------------------------------------------------------------
 
-class BytesGlob(Op):
+class BytesGlob(base.Op):
     """
     Bytes glob pattern: byte-string fragments with ... between them.
 
@@ -401,7 +400,7 @@ class BytesGlob(Op):
             if isinstance(p, bytes):
                 regex_parts.append(re.escape(p))
             elif isinstance(p, Glob):
-                if p.pattern is not None and isinstance(p.pattern, Regex):
+                if p.pattern is not None and isinstance(p.pattern, match.Regex):
                     char_pat = p.pattern.args[0].encode()
                 else:
                     char_pat = b'.'
@@ -429,7 +428,7 @@ class BytesGlob(Op):
         """
         BytesGlob can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         parts = []
@@ -445,7 +444,7 @@ class BytesGlob(Op):
 # ValueGroup — (val1, val2) value disjunction
 # ---------------------------------------------------------------------------
 
-class ValueGroup(Op):
+class ValueGroup(base.Op):
     """
     Value group: (val1, val2, ...) — matches any alternative.
 
@@ -472,7 +471,7 @@ class ValueGroup(Op):
         """
         ValueGroup can match against Const values.
         """
-        return isinstance(op, Const)
+        return isinstance(op, match.Const)
 
     def __repr__(self):
         return '(' + ', '.join(repr(a) for a in self.alternatives) + ')'

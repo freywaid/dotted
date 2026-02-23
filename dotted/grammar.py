@@ -3,8 +3,7 @@
 import decimal
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
-from . import elements as el
-from . import utypes
+from . import elements as el, match, filters as flt, access, recursive, utypes
 from . import containers as ct
 
 S = pp.Suppress
@@ -31,23 +30,23 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', esc_char='\\') | pp.QuotedString("'", esc_char='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').set_parse_action(el.NoneValue)
-true = pp.Literal('True').set_parse_action(el.Boolean)
-false = pp.Literal('False').set_parse_action(el.Boolean)
+none = pp.Literal('None').set_parse_action(match.NoneValue)
+true = pp.Literal('True').set_parse_action(match.Boolean)
+false = pp.Literal('False').set_parse_action(match.Boolean)
 
 reserved = '.[]*:|+?/=,@&()!~#{}' # {} added for container syntax
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
 # atomic ops
-appender = pp.Literal('+').set_parse_action(el.Appender)
-appender_unique = pp.Literal('+?').set_parse_action(el.AppenderUnique)
+appender = pp.Literal('+').set_parse_action(match.Appender)
+appender_unique = pp.Literal('+?').set_parse_action(match.AppenderUnique)
 
 _numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
-numeric_quoted = _numeric_quoted.set_parse_action(el.NumericQuoted)
+numeric_quoted = _numeric_quoted.set_parse_action(match.NumericQuoted)
 
-numeric_key = integer.copy().set_parse_action(el.Numeric)
-numeric_slot = ppc.number.copy().set_parse_action(el.Numeric)
+numeric_key = integer.copy().set_parse_action(match.Numeric)
+numeric_slot = ppc.number.copy().set_parse_action(match.Numeric)
 
 # Extended numeric literals: scientific (1e10), underscore (1_000), hex (0x1F), octal (0o17), binary (0b1010)
 _numeric_extended_re = pp.Regex(
@@ -57,20 +56,20 @@ _numeric_extended_re = pp.Regex(
     r'|[-]?[0-9][0-9_]*[eE][+-]?[0-9]+'  # scientific notation
     r'|[-]?[0-9]+(?:_[0-9]+)+'      # underscore separators
 )
-numeric_extended = _numeric_extended_re.copy().set_parse_action(el.NumericExtended)
+numeric_extended = _numeric_extended_re.copy().set_parse_action(match.NumericExtended)
 
 # Exclude whitespace so "first )" parses as key "first", not "first "
-word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(el.Word)
-non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(el.Word)
-nameop = name.copy().set_parse_action(el.Word)
+word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(match.Word)
+non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(match.Word)
+nameop = name.copy().set_parse_action(match.Word)
 
-string = quoted.copy().set_parse_action(el.String)
-bytes_literal = (S(L('b')) + quoted).set_parse_action(el.Bytes)
-wildcard = pp.Literal('*').set_parse_action(el.Wildcard)
-wildcard_first = pp.Literal('*?').set_parse_action(el.WildcardFirst)
+string = quoted.copy().set_parse_action(match.String)
+bytes_literal = (S(L('b')) + quoted).set_parse_action(match.Bytes)
+wildcard = pp.Literal('*').set_parse_action(match.Wildcard)
+wildcard_first = pp.Literal('*?').set_parse_action(match.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
-regex = _regex.copy().set_parse_action(el.Regex)
-regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(el.RegexFirst)
+regex = _regex.copy().set_parse_action(match.Regex)
+regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(match.RegexFirst)
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
@@ -93,7 +92,7 @@ _val_atoms = bytes_literal | string | wildcard | regex | numeric_quoted | none |
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
-_glob_regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).set_parse_action(el.Regex)
+_glob_regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).set_parse_action(match.Regex)
 
 # Count forms: min:max, min:, max (single number)
 _glob_count_full = integer + S(':') + integer       # min:max
@@ -153,10 +152,10 @@ def _make_strblob(t):
     """
     Produce StringGlob or BytesGlob depending on whether any b"..." part is present.
     """
-    has_bytes = any(isinstance(p, el.Bytes) for p in t)
+    has_bytes = any(isinstance(p, match.Bytes) for p in t)
     if has_bytes:
         def to_bytes(p):
-            if isinstance(p, el.Bytes):
+            if isinstance(p, match.Bytes):
                 return p.value
             if isinstance(p, str):
                 return p.encode()
@@ -331,16 +330,16 @@ key = _commons | numeric_extended | non_integer | numeric_key | word
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
 # Dot introduces a key part only; slot/slice directly after key. Try slice before slot so [:] parses as slice.
 _filter_key_part = string | _common_pats | numeric_extended | non_integer | numeric_key | word
-filter_key_slice = (lb + slice + rb).set_parse_action(lambda t: el.Slice(*t))
-filter_key_slot = (lb + (_commons | numeric_extended | numeric_slot) + rb).set_parse_action(lambda t: el.Slot(t[0]))
+filter_key_slice = (lb + slice + rb).set_parse_action(lambda t: access.Slice(*t))
+filter_key_slot = (lb + (_commons | numeric_extended | numeric_slot) + rb).set_parse_action(lambda t: access.Slot(t[0]))
 _filter_key_segment = _filter_key_part | filter_key_slice | filter_key_slot
 filter_key = pp.Group(
     _filter_key_segment + ZM(filter_key_slice | filter_key_slot | (dot + _filter_key_part))
-).set_parse_action(el.FilterKey)
+).set_parse_action(flt.FilterKey)
 
 # Single key=value or key!=value comparison (!= keeps its own repr so reassemble looks right)
-filter_single_neq = pp.Group(filter_key + not_equal + value).set_parse_action(el.FilterKeyValueNot)
-filter_single = pp.Group(filter_key + equal + value).set_parse_action(el.FilterKeyValue)
+filter_single_neq = pp.Group(filter_key + not_equal + value).set_parse_action(flt.FilterKeyValueNot)
+filter_single = pp.Group(filter_key + equal + value).set_parse_action(flt.FilterKeyValue)
 
 # Recursive filter expression with grouping
 filter_expr = pp.Forward()
@@ -349,22 +348,22 @@ filter_expr = pp.Forward()
 lparen = pp.Suppress('(')
 rparen = pp.Suppress(')')
 bang = pp.Suppress('!')
-filter_group = (lparen + filter_expr + rparen).set_parse_action(el.FilterGroup)
+filter_group = (lparen + filter_expr + rparen).set_parse_action(flt.FilterGroup)
 filter_atom = filter_group | filter_single_neq | filter_single
 
 # NOT: ! prefix binds tightest (higher precedence than &)
-filter_not = (bang + filter_atom).set_parse_action(el.FilterNot) | filter_atom
+filter_not = (bang + filter_atom).set_parse_action(flt.FilterNot) | filter_atom
 
 # AND: not-expressions joined by & (higher precedence than ,)
-filter_and = (filter_not + OM(amp + filter_not)).set_parse_action(el.FilterAnd) | filter_not
+filter_and = (filter_not + OM(amp + filter_not)).set_parse_action(flt.FilterAnd) | filter_not
 
 # OR: and-groups joined by , (lowest precedence)
-filter_or = (filter_and + OM(comma + filter_and)).set_parse_action(el.FilterOr) | filter_and
+filter_or = (filter_and + OM(comma + filter_and)).set_parse_action(flt.FilterOr) | filter_and
 
 filter_expr <<= filter_or
 
 # Optional ? suffix for first-match
-filter_keyvalue_first = (filter_expr + S('?')).set_parse_action(el.FilterKeyValueFirst)
+filter_keyvalue_first = (filter_expr + S('?')).set_parse_action(flt.FilterKeyValueFirst)
 
 filters = filter_keyvalue_first | filter_expr
 
@@ -398,7 +397,7 @@ def _keycmd_guarded_action(negate):
                 tr = item
             else:
                 args.append(item)
-        inner = el.Key(*args)
+        inner = access.Key(*args)
         if tr:
             inner = tr.wrap(inner)
         return el.ValueGuard(inner, guard, negate=negate)
@@ -419,7 +418,7 @@ def _keycmd_action(t):
             tr = item
         else:
             args.append(item)
-    result = el.Key(*args)
+    result = access.Key(*args)
     if tr:
         result = tr.wrap(result)
     return result
@@ -446,7 +445,7 @@ def _slotcmd_guarded_action(negate):
                 nop = True
             else:
                 args.append(item)
-        inner = el.Slot(*args)
+        inner = access.Slot(*args)
         if tr:
             inner = tr.wrap(inner)
         if nop:
@@ -472,7 +471,7 @@ def _slotcmd_action(t):
             nop = True
         else:
             args.append(item)
-    result = el.Slot(*args)
+    result = access.Slot(*args)
     if tr:
         result = tr.wrap(result)
     if nop:
@@ -496,7 +495,7 @@ def _attr_action(t, nop=False):
             pass  # consumed by grammar, marks nop
         else:
             args.append(item)
-    result = el.Attr(*args)
+    result = access.Attr(*args)
     if tr:
         result = tr.wrap(result)
     if nop:
@@ -508,20 +507,20 @@ _attr_nop = _attr_nop.set_parse_action(lambda t: _attr_action(t, nop=True))
 _attr_plain = (at + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(lambda t: _attr_action(t))
 attrcmd = _attr_nop | _attr_plain
 
-slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(el.SlotSpecial)
+slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(access.SlotSpecial)
 
 slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
-    lambda t: el.NopWrap(el.Slice(*t[1:])) if t and t[0] == '~' else el.Slice(*t))
-slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(el.SliceFilter)
+    lambda t: el.NopWrap(access.Slice(*t[1:])) if t and t[0] == '~' else access.Slice(*t))
+slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(access.SliceFilter)
 
 # Cut markers: ## = soft cut, # = hard cut (try ## first so ## isn't parsed as # + #)
 softcut_marker = L('##')
 cut_marker = softcut_marker | L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
-_slot_item_plain = _slotguts.copy().set_parse_action(el.Slot)
-_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: el.NopWrap(el.Slot(*t[1:])))
-_slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(el.SlotSpecial)
+_slot_item_plain = _slotguts.copy().set_parse_action(access.Slot)
+_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: el.NopWrap(access.Slot(*t[1:])))
+_slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(access.SlotSpecial)
 _slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
 _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
 slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(el._slot_to_opgroup)
@@ -590,7 +589,7 @@ def _make_recursive(t, first=False):
     depth_vals = []
     type_spec = None
     for item in rest:
-        if isinstance(item, el.FilterOp):
+        if isinstance(item, flt.FilterOp):
             filt.append(item)
         elif isinstance(item, utypes.TypeSpec):
             type_spec = item
@@ -602,19 +601,19 @@ def _make_recursive(t, first=False):
         depth_stop = depth_vals[1]
     if len(depth_vals) >= 3:
         depth_step = depth_vals[2]
-    cls = el.RecursiveFirst if first else el.Recursive
+    cls = recursive.RecursiveFirst if first else recursive.Recursive
     # *(expr) form: inner is an OpGroup or TypeRestriction wrapping one
     accessors = None
     if isinstance(inner, (el.OpGroup, el.TypeRestriction)):
         accessors = _extract_accessors(inner)
-        inner = el.Wildcard()
+        inner = match.Wildcard()
     # Type restriction on the recursive operator (e.g. **:!(str, bytes))
     # Distribute to each accessor branch via TypeRestriction wrapper
     if type_spec is not None:
         if accessors is not None:
             accessors = _distribute_type_restriction(accessors, type_spec)
         else:
-            accessors = ((type_spec.wrap(el.Key(inner)),),)
+            accessors = ((type_spec.wrap(access.Key(inner)),),)
     r = cls(inner, accessors=accessors,
             depth_start=depth_start, depth_stop=depth_stop, depth_step=depth_step)
     if filt:
@@ -630,9 +629,8 @@ def _extract_accessors(opgroup):
     TypeRestriction wrapping an OpGroup distributes the restriction to each branch.
     Returns a branches tuple preserving cut/softcut sentinels.
     """
-    from .elements import _branches_only, OpGroup
     # TypeRestriction wrapping an OpGroup: distribute to each accessor
-    if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, OpGroup):
+    if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, el.OpGroup):
         spec = utypes.TypeSpec(*opgroup.types, negate=opgroup.negate)
         return _distribute_type_restriction(_extract_accessors(opgroup.inner), spec)
     result = []
@@ -641,10 +639,10 @@ def _extract_accessors(opgroup):
             result.append(item)
             continue
         branch = item
-        if len(branch) == 1 and isinstance(branch[0], OpGroup):
+        if len(branch) == 1 and isinstance(branch[0], el.OpGroup):
             # Flatten nested group: inline its branches
             result.extend(_extract_accessors(branch[0]))
-        elif len(branch) == 1 and isinstance(branch[0], (el.AccessOp, el.TypeRestriction)):
+        elif len(branch) == 1 and isinstance(branch[0], (access.AccessOp, el.TypeRestriction)):
             result.append(branch)
         else:
             raise ValueError(
@@ -683,9 +681,9 @@ def _pat_body():
 
 # ValueGuard composition: **=7, *name!=None, etc. (must try before plain forms)
 rec_dstar_guarded_neq = (_dstar_body() + _guard_neq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive([el.Wildcard()] + list(t[:-1])), t[-1], negate=True))
+    lambda t: el.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1], negate=True))
 rec_dstar_guarded = (_dstar_body() + _guard_eq).set_parse_action(
-    lambda t: el.ValueGuard(_make_recursive([el.Wildcard()] + list(t[:-1])), t[-1]))
+    lambda t: el.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1]))
 rec_pat_guarded_neq = (_pat_body() + _guard_neq).set_parse_action(
     lambda t: el.ValueGuard(_make_recursive(t[:-1]), t[-1], negate=True))
 rec_pat_guarded = (_pat_body() + _guard_eq).set_parse_action(
@@ -693,20 +691,20 @@ rec_pat_guarded = (_pat_body() + _guard_eq).set_parse_action(
 
 # First-match: **?, *name?
 rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
-    lambda t: _make_recursive([el.Wildcard()] + list(t), first=True))
+    lambda t: _make_recursive([match.Wildcard()] + list(t), first=True))
 rec_pat_first = (_pat_body() + S('?')).set_parse_action(
     lambda t: _make_recursive(t, first=True))
 
 # Plain: **, *name
 rec_dstar = _dstar_body().set_parse_action(
-    lambda t: _make_recursive([el.Wildcard()] + list(t)))
+    lambda t: _make_recursive([match.Wildcard()] + list(t)))
 rec_pat = _pat_body().set_parse_action(
     lambda t: _make_recursive(t))
 
 recursive_op = (rec_dstar_guarded_neq | rec_dstar_guarded | rec_pat_guarded_neq | rec_pat_guarded |
                 rec_dstar_first | rec_dstar | rec_pat_first | rec_pat)
 
-empty = pp.Empty().set_parse_action(el.Empty)
+empty = pp.Empty().set_parse_action(access.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
 # An op_seq is a sequence of operations like .key, [slot], @attr
@@ -838,7 +836,7 @@ def _top_level_flatten(t):
             out.append(item)
     return out
 
-invert = Opt(L('-').set_parse_action(el.Invert))
+invert = Opt(L('-').set_parse_action(access.Invert))
 dotted = pp.Group((invert + (inner_expr | empty)).set_parse_action(_top_level_flatten))
 
 targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')

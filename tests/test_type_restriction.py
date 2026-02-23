@@ -5,13 +5,15 @@ import types
 import pytest
 import dotted
 from dotted import elements as el
+from dotted import access
+from dotted.match import Wildcard
 
 
 def _w():
     """
     Dummy inner op for direct TypeRestriction construction.
     """
-    return el.Key(el.Wildcard())
+    return access.Key(Wildcard())
 
 
 # -- Round-trip: parse then assemble should preserve the type restriction --

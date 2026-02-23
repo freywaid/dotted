@@ -4,39 +4,8 @@ import copy
 import itertools
 import pyparsing as pp
 
-from . import base, match, access, recursive
-from .base import (  # noqa: F401 — re-export
-    Op, TraversalOp, MatchOp, MatchResult,
-    MetaNOP, NOP, Frame, DepthStack,
-    ANY, marker, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT,
-    _branches_only, _path_overlaps, _has_any,
-)
-from .match import (  # noqa: F401 — re-export
-    Const, Numeric, NumericExtended, NumericQuoted,
-    Word, String, Bytes, Boolean, NoneValue,
-    Pattern, Wildcard, WildcardFirst,
-    Regex, RegexFirst,
-    Special, Appender, AppenderUnique,
-)
-from .access import (  # noqa: F401 — re-export
-    BaseOp, SimpleOp, Empty, AccessOp,
-    Key, Attr, Slot, SlotSpecial,
-    SliceFilter, Slice, Invert,
-    itemof, quote, normalize,
-    _RESERVED, _NEEDS_QUOTE, _NUMERIC_RE,
-    _needs_quoting, _is_numeric_str, _quote_str,
-)
-from .recursive import (  # noqa: F401 — re-export
-    Recursive, RecursiveFirst,
-)
-from . import utypes, utils
-
-from . import filters
-from .filters import (  # noqa: F401 — re-export
-    FilterOp, FilterKey, FilterKeyValue, FilterKeyValueNot,
-    FilterGroup, FilterAnd, FilterOr,
-    FilterKeyValueFirst, FilterNot,
-)
+from . import base, match, access, recursive, filters, utypes, utils
+from .access import BaseOp, Key, Attr, Slot, SlotSpecial, Invert
 
 class OpGroup(base.TraversalOp):
     """
@@ -68,7 +37,7 @@ class OpGroup(base.TraversalOp):
         Derive default from the first branch's first op, so auto-creation works
         (e.g. slot group [(*&filter#, +)] defaults to []).
         """
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             if branch:
                 first_op = branch[0]
                 # Unwrap NopWrap/ValueGuard to find the underlying op
@@ -115,7 +84,7 @@ class OpGroupOr(OpGroup):
         """
         Recurse into the first non-cut branch.
         """
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             if branch:
                 return branch[0].leaf_op()
         return self
@@ -125,7 +94,7 @@ class OpGroupOr(OpGroup):
         Union of excluded keys across all non-cut branches.
         """
         excluded = set()
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             if branch:
                 excluded.update(branch[0].excluded_keys(node))
         return excluded
@@ -183,7 +152,7 @@ class OpGroupOr(OpGroup):
             for path, val in _process(stack, use_paths):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base._path_overlaps(softcut_paths, path):
+                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
                     continue
                 found = True
                 if is_softcut and path:
@@ -213,7 +182,7 @@ class OpGroupOr(OpGroup):
             for path, _ in walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base._path_overlaps(softcut_paths, path):
+                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
                     continue
                 paths.append(path)
             if not paths:
@@ -248,7 +217,7 @@ class OpGroupOr(OpGroup):
             for path, _ in walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base._path_overlaps(softcut_paths, path):
+                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
                     continue
                 paths.append(path)
             if not paths:
@@ -273,7 +242,7 @@ class OpGroupFirst(OpGroup):
         """
         Recurse into the first non-cut branch.
         """
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             if branch:
                 return branch[0].leaf_op()
         return self
@@ -283,13 +252,13 @@ class OpGroupFirst(OpGroup):
         Union of excluded keys across all non-cut branches.
         """
         excluded = set()
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             if branch:
                 excluded.update(branch[0].excluded_keys(node))
         return excluded
 
     def _render(self, top=True):
-        branch_strs = [''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(b)) for b in base._branches_only(self.branches)]
+        branch_strs = [''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(b)) for b in base.branches_only(self.branches)]
         return '(' + ','.join(branch_strs) + ')?'
 
     def __repr__(self):
@@ -299,7 +268,7 @@ class OpGroupFirst(OpGroup):
         """
         Try branches in order, return first result found.
         """
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             branch_ops = tuple(branch) + tuple(frame.ops)
             if not branch_ops:
                 continue
@@ -312,20 +281,20 @@ class OpGroupFirst(OpGroup):
         return ()
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base._has_any(gets(branch_ops, node, **kwargs)):
+            if base.has_any(gets(branch_ops, node, **kwargs)):
                 return updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
         return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
 
     def do_remove(self, ops, node, val, nop, **kwargs):
-        for branch in base._branches_only(self.branches):
+        for branch in base.branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base._has_any(gets(branch_ops, node, **kwargs)):
+            if base.has_any(gets(branch_ops, node, **kwargs)):
                 return removes(branch_ops, node, val, **kwargs)
         return node
 
@@ -404,7 +373,7 @@ class OpGroupAnd(OpGroup):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if not base._has_any(gets(branch_ops, node, **kwargs)):
+            if not base.has_any(gets(branch_ops, node, **kwargs)):
                 return node
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
@@ -585,7 +554,7 @@ def _inner_to_opgroup(parsed_result):
         inner = items[0]
         # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
         if isinstance(inner, OpGroupOr):
-            branches = list(base._branches_only(inner.branches))
+            branches = list(base.branches_only(inner.branches))
             if (len(branches) == 1 and isinstance(branches[0], tuple)
                     and len(branches[0]) == 1
                     and isinstance(branches[0][0], (OpGroupAnd, OpGroupNot))):
@@ -1197,7 +1166,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
     concrete path we can create. We cannot update if: filter doesn't match
     or path is a wildcard.
     """
-    if base._has_any(gets(branch_ops, node)):
+    if base.has_any(gets(branch_ops, node)):
         return True
     if not _is_concrete_path(branch_ops):
         return False
@@ -1213,7 +1182,7 @@ def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwarg
     """
     When nothing matches in disjunction: update first concrete path (last to first).
     """
-    for branch in reversed(list(base._branches_only(cur.branches))):
+    for branch in reversed(list(base.branches_only(cur.branches))):
         branch_ops = list(branch) + list(ops)
         if not branch_ops:
             continue

@@ -10,12 +10,12 @@ from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT  # noq
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
 # the user's data when it is a generator/iterator (e.g. a sequence at some path, or values from
 # .items()/.values()). Only materialize (list/tuple) when we must iterate multiple times or
-# mutate-during-iterate. Use _has_any(gen) for "any match?", any(True for _ in gen) for "is empty?",
+# mutate-during-iterate. Use has_any(gen) for "any match?", any(True for _ in gen) for "is empty?",
 # next(gen, sentinel) when only the first item is needed. Keeps get_multi(obj, path_iterator)
 # lazy-in/lazy-out and avoids pulling large or infinite streams into memory.
 
 
-def _branches_only(branches):
+def branches_only(branches):
     """
     Yield branch tuples from OpGroup.branches, skipping BRANCH_CUT and BRANCH_SOFTCUT.
     """
@@ -24,7 +24,7 @@ def _branches_only(branches):
             yield b
 
 
-def _path_overlaps(softcut_paths, path):
+def path_overlaps(softcut_paths, path):
     """
     Return True if path overlaps with any softcut path — i.e. one is a prefix of the other.
     """
@@ -35,7 +35,7 @@ def _path_overlaps(softcut_paths, path):
     return False
 
 
-def _has_any(gen):
+def has_any(gen):
     """
     Return True if gen yields at least one item, without consuming the rest.
     """

@@ -741,7 +741,7 @@ class TestGlob:
         assert g.matches_element(None)
 
     def test_glob_with_regex_pattern(self):
-        from dotted.elements import Regex
+        from dotted.match import Regex
         r = Regex('\\d+')
         g = Glob(pattern=r)
         assert g.matches_element(42)

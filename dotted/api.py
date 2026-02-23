@@ -5,8 +5,9 @@ import copy
 import enum
 import functools
 import itertools
+import pyparsing as pp
 from . import grammar
-from . import elements as el
+from . import elements as el, base, access, utypes
 
 
 class Attrs(enum.StrEnum):
@@ -17,7 +18,7 @@ class Attrs(enum.StrEnum):
     special = 'special'
 
 CACHE_SIZE = 300
-ANY = el.ANY
+ANY = utypes.ANY
 AUTO = type('AUTO', (), {'__repr__': lambda self: 'AUTO'})()
 
 
@@ -27,7 +28,7 @@ def _auto_root_from_key(key):
     Returns [] if root is a sequence, {} otherwise.
     """
     ops = parse(key)
-    if ops.ops and isinstance(ops.ops[0], el.Slot):
+    if ops.ops and isinstance(ops.ops[0], access.Slot):
         return []
     return {}
 
@@ -52,7 +53,7 @@ class ParseError(Exception):
 def _parse(ops):
     try:
         results = grammar.template.parse_string(ops, parse_all=True)
-    except el.pp.ParseException as e:
+    except pp.ParseException as e:
         raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
     return el.Dotted(results)
 
@@ -89,7 +90,7 @@ def quote(key, as_key=True):
     >>> quote('a.b')
     "'a.b'"
     """
-    return el.quote(key, as_key=as_key)
+    return access.quote(key, as_key=as_key)
 
 
 def normalize(key, as_key=True):
@@ -106,7 +107,7 @@ def normalize(key, as_key=True):
     >>> normalize('a.b')
     "'a.b'"
     """
-    return el.normalize(key, as_key=as_key)
+    return access.normalize(key, as_key=as_key)
 
 
 @functools.lru_cache(CACHE_SIZE)
@@ -140,7 +141,7 @@ def is_inverted(key):
     False
     """
     ops = parse(key)
-    return isinstance(ops[0], el.Invert)
+    return isinstance(ops[0], access.Invert)
 
 
 def _is_mutable_container(obj):
@@ -205,13 +206,13 @@ def mutable(obj, key, strict=False):
     ops = parse(key)
 
     # Empty path can never mutate (can't rebind caller's variable)
-    if len(ops) == 1 and isinstance(ops[0], el.Empty):
+    if len(ops) == 1 and isinstance(ops[0], access.Empty):
         return False
 
     # Walk the path - if we find any mutable container, mutation will occur
     current = obj
     for op in ops:
-        if isinstance(op, el.Invert):
+        if isinstance(op, access.Invert):
             continue
 
         if _is_mutable_container(current):
@@ -698,7 +699,7 @@ def overlaps(a, b):
     """
     a = parse(a)
     b = parse(b)
-    return el._path_overlaps([a.ops], b.ops)
+    return base.path_overlaps([a.ops], b.ops)
 
 
 def assemble_multi(keys_list):
@@ -708,7 +709,7 @@ def assemble_multi(keys_list):
     ('hello.there', 'a.1.c')
     """
     def _assemble(keys):
-        keys = ([k] if isinstance(k, el.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
+        keys = ([k] if isinstance(k, base.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
         iterable = itertools.chain.from_iterable(keys)
         return el.assemble(iterable)
     return tuple(_assemble(keys) for keys in keys_list)
@@ -805,7 +806,7 @@ def pluck_multi(obj, patterns, default=None, strict=False):
     for pattern in patterns:
         ops = parse(pattern)
         for path, val in el.walk(ops, obj, paths=True, strict=strict):
-            if path is el.CUT_SENTINEL:
+            if path is utypes.CUT_SENTINEL:
                 break
             field = el.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
             if field in seen:
