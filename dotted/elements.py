@@ -29,7 +29,7 @@ from .access import (  # noqa: F401 — re-export
 from .recursive import (  # noqa: F401 — re-export
     Recursive, RecursiveFirst,
 )
-from .utypes import _TYPE_REGISTRY  # used by TypeRestriction._type_suffix
+from .utypes import TYPE_REGISTRY  # used by TypeRestriction._type_suffix
 from .utils import is_dict_like, is_list_like, is_set_like, is_terminal
 
 from . import filters
@@ -921,7 +921,7 @@ class TypeRestriction(Wrap):
         """
         Render the :type or :!type suffix.
         """
-        _reverse = {v: k for k, v in _TYPE_REGISTRY.items()}
+        _reverse = {v: k for k, v in TYPE_REGISTRY.items()}
         names = [_reverse[t] for t in self.types if t in _reverse]
         if len(names) == 1:
             inner = names[0]

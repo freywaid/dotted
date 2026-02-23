@@ -369,14 +369,14 @@ filter_keyvalue_first = (filter_expr + S('?')).set_parse_action(el.FilterKeyValu
 filters = filter_keyvalue_first | filter_expr
 
 # Path segment type restrictions: :type, :(t1, t2), :!type, :!(t1, t2)
-_type_name = pp.one_of(list(utypes._TYPE_REGISTRY.keys()))
+_type_name = pp.one_of(list(utypes.TYPE_REGISTRY.keys()))
 _type_tuple = S('(') + _type_name + ZM(_comma_ws + _type_name) + S(')')
 _type_spec = _type_tuple | _type_name
 
 _type_neg = (colon + S('!') + _type_spec).set_parse_action(
-    lambda t: utypes._TypeSpec(*(utypes._TYPE_REGISTRY[n] for n in t), negate=True))
+    lambda t: utypes.TypeSpec(*(utypes.TYPE_REGISTRY[n] for n in t), negate=True))
 _type_pos = (colon + _type_spec).set_parse_action(
-    lambda t: utypes._TypeSpec(*(utypes._TYPE_REGISTRY[n] for n in t)))
+    lambda t: utypes.TypeSpec(*(utypes.TYPE_REGISTRY[n] for n in t)))
 type_restriction = _type_neg | _type_pos
 
 # Value guard: key=value, key!=value, [slot]=value, [slot]!=value (direct value test)
@@ -394,7 +394,7 @@ def _keycmd_guarded_action(negate):
         tr = None
         args = []
         for item in rest:
-            if isinstance(item, utypes._TypeSpec):
+            if isinstance(item, utypes.TypeSpec):
                 tr = item
             else:
                 args.append(item)
@@ -415,7 +415,7 @@ def _keycmd_action(t):
     tr = None
     args = []
     for item in t:
-        if isinstance(item, utypes._TypeSpec):
+        if isinstance(item, utypes.TypeSpec):
             tr = item
         else:
             args.append(item)
@@ -440,7 +440,7 @@ def _slotcmd_guarded_action(negate):
         nop = False
         args = []
         for item in rest:
-            if isinstance(item, utypes._TypeSpec):
+            if isinstance(item, utypes.TypeSpec):
                 tr = item
             elif item == '~':
                 nop = True
@@ -466,7 +466,7 @@ def _slotcmd_action(t):
     nop = False
     args = []
     for item in t:
-        if isinstance(item, utypes._TypeSpec):
+        if isinstance(item, utypes.TypeSpec):
             tr = item
         elif item == '~':
             nop = True
@@ -490,7 +490,7 @@ def _attr_action(t, nop=False):
     tr = None
     args = []
     for item in t:
-        if isinstance(item, utypes._TypeSpec):
+        if isinstance(item, utypes.TypeSpec):
             tr = item
         elif item == '~':
             pass  # consumed by grammar, marks nop
@@ -535,11 +535,11 @@ inner_expr = pp.Forward()
 def _grouped_with_type_restriction(parsed_result, first=False):
     """
     Parse action for grouped expressions with optional type restriction.
-    Last token may be a _TypeSpec; if so, wrap the OpGroup in TypeRestriction.
+    Last token may be a TypeSpec; if so, wrap the OpGroup in TypeRestriction.
     """
     items = list(parsed_result)
     tr = None
-    if items and isinstance(items[-1], utypes._TypeSpec):
+    if items and isinstance(items[-1], utypes.TypeSpec):
         tr = items.pop()
     if first:
         grp = el._inner_to_opgroup_first(items)
@@ -592,7 +592,7 @@ def _make_recursive(t, first=False):
     for item in rest:
         if isinstance(item, el.FilterOp):
             filt.append(item)
-        elif isinstance(item, utypes._TypeSpec):
+        elif isinstance(item, utypes.TypeSpec):
             type_spec = item
         else:
             depth_vals.append(item)
@@ -633,7 +633,7 @@ def _extract_accessors(opgroup):
     from .elements import _branches_only, _BRANCH_CUT, _BRANCH_SOFTCUT, OpGroup
     # TypeRestriction wrapping an OpGroup: distribute to each accessor
     if isinstance(opgroup, el.TypeRestriction) and isinstance(opgroup.inner, OpGroup):
-        spec = utypes._TypeSpec(*opgroup.types, negate=opgroup.negate)
+        spec = utypes.TypeSpec(*opgroup.types, negate=opgroup.negate)
         return _distribute_type_restriction(_extract_accessors(opgroup.inner), spec)
     result = []
     for item in opgroup.branches:

@@ -3,14 +3,14 @@ Type specification and registry for dotted path type restrictions.
 """
 
 # Registry of recognized type names for path segment type restrictions.
-_TYPE_REGISTRY = {
+TYPE_REGISTRY = {
     'str': str, 'bytes': bytes, 'int': int, 'float': float,
     'dict': dict, 'list': list, 'tuple': tuple,
     'set': set, 'frozenset': frozenset, 'bool': bool,
 }
 
 
-class _TypeSpec:
+class TypeSpec:
     """
     Intermediate parse result for type restriction grammar rules.
     Holds types and negate flag until the access op parse action wraps it.
