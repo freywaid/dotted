@@ -41,6 +41,7 @@ Or pick only what you need:
   - [Mutable](#mutable)
   - [Setdefault](#setdefault)
   - [Pluck](#pluck)
+  - [Walk](#walk)
   - [Unpack](#unpack)
   - [Build](#build)
   - [Apply](#apply)
@@ -480,6 +481,21 @@ Extract (key, value) pairs from an object matching a pattern.
     >>> dotted.pluck(d, 'nested.*')
     (('nested.x', 10),)
 
+<a id="walk"></a>
+### Walk
+
+Like `pluck` but as a lazy generator — yields `(path, value)` pairs without
+materializing the full result. Useful for streaming or large structures.
+
+    >>> import dotted
+    >>> d = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    >>> list(dotted.walk(d, 'a.*'))
+    [('a.b', 1), ('a.c', 2)]
+    >>> for path, val in dotted.walk(d, '*'):
+    ...     print(f'{path} = {val}')
+    a = {'b': 1, 'c': 2}
+    x = 3
+
 <a id="unpack"></a>
 ### Unpack
 
@@ -632,7 +648,7 @@ Most operations have `*_multi` variants for batch processing:
 
 Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `remove_multi`,
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
-`build_multi`, `pluck_multi`, `assemble_multi`.
+`build_multi`, `pluck_multi`, `walk_multi`, `assemble_multi`.
 
 <a id="strict-mode"></a>
 ### Strict Mode

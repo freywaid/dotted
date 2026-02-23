@@ -838,6 +838,34 @@ def pluck(obj, pattern, default=None, strict=False):
     return out[0]
 
 
+def walk(obj, pattern, strict=False):
+    """
+    Yield (path_string, value) pairs for all matches of pattern in obj.
+
+    Like pluck but as a lazy generator — no dedup, no materialization.
+    >>> d = {'a': {'b': 1, 'c': 2}}
+    >>> list(walk(d, 'a.*'))
+    [('a.b', 1), ('a.c', 2)]
+    """
+    ops = parse(pattern)
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict):
+        if path is utypes.CUT_SENTINEL:
+            break
+        yield results.Dotted({'ops': path, 'transforms': ops.transforms}).assemble(), val
+
+
+def walk_multi(obj, patterns, strict=False):
+    """
+    Yield (path_string, value) pairs for all matches of each pattern in obj.
+
+    >>> d = {'a': 1, 'b': {'c': 2}}
+    >>> list(walk_multi(d, ('a', 'b.c')))
+    [('a', 1), ('b.c', 2)]
+    """
+    for pattern in patterns:
+        yield from walk(obj, pattern, strict=strict)
+
+
 def unpack(obj, attrs=None):
     """
     Convert obj to dotted normal form.  A tuple of (path, value) pairs which
