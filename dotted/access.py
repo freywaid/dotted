@@ -5,8 +5,8 @@ import itertools
 import re
 import types
 
-from . import base, match
-from .base import Op
+from . import base
+from . import match
 
 
 def itemof(node, val):
@@ -83,7 +83,7 @@ def quote(key, as_key=True):
         if as_key:
             return f"#'{s}'"
         return s
-    elif isinstance(key, Op):
+    elif isinstance(key, base.Op):
         return str(key)
     else:
         raise NotImplementedError

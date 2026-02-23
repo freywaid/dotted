@@ -5,7 +5,8 @@ import re
 
 import pyparsing as pp
 
-from .base import MatchOp, NOP, marker
+from . import base
+from .base import MatchOp
 
 
 class Const(MatchOp):
@@ -115,7 +116,7 @@ class Wildcard(Pattern):
     def value(self):
         return '*'
     def matches(self, vals):
-        return iter(v for v in vals if v is not NOP)
+        return iter(v for v in vals if v is not base.NOP)
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or specials
 
@@ -125,8 +126,8 @@ class WildcardFirst(Wildcard):
     def value(self):
         return '*?'
     def matches(self, vals):
-        v = next(super().matches(vals), marker)
-        return iter(() if v is marker else (v,))
+        v = next(super().matches(vals), base.marker)
+        return iter(() if v is base.marker else (v,))
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or \
             (specials and isinstance(op, (Special, WildcardFirst, RegexFirst)))
@@ -140,7 +141,7 @@ class Regex(Pattern):
     def pattern(self):
         return re.compile(self.args[0])
     def matches(self, vals):
-        vals = (v for v in vals if v is not NOP)
+        vals = (v for v in vals if v is not base.NOP)
         vals = {v if isinstance(v, (str, bytes)) else str(v): v for v in vals}
         iterable = (self.pattern.fullmatch(v) for v in vals)
         # we want to regex match numerics as strings but return numerics
@@ -162,8 +163,8 @@ class RegexFirst(Regex):
         return f'/{self.args[0]}/?'
     def matches(self, vals):
         iterable = super().matches(vals)
-        v = next(iterable, marker)
-        return iter(() if v is marker else (v,))
+        v = next(iterable, base.marker)
+        return iter(() if v is base.marker else (v,))
     def matchable(self, op, specials=False):
         return isinstance(op, Const) or (specials and isinstance(op, (Special, RegexFirst)))
 

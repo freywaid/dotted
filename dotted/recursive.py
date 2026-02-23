@@ -1,6 +1,7 @@
 """
 """
-from . import base, match
+from . import base
+from . import match
 from .access import BaseOp, Key, Attr, normalize
 
 
