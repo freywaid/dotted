@@ -26,6 +26,23 @@ class Dotted:
     def __init__(self, results):
         self.ops = tuple(results['ops'])
         self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
+        guard_raw = results.get('guard', ())
+        if guard_raw:
+            op, val = guard_raw
+            self.guard = val
+            self.guard_negate = (op == '!=')
+        else:
+            self.guard = None
+            self.guard_negate = False
+
+    def guard_matches(self, val):
+        """
+        True if val passes the template-level guard (or if no guard is set).
+        """
+        if self.guard is None:
+            return True
+        matched = any(True for _ in self.guard.matches((val,)))
+        return not matched if self.guard_negate else matched
 
     def assemble(self, start=0, pedantic=False):
         return assemble(self, start, pedantic=pedantic)
@@ -49,24 +66,33 @@ class Dotted:
         return obj
     def __hash__(self):
         try:
-            return hash((self.ops, self.transforms))
+            return hash((self.ops, self.transforms, self.guard, self.guard_negate))
         except TypeError:
-            return hash((self.ops, Dotted._hashable(self.transforms)))
+            return hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_negate))
     def __len__(self):
         return len(self.ops)
     def __iter__(self):
         return iter(self.ops)
     def __eq__(self, ops):
-        return self.ops == ops.ops and self.transforms == ops.transforms
+        return (self.ops == ops.ops and self.transforms == ops.transforms
+                and self.guard == ops.guard and self.guard_negate == ops.guard_negate)
     def __getitem__(self, key):
         return self.ops[key]
     def apply(self, val):
-        for name,*args in self.transforms:
-            fn = self._registry[name]
-            val = fn(val, *args)
-        return val
+        return apply_transforms(val, self.transforms)
 
 Dotted.registry.__doc__ = rdoc()
+
+
+def apply_transforms(val, transforms):
+    """
+    Apply a sequence of transforms to a value.
+    Each transform is a tuple of (name, *args).
+    """
+    for name, *args in transforms:
+        fn = Dotted._registry[name]
+        val = fn(val, *args)
+    return val
 
 
 def assemble(ops, start=0, pedantic=False):

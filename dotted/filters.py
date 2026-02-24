@@ -147,106 +147,57 @@ class FilterKey(base.MatchOp):
 
 class FilterKeyValue(FilterOp):
     """
-    Single key=value filter comparison
+    Single key=value filter comparison.
+    Optionally applies transforms before comparison: key|int=7.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # args is a single group containing [key, value]
-        if len(self.args) == 1 and hasattr(self.args[0], '__iter__') and not isinstance(self.args[0], (str, bytes)):
-            # New format: single (key, value) pair from grammar
-            items = list(self.args[0])
-            self.key = items[0]
-            self.val = items[1]
-        else:
-            # Legacy format: direct key, value args
-            self.key = self.args[0]
-            self.val = self.args[1]
+    _eq_str = '='
 
-    def __hash__(self):
-        return hash((self.key, self.val))
-
-    def __repr__(self):
-        return f'{self.key}={self.val}'
-
-    def is_filtered(self, node):
-        if not hasattr(node, 'keys'):
-            return False
-        for val, found in self.key.get_values(node):
-            if found:
-                for vm in self.val.matches((val,)):
-                    return True
-        return False
-
-    def filtered(self, items):
-        return (item for item in items if self.is_filtered(item))
-
-    def matchable(self, op):
-        if isinstance(op, FilterKeyValue):
-            return True
-        # A single comparison can match against an OR if any child matches
-        if isinstance(op, FilterOr):
-            return any(self.matchable(f) for f in op.filters)
-        return False
-
-    def match(self, op):
-        if isinstance(op, FilterOr):
-            # Match against any of the OR's filters
-            for f in op.filters:
-                m = self.match(f)
-                if m is not None:
-                    return m
-            return None
-        if not isinstance(op, FilterKeyValue):
-            return None
-        if not self.key.matchable(op.key) or not self.val.matchable(op.val):
-            return None
-        mk = next(self.key.matches((op.key.value,)), base.marker)
-        mv = next(self.val.matches((op.val.value,)), base.marker)
-        if base.marker in (mk, mv):
-            return None
-        return type(op)(op.key, op.val)
-
-
-class FilterKeyValueNot(FilterOp):
-    """
-    Single key!=value filter (same semantics as !(key=value), but repr is key!=val for clean reassembly).
-    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if len(self.args) == 1 and hasattr(self.args[0], '__iter__') and not isinstance(self.args[0], (str, bytes)):
             items = list(self.args[0])
             self.key = items[0]
-            self.val = items[1]
+            self.val = items[-1]
+            # Middle items are transforms (list after as_list(), or ParseResults)
+            self.transforms = tuple(
+                tuple(item) for item in items[1:-1]
+                if isinstance(item, (list, tuple))
+            )
         else:
             self.key = self.args[0]
             self.val = self.args[1]
+            self.transforms = ()
 
     def __hash__(self):
-        return hash(('!=', self.key, self.val))
+        return hash((self._eq_str, self.key, self.val, self.transforms))
 
     def __repr__(self):
-        return f'{self.key}!={self.val}'
+        t_str = ''.join(f'|{t[0]}' for t in self.transforms) if self.transforms else ''
+        return f'{self.key}{t_str}{self._eq_str}{self.val}'
 
-    def _eq_filtered(self, node):
+    def _eq_match(self, node):
         """
-        True if node matches key=value (same logic as FilterKeyValue.is_filtered).
+        True if any value from self.key in node matches self.val (after transforms).
         """
         if not hasattr(node, 'keys'):
             return False
         for val, found in self.key.get_values(node):
             if found:
+                if self.transforms:
+                    from .results import apply_transforms
+                    val = apply_transforms(val, self.transforms)
                 for vm in self.val.matches((val,)):
                     return True
         return False
 
     def is_filtered(self, node):
-        return not self._eq_filtered(node)
+        return self._eq_match(node)
 
     def filtered(self, items):
         return (item for item in items if self.is_filtered(item))
 
     def matchable(self, op):
-        if isinstance(op, FilterKeyValueNot):
+        if isinstance(op, type(self)):
             return True
         if isinstance(op, FilterOr):
             return any(self.matchable(f) for f in op.filters)
@@ -259,7 +210,7 @@ class FilterKeyValueNot(FilterOp):
                 if m is not None:
                     return m
             return None
-        if not isinstance(op, FilterKeyValueNot):
+        if not isinstance(op, type(self)):
             return None
         if not self.key.matchable(op.key) or not self.val.matchable(op.val):
             return None
@@ -268,6 +219,17 @@ class FilterKeyValueNot(FilterOp):
         if base.marker in (mk, mv):
             return None
         return type(op)(op.key, op.val)
+
+
+class FilterKeyValueNot(FilterKeyValue):
+    """
+    Single key!=value filter (negated key=value).
+    Optionally applies transforms before comparison: key|int!=7.
+    """
+    _eq_str = '!='
+
+    def is_filtered(self, node):
+        return not self._eq_match(node)
 
 
 class FilterGroup(FilterOp):

@@ -294,6 +294,8 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True, stric
     vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )
+    if ops.guard is not None:
+        vals = (v for v in vals if ops.guard_matches(v))
     found = tuple(vals)
     if not is_pattern(ops):
         return found[0] if found else default

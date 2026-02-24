@@ -333,6 +333,19 @@ value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: 
 value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 key = _commons | numeric_extended | non_integer | numeric_key | word
 
+# Transform: |name or |name:param — defined early so filters and guards can reference it
+targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
+transform = pp.Group(transform_name.copy() + ZM(param))
+transforms = ZM(pipe + transform)
+
+# Value guard eq/neq: each call creates a fresh Suppress to avoid pyparsing
+# internal state issues when Suppress instances are shared across expressions.
+def _neq():
+    return pp.Suppress(pp.Literal('!='))
+def _eq():
+    return pp.Suppress(pp.Literal('='))
+
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
 # Dot introduces a key part only; slot/slice directly after key. Try slice before slot so [:] parses as slice.
 _filter_key_part = string | _common_pats | numeric_extended | non_integer | numeric_key | word
@@ -344,8 +357,9 @@ filter_key = pp.Group(
 ).set_parse_action(flt.FilterKey)
 
 # Single key=value or key!=value comparison (!= keeps its own repr so reassemble looks right)
-filter_single_neq = pp.Group(filter_key + not_equal + value).set_parse_action(flt.FilterKeyValueNot)
-filter_single = pp.Group(filter_key + equal + value).set_parse_action(flt.FilterKeyValue)
+# Transforms can appear between key and comparison: key|int=value
+filter_single_neq = pp.Group(filter_key + ZM(pipe + transform) + _neq() + value).set_parse_action(flt.FilterKeyValueNot)
+filter_single = pp.Group(filter_key + ZM(pipe + transform) + _eq() + value).set_parse_action(flt.FilterKeyValue)
 
 # Recursive filter expression with grouping
 filter_expr = pp.Forward()
@@ -384,33 +398,32 @@ _type_pos = (colon + _type_spec).set_parse_action(
     lambda t: utypes.TypeSpec(*(utypes.TYPE_REGISTRY[n] for n in t)))
 type_restriction = _type_neg | _type_pos
 
-# Value guard: key=value, key!=value, [slot]=value, [slot]!=value (direct value test)
-_guard_eq = equal + value
-_guard_neq = not_equal + value
-
 def _keycmd_guarded_action(negate):
     """
-    Parse action for key with optional type restriction and value guard.
+    Parse action for key with optional type restriction, transforms, and value guard.
     """
     def action(t):
         t = list(t)
         guard = t[-1]
         rest = t[:-1]
         tr = None
+        xforms = []
         args = []
         for item in rest:
             if isinstance(item, utypes.TypeSpec):
                 tr = item
+            elif isinstance(item, pp.ParseResults):
+                xforms.append(tuple(item))
             else:
                 args.append(item)
         inner = access.Key(*args)
         if tr:
             inner = tr.wrap(inner)
-        return wrappers.ValueGuard(inner, guard, negate=negate)
+        return wrappers.ValueGuard(inner, guard, negate=negate, transforms=xforms)
     return action
 
-keycmd_guarded_neq = (key + Opt(type_restriction) + ZM(amp + filters) + _guard_neq).set_parse_action(_keycmd_guarded_action(True))
-keycmd_guarded = (key + Opt(type_restriction) + ZM(amp + filters) + _guard_eq).set_parse_action(_keycmd_guarded_action(False))
+keycmd_guarded_neq = pp.And([key, Opt(type_restriction), ZM(amp + filters), ZM(pipe + transform), _neq(), value]).set_parse_action(_keycmd_guarded_action(True))
+keycmd_guarded = pp.And([key, Opt(type_restriction), ZM(amp + filters), ZM(pipe + transform), _eq(), value]).set_parse_action(_keycmd_guarded_action(False))
 
 def _keycmd_action(t):
     """
@@ -435,7 +448,7 @@ _slotguts = (_commons | numeric_extended | numeric_slot) + ZM(amp + filters)
 
 def _slotcmd_guarded_action(negate):
     """
-    Parse action for slot with optional type restriction and value guard.
+    Parse action for slot with optional type restriction, transforms, and value guard.
     """
     def action(t):
         t = list(t)
@@ -443,12 +456,15 @@ def _slotcmd_guarded_action(negate):
         rest = t[:-1]
         tr = None
         nop = False
+        xforms = []
         args = []
         for item in rest:
             if isinstance(item, utypes.TypeSpec):
                 tr = item
             elif item == '~':
                 nop = True
+            elif isinstance(item, pp.ParseResults):
+                xforms.append(tuple(item))
             else:
                 args.append(item)
         inner = access.Slot(*args)
@@ -456,11 +472,11 @@ def _slotcmd_guarded_action(negate):
             inner = tr.wrap(inner)
         if nop:
             inner = wrappers.NopWrap(inner)
-        return wrappers.ValueGuard(inner, guard, negate=negate)
+        return wrappers.ValueGuard(inner, guard, negate=negate, transforms=xforms)
     return action
 
-slotcmd_guarded_neq = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction) + _guard_neq).set_parse_action(_slotcmd_guarded_action(True))
-slotcmd_guarded = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction) + _guard_eq).set_parse_action(_slotcmd_guarded_action(False))
+slotcmd_guarded_neq = pp.And([lb, Opt(L('~')), _slotguts, rb, Opt(type_restriction), ZM(pipe + transform), _neq(), value]).set_parse_action(_slotcmd_guarded_action(True))
+slotcmd_guarded = pp.And([lb, Opt(L('~')), _slotguts, rb, Opt(type_restriction), ZM(pipe + transform), _eq(), value]).set_parse_action(_slotcmd_guarded_action(False))
 
 def _slotcmd_action(t):
     """
@@ -685,15 +701,36 @@ def _dstar_body():
 def _pat_body():
     return _rec_pat_prefix + _rec_inner + Opt(type_restriction) + Opt(_rec_depth) + ZM(amp + filters)
 
-# ValueGuard composition: **=7, *name!=None, etc. (must try before plain forms)
-rec_dstar_guarded_neq = (_dstar_body() + _guard_neq).set_parse_action(
-    lambda t: wrappers.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1], negate=True))
-rec_dstar_guarded = (_dstar_body() + _guard_eq).set_parse_action(
-    lambda t: wrappers.ValueGuard(_make_recursive([match.Wildcard()] + list(t[:-1])), t[-1]))
-rec_pat_guarded_neq = (_pat_body() + _guard_neq).set_parse_action(
-    lambda t: wrappers.ValueGuard(_make_recursive(t[:-1]), t[-1], negate=True))
-rec_pat_guarded = (_pat_body() + _guard_eq).set_parse_action(
-    lambda t: wrappers.ValueGuard(_make_recursive(t[:-1]), t[-1]))
+# Helpers to separate transforms from other tokens in recursive guarded forms
+def _extract_transforms(tokens):
+    """
+    Extract transform Groups (pp.ParseResults) from a token list.
+    """
+    return [tuple(t) for t in tokens if isinstance(t, pp.ParseResults)]
+
+def _extract_non_transform(tokens):
+    """
+    Return tokens with transform Groups removed.
+    """
+    return [t for t in tokens if not isinstance(t, pp.ParseResults)]
+
+# ValueGuard composition: **=7, *name!=None, **|int=7, etc. (must try before plain forms)
+rec_dstar_guarded_neq = (_dstar_body() + ZM(pipe + transform) + _neq() + value).set_parse_action(
+    lambda t: wrappers.ValueGuard(
+        _make_recursive([match.Wildcard()] + _extract_non_transform(list(t[:-1]))),
+        t[-1], negate=True, transforms=_extract_transforms(list(t[:-1]))))
+rec_dstar_guarded = (_dstar_body() + ZM(pipe + transform) + _eq() + value).set_parse_action(
+    lambda t: wrappers.ValueGuard(
+        _make_recursive([match.Wildcard()] + _extract_non_transform(list(t[:-1]))),
+        t[-1], transforms=_extract_transforms(list(t[:-1]))))
+rec_pat_guarded_neq = (_pat_body() + ZM(pipe + transform) + _neq() + value).set_parse_action(
+    lambda t: wrappers.ValueGuard(
+        _make_recursive(_extract_non_transform(list(t[:-1]))),
+        t[-1], negate=True, transforms=_extract_transforms(list(t[:-1]))))
+rec_pat_guarded = (_pat_body() + ZM(pipe + transform) + _eq() + value).set_parse_action(
+    lambda t: wrappers.ValueGuard(
+        _make_recursive(_extract_non_transform(list(t[:-1]))),
+        t[-1], transforms=_extract_transforms(list(t[:-1]))))
 
 # First-match: **?, *name?
 rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
@@ -845,9 +882,7 @@ def _top_level_flatten(t):
 invert = Opt(L('-').set_parse_action(access.Invert))
 dotted = pp.Group((invert + (inner_expr | empty)).set_parse_action(_top_level_flatten))
 
-targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
-param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
-transform = pp.Group(transform_name.copy() + ZM(param))
-transforms = ZM(pipe + transform)
-
-template = dotted('ops') + transforms('transforms')
+_template_guard_neq = (_neq() + value).set_parse_action(lambda t: [('!=', t[0])])
+_template_guard_eq = (_eq() + value).set_parse_action(lambda t: [('=', t[0])])
+_template_guard = _template_guard_neq | _template_guard_eq
+template = dotted('ops') + transforms('transforms') + Opt(_template_guard)('guard')

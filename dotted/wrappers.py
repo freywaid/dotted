@@ -113,35 +113,63 @@ def _guard_repr(guard):
 class ValueGuard(Wrap):
     """
     Wraps Key/Slot with a direct value test: key=value, [slot]=value.
+    Optionally applies transforms before the guard check: key|int=7.
     """
 
-    def __init__(self, inner, guard, negate=False, *args, **kwargs):
+    def __init__(self, inner, guard, negate=False, transforms=(), *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
         self.inner = inner    # Key or Slot
         self.guard = guard    # value op (match.Numeric, match.String, match.Wildcard, match.Regex, etc.)
         self.negate = negate
+        self.transforms = tuple(tuple(t) for t in transforms)
 
     def __repr__(self):
         eq = '!=' if self.negate else '='
-        return f'{self.inner!r}{eq}{self.guard!r}'
+        t_str = ''.join(f'|{t[0]}' for t in self.transforms) if self.transforms else ''
+        return f'{self.inner!r}{t_str}{eq}{self.guard!r}'
 
     def __hash__(self):
-        return hash(('guard', self.inner, self.guard, self.negate))
+        return hash(('guard', self.inner, self.guard, self.negate, self.transforms))
 
     def __eq__(self, other):
         return (isinstance(other, ValueGuard) and self.inner == other.inner
-                and self.guard == other.guard and self.negate == other.negate)
+                and self.guard == other.guard and self.negate == other.negate
+                and self.transforms == other.transforms)
 
     def _guard_matches(self, val):
         """
-        True if val matches the guard value.
+        True if val matches the guard value (after applying transforms).
         """
+        if self.transforms:
+            from .results import apply_transforms
+            val = apply_transforms(val, self.transforms)
         matched = any(True for _ in self.guard.matches((val,)))
         return not matched if self.negate else matched
 
+    def _transforms_operator(self):
+        """
+        Render the |transform suffix for operator/assemble.
+        """
+        if not self.transforms:
+            return ''
+        parts = []
+        for t in self.transforms:
+            name = t[0]
+            params = t[1:]
+            s = name
+            for p in params:
+                if p is None:
+                    s += ':'
+                elif isinstance(p, str):
+                    s += ':' + repr(p)
+                else:
+                    s += ':' + str(p)
+            parts.append(s)
+        return '|' + '|'.join(parts)
+
     def operator(self, top=False):
         eq = '!=' if self.negate else '='
-        return self.inner.operator(top) + eq + _guard_repr(self.guard)
+        return self.inner.operator(top) + self._transforms_operator() + eq + _guard_repr(self.guard)
 
     def is_pattern(self):
         return self.inner.is_pattern()

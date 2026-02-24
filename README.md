@@ -101,6 +101,7 @@ Or pick only what you need:
   - [Filter negation and not-equals](#filter-negation-and-not-equals)
   - [Boolean and None filter values](#boolean-and-none-filter-values)
   - [Value guard](#value-guard)
+  - [Guard transforms](#guard-transforms)
   - [Container filter values](#container-filter-values)
   - [Type prefixes](#type-prefixes)
   - [String glob patterns](#string-glob-patterns)
@@ -1796,6 +1797,58 @@ the item values directly. For primitive lists, use `[*]=value`.
 
     >>> dotted.get([True, 1, False, 0], '[*]=True')
     (True, 1)
+
+<a id="guard-transforms"></a>
+### Guard transforms
+
+Guards and filters can apply transforms before comparing. Place transforms
+between the field and the `=`/`!=` operator:
+
+    >>> d = {'a': '7', 'b': '3'}
+    >>> dotted.get(d, '*|int=7')
+    ('7',)
+    >>> dotted.get(d, '*|int!=7')
+    ('3',)
+
+The transform is used for matching only — the yielded value is the original
+(untransformed) value:
+
+    >>> dotted.get({'val': '7'}, 'val|int=7')
+    '7'
+    >>> dotted.get({'val': '3'}, 'val|int=7')  # no match
+
+Slot guards work the same way:
+
+    >>> dotted.get(['3', '7', '7'], '[*]|int=7')
+    ('7', '7')
+
+Multiple transforms can be chained:
+
+    >>> dotted.get({'val': '7.9'}, 'val|float|int=7')
+    '7.9'
+
+Guard transforms work with filters too. Use `key|transform=value` inside a filter:
+
+    >>> items = [{'val': '7', 'name': 'a'}, {'val': '3', 'name': 'b'}]
+    >>> dotted.get(items, '[val|int=7]')
+    [{'val': '7', 'name': 'a'}]
+    >>> dotted.get(items, '[*&val|int!=7].name')
+    ('b',)
+
+And with recursive patterns:
+
+    >>> deep = {'x': {'val': '10'}, 'y': {'val': '5'}}
+    >>> dotted.get(deep, '**.val|int=10')
+    ('10',)
+
+Guard transforms compose with `update`, `remove`, and `has`:
+
+    >>> dotted.update({'a': '7', 'b': '3'}, '*|int=7', 'X')
+    {'a': 'X', 'b': '3'}
+    >>> dotted.remove({'a': '7', 'b': '3'}, '*|int!=7')
+    {'a': '7'}
+    >>> dotted.has({'val': '7'}, 'val|int=7')
+    True
 
 <a id="container-filter-values"></a>
 ### Container filter values
