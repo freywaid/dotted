@@ -43,6 +43,7 @@ Or pick only what you need:
   - [Pluck](#pluck)
   - [Walk](#walk)
   - [Unpack](#unpack)
+  - [Keys, Values, Items](#keys-values-items)
   - [Build](#build)
   - [Apply](#apply)
   - [Assemble](#assemble)
@@ -525,6 +526,30 @@ which attributes are included:
     (('point@x', 3), ('point@y', 4))
 
 Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
+
+<a id="keys-values-items"></a>
+### Keys, Values, Items
+
+`keys()`, `values()`, and `items()` mirror the `dict` interface over dotted
+normal form. All three call `unpack()` internally.
+
+    >>> d = {'a': {'b': 1}, 'x': {'y': 2}, 'z': 3}
+    >>> dotted.keys(d)
+    dict_keys(['a.b', 'x.y', 'z'])
+    >>> dotted.values(d)
+    dict_values([1, 2, 3])
+    >>> dotted.items(d)
+    dict_items([('a.b', 1), ('x.y', 2), ('z', 3)])
+
+`keys()` and `items()` support set operations:
+
+    >>> dotted.keys({'a': 1, 'b': 2}) & dotted.keys({'b': 3, 'c': 4})
+    {'b'}
+
+All three accept `attrs=` (same as `unpack`):
+
+    >>> dotted.keys({'point': Pt(3, 4)}, attrs=[dotted.Attrs.standard])
+    dict_keys(['point@x', 'point@y'])
 
 <a id="build"></a>
 ### Build

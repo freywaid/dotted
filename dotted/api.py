@@ -897,6 +897,42 @@ def unpack(obj, attrs=None):
     return pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})')
 
 
+def items(obj, attrs=None):
+    """
+    Return (path, value) pairs of obj in normal form as a dict_items view.
+    Internally calls unpack().
+
+    >>> d = {'a': {'b': 1}, 'x': 2}
+    >>> sorted(items(d))
+    [('a.b', 1), ('x', 2)]
+    """
+    return dict(unpack(obj, attrs=attrs)).items()
+
+
+def keys(obj, attrs=None):
+    """
+    Return the dotted paths (keys) of obj in normal form.
+    Internally calls unpack().
+
+    >>> d = {'a': {'b': 1}, 'x': 2}
+    >>> sorted(keys(d))
+    ['a.b', 'x']
+    """
+    return items(obj, attrs=attrs).mapping.keys()
+
+
+def values(obj, attrs=None):
+    """
+    Return the leaf values of obj in normal form.
+    Internally calls unpack().
+
+    >>> d = {'a': {'b': 1}, 'x': 2}
+    >>> sorted(values(d))
+    [1, 2]
+    """
+    return items(obj, attrs=attrs).mapping.values()
+
+
 #
 # transform registry
 #

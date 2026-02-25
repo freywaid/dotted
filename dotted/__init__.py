@@ -30,6 +30,9 @@ build(obj, key)         Build default structure for key
 pluck(obj, pattern)     Extract field-value pairs
 walk(obj, pattern)      Yield (path, value) pairs (lazy)
 unpack(obj)             Extract to dotted normal form
+keys(obj)               Dotted paths of obj
+values(obj)             Leaf values of obj
+items(obj)              (path, value) pairs as dict_items view
 
 Transforms
 ----------
@@ -62,7 +65,7 @@ from .api import \
     has, setdefault, setdefault_multi, \
     update, update_multi, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
-    pluck, pluck_multi, walk, walk_multi, unpack
+    pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
 
 __all__ = [
     # Core
@@ -72,7 +75,7 @@ __all__ = [
     # Pattern
     'match', 'match_multi', 'overlaps', 'expand', 'expand_multi',
     # Build/Pluck
-    'build', 'build_multi', 'pluck', 'pluck_multi', 'walk', 'walk_multi', 'unpack',
+    'build', 'build_multi', 'pluck', 'pluck_multi', 'walk', 'walk_multi', 'unpack', 'keys', 'values', 'items',
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility
