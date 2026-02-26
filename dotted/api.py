@@ -466,19 +466,6 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True, strict=Fal
     return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict)
 
 
-def pack(keyvalues, apply_transforms=True, strict=False):
-    """
-    Build a new object from key-value pairs.
-    Infers root container type from the first key.
-
-    >>> pack([('a.b', 1), ('a.c', 2)])
-    {'a': {'b': 1, 'c': 2}}
-    >>> pack([('[0]', 'a'), ('[1]', 'b')])
-    ['a', 'b']
-    """
-    return update_multi(AUTO, keyvalues, apply_transforms=apply_transforms, strict=strict)
-
-
 def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True, strict=False):
     """
     Remove only when pred(key) is true.  Default pred skips None keys.
@@ -702,23 +689,6 @@ def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
     return (m for m in matches if m)
 
 
-def _resolve_subst(inner, bindings, partial):
-    """
-    Try to resolve a PositionalSubst op.  Returns the resolved string,
-    or the original op repr (if partial), or raises IndexError (if strict).
-    Returns None for non-subst ops.
-    """
-    if not hasattr(inner, 'resolve'):
-        return None
-    resolved = inner.resolve(bindings)
-    if resolved is not None:
-        return resolved
-    if not partial:
-        raise IndexError(
-            f'${inner.value} out of range ({len(bindings)} bindings)')
-    return repr(inner)
-
-
 def replace(template, bindings, partial=False):
     """
     Substitute $N ops in a template path with bound values.
@@ -727,11 +697,22 @@ def replace(template, bindings, partial=False):
     partial=False (default): raise IndexError if any $N is out of range.
     partial=True: leave unresolved $N as-is in the output.
     """
+    def _resolve(inner):
+        if not hasattr(inner, 'resolve'):
+            return None
+        resolved = inner.resolve(bindings)
+        if resolved is not None:
+            return resolved
+        if partial:
+            return repr(inner)
+        raise IndexError(
+            f'${inner.value} out of range ({len(bindings)} bindings)')
+
     parsed = parse(template)
     result = []
     for op in parsed:
         inner = getattr(op, 'op', op)
-        resolved = _resolve_subst(inner, bindings, partial)
+        resolved = _resolve(inner)
         if resolved is None:
             result.append(op.operator(top=not result))
             continue
@@ -748,7 +729,7 @@ def replace(template, bindings, partial=False):
     for name, *args in parsed.transforms:
         result.append('|' + name)
         for arg in args:
-            resolved = _resolve_subst(arg, bindings, partial) if arg is not None else None
+            resolved = _resolve(arg) if arg is not None else None
             result.append(':' + resolved if resolved is not None else ':')
     return ''.join(result)
 
@@ -933,10 +914,23 @@ def walk_multi(obj, patterns, strict=False):
         yield from walk(obj, pattern, strict=strict)
 
 
+def pack(keyvalues, apply_transforms=True, strict=False):
+    """
+    Build a new object from dotted key-value pairs, typically via unpack.
+    Infers root container type from the first key.
+
+    >>> pack([('a.b', 1), ('a.c', 2)])
+    {'a': {'b': 1, 'c': 2}}
+    >>> pack([('[0]', 'a'), ('[1]', 'b')])
+    ['a', 'b']
+    """
+    return update_multi(AUTO, keyvalues, apply_transforms=apply_transforms, strict=strict)
+
+
 def unpack(obj, attrs=None):
     """
     Convert obj to dotted normal form.  A tuple of (path, value) pairs which
-    can be replayed to regenerate the obj.  Internally, this calls:
+    can be replayed to regenerate the obj (see `pack`).  Internally, this calls:
          pluck(obj, '*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, [])')
 
     Pass attrs= to include object attributes:
@@ -948,7 +942,7 @@ def unpack(obj, attrs=None):
     >>> r = unpack(d)
     >>> r
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
-    >>> update_multi(AUTO, r) == d
+    >>> pack(r) == d
     True
     """
     if not attrs:
