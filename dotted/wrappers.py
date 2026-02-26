@@ -97,6 +97,15 @@ class NopWrap(Wrap):
             return '@~' + s[1:]
         return '~' + s
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner op.
+        """
+        new_inner = self.inner.resolve(bindings, partial)
+        if new_inner is self.inner:
+            return self
+        return NopWrap(new_inner)
+
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, **kwargs)
 
@@ -122,12 +131,10 @@ class ValueGuard(Wrap):
         self.inner = inner    # Key or Slot
         self.guard = guard    # value op (match.Numeric, match.String, match.Wildcard, match.Regex, etc.)
         self.negate = negate
-        self.transforms = tuple(tuple(t) for t in transforms)
+        self.transforms = tuple(transforms)
 
     def __repr__(self):
-        eq = '!=' if self.negate else '='
-        t_str = ''.join(f'|{t[0]}' for t in self.transforms) if self.transforms else ''
-        return f'{self.inner!r}{t_str}{eq}{self.guard!r}'
+        return self.operator(top=True)
 
     def __hash__(self):
         return hash(('guard', self.inner, self.guard, self.negate, self.transforms))
@@ -153,20 +160,7 @@ class ValueGuard(Wrap):
         """
         if not self.transforms:
             return ''
-        parts = []
-        for t in self.transforms:
-            name = t[0]
-            params = t[1:]
-            s = name
-            for p in params:
-                if p is None:
-                    s += ':'
-                elif isinstance(p, str):
-                    s += ':' + repr(p)
-                else:
-                    s += ':' + str(p)
-            parts.append(s)
-        return '|' + '|'.join(parts)
+        return ''.join('|' + t.operator() for t in self.transforms)
 
     def operator(self, top=False):
         eq = '!=' if self.negate else '='
@@ -244,6 +238,19 @@ class ValueGuard(Wrap):
             stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner, guard, and transforms.
+        """
+        new_inner = self.inner.resolve(bindings, partial)
+        new_guard = self.guard.resolve(bindings, partial) if hasattr(self.guard, 'resolve') else self.guard
+        new_transforms = tuple(
+            t.resolve(bindings, partial) for t in self.transforms)
+        if (new_inner is self.inner and new_guard is self.guard
+                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
+            return self
+        return ValueGuard(new_inner, new_guard, negate=self.negate, transforms=new_transforms)
+
     def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
         if self.inner.is_recursive():
             return self.inner._update_recursive(
@@ -301,6 +308,15 @@ class TypeRestriction(Wrap):
                 and self.inner == other.inner
                 and self.types == other.types
                 and self.negate == other.negate)
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner op.
+        """
+        new_inner = self.inner.resolve(bindings, partial)
+        if new_inner is self.inner:
+            return self
+        return TypeRestriction(new_inner, *self.types, negate=self.negate)
 
     def operator(self, top=False):
         return self.inner.operator(top) + self._type_suffix()
@@ -442,6 +458,19 @@ class FilterWrap(Wrap):
             cp = frame.prefix + (self.inner.concrete(k),) if paths else frame.prefix
             stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner op and filters.
+        """
+        new_inner = self.inner.resolve(bindings, partial)
+        new_filters = tuple(
+            f.resolve(bindings, partial) if hasattr(f, 'resolve') else f
+            for f in self.filters)
+        if (new_inner is self.inner
+                and all(nf is of for nf, of in zip(new_filters, self.filters))):
+            return self
+        return FilterWrap(new_inner, new_filters)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
         return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)

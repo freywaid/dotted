@@ -25,7 +25,7 @@ class Dotted:
 
     def __init__(self, results):
         self.ops = tuple(results['ops'])
-        self.transforms = tuple(tuple(r) for r in results.get('transforms', ()))
+        self.transforms = tuple(results.get('transforms', ()))
         guard_raw = results.get('guard', ())
         if guard_raw:
             op, val = guard_raw
@@ -45,7 +45,7 @@ class Dotted:
         return not matched if self.guard_negate else matched
 
     def assemble(self, start=0, pedantic=False):
-        return assemble(self, start, pedantic=pedantic)
+        return assemble(self, start, pedantic=pedantic, transforms=self.transforms)
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     @staticmethod
@@ -78,6 +78,23 @@ class Dotted:
                 and self.guard == ops.guard and self.guard_negate == ops.guard_negate)
     def __getitem__(self, key):
         return self.ops[key]
+    def resolve(self, bindings, partial=False):
+        """
+        Return a new Dotted with all $N resolved in ops, transforms, and guard.
+        """
+        new_ops = tuple(op.resolve(bindings, partial) for op in self.ops)
+        new_transforms = tuple(t.resolve(bindings, partial) for t in self.transforms)
+        new_guard = (
+            self.guard.resolve(bindings, partial)
+            if self.guard is not None and hasattr(self.guard, 'resolve')
+            else self.guard)
+        if (all(no is oo for no, oo in zip(new_ops, self.ops))
+                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))
+                and new_guard is self.guard):
+            return self
+        guard_raw = (('!=' if self.guard_negate else '='), new_guard) if new_guard is not None else ()
+        return Dotted({'ops': new_ops, 'transforms': new_transforms, 'guard': guard_raw})
+
     def apply(self, val):
         return apply_transforms(val, self.transforms)
 
@@ -87,15 +104,15 @@ Dotted.registry.__doc__ = rdoc()
 def apply_transforms(val, transforms):
     """
     Apply a sequence of transforms to a value.
-    Each transform is a tuple of (name, *args).
+    Each transform is a Transform object.
     """
-    for name, *args in transforms:
-        fn = Dotted._registry[name]
-        val = fn(val, *args)
+    for t in transforms:
+        fn = Dotted._registry[t.name]
+        val = fn(val, *t.params)
     return val
 
 
-def assemble(ops, start=0, pedantic=False):
+def assemble(ops, start=0, pedantic=False, transforms=()):
     """
     Reassemble ops into a dotted notation string.
 
@@ -111,4 +128,6 @@ def assemble(ops, start=0, pedantic=False):
             top = False
     if not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]':
         parts.pop()
+    for t in transforms:
+        parts.append('|' + t.operator())
     return ''.join(parts)

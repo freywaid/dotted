@@ -296,6 +296,15 @@ class AccessOp(SimpleOp):
     def is_pattern(self):
         return isinstance(self.op, match.Pattern)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in the inner match op.
+        """
+        new_op = self.op.resolve(bindings, partial)
+        if new_op is self.op:
+            return self
+        return self.__class__(new_op)
+
     def is_empty(self, node):
         return not any(True for _ in self.keys(node))
 
@@ -547,12 +556,12 @@ class Slot(Key):
         import numbers
         if isinstance(val, numbers.Number):
             return cls(match.Numeric(val))
-        return match.String(val)
+        return cls(match.String(val))
 
     def operator(self, top=False):
         if self.op is None:
             return '[]'
-        if isinstance(self.op, (match.Word, match.String)):
+        elif isinstance(self.op, (match.Word, match.String)):
             q = normalize(self.op.value, as_key=False)
         elif isinstance(self.op, (match.Numeric, match.NumericQuoted)):
             q = repr(self.op)
@@ -727,6 +736,28 @@ class SliceFilter(BaseOp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = self.args
+
+    def __repr__(self):
+        return self.operator(top=True)
+
+    def operator(self, top=False):
+        """
+        Render as [filter1&filter2&...].
+        """
+        inner = '&'.join(repr(f) for f in self.filters)
+        return '[' + inner + ']'
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in filters.
+        """
+        new_filters = tuple(
+            f.resolve(bindings, partial) if hasattr(f, 'resolve') else f
+            for f in self.filters)
+        if all(nf is of for nf, of in zip(new_filters, self.filters)):
+            return self
+        result = SliceFilter(*new_filters)
+        return result
 
     @classmethod
     def concrete(cls, val):

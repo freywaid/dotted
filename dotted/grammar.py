@@ -3,6 +3,7 @@
 import decimal
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
+from . import base
 from . import groups
 from . import match
 from . import filters as flt
@@ -337,7 +338,7 @@ key = _commons | numeric_extended | non_integer | numeric_key | word
 # Transform: |name or |name:param — defined early so filters and guards can reference it
 targ = concrete_value | subst | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
-transform = pp.Group(transform_name.copy() + ZM(param))
+transform = (transform_name.copy() + ZM(param)).set_parse_action(lambda s, loc, t: base.Transform(*t))
 transforms = ZM(pipe + transform)
 
 # Value guard eq/neq: each call creates a fresh Suppress to avoid pyparsing
@@ -416,8 +417,8 @@ def _keycmd_guarded_action(negate):
                 tr = item
             elif isinstance(item, flt.FilterOp):
                 filters.append(item)
-            elif isinstance(item, pp.ParseResults):
-                xforms.append(tuple(item))
+            elif isinstance(item, base.Transform):
+                xforms.append(item)
             else:
                 args.append(item)
         inner = access.Key(*args)
@@ -477,8 +478,8 @@ def _slotcmd_guarded_action(negate):
                 nop = True
             elif isinstance(item, flt.FilterOp):
                 filters.append(item)
-            elif isinstance(item, pp.ParseResults):
-                xforms.append(tuple(item))
+            elif isinstance(item, base.Transform):
+                xforms.append(item)
             else:
                 args.append(item)
         inner = access.Slot(*args)
@@ -743,15 +744,15 @@ def _pat_body():
 # Helpers to separate transforms from other tokens in recursive guarded forms
 def _extract_transforms(tokens):
     """
-    Extract transform Groups (pp.ParseResults) from a token list.
+    Extract Transform objects from a token list.
     """
-    return [tuple(t) for t in tokens if isinstance(t, pp.ParseResults)]
+    return [t for t in tokens if isinstance(t, base.Transform)]
 
 def _extract_non_transform(tokens):
     """
-    Return tokens with transform Groups removed.
+    Return tokens with Transform objects removed.
     """
-    return [t for t in tokens if not isinstance(t, pp.ParseResults)]
+    return [t for t in tokens if not isinstance(t, base.Transform)]
 
 # ValueGuard composition: **=7, *name!=None, **|int=7, etc. (must try before plain forms)
 rec_dstar_guarded_neq = (_dstar_body() + ZM(pipe + transform) + _neq() + value).set_parse_action(

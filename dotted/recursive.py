@@ -86,6 +86,31 @@ class Recursive(BaseOp):
             s = '.' + s
         return s
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner match op and accessor branches.
+        """
+        new_inner = self.inner.resolve(bindings, partial) if hasattr(self.inner, 'resolve') else self.inner
+        new_accessors = None
+        acc_changed = False
+        if self.accessors is not None:
+            new_accessors = []
+            for item in self.accessors:
+                if item is base.BRANCH_CUT or item is base.BRANCH_SOFTCUT:
+                    new_accessors.append(item)
+                    continue
+                new_branch = tuple(
+                    op.resolve(bindings, partial) for op in item)
+                if not all(nb is ob for nb, ob in zip(new_branch, item)):
+                    acc_changed = True
+                new_accessors.append(new_branch)
+            new_accessors = tuple(new_accessors)
+        if new_inner is self.inner and not acc_changed:
+            return self
+        return Recursive(
+            new_inner, accessors=new_accessors if new_accessors is not None else self.accessors,
+            depth_start=self.depth_start, depth_stop=self.depth_stop, depth_step=self.depth_step)
+
     def match(self, op, specials=False):
         return self.inner.matchable(op, specials=specials)
 

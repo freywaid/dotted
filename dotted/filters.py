@@ -144,6 +144,17 @@ class FilterKey(base.MatchOp):
             result.append(m)
         return '.'.join(str(r) for r in result)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in each part.
+        """
+        new_parts = tuple(
+            p.resolve(bindings, partial) if hasattr(p, 'resolve') else p
+            for p in self.parts)
+        if all(np is op for np, op in zip(new_parts, self.parts)):
+            return self
+        return FilterKey(*new_parts)
+
 
 class FilterKeyValue(FilterOp):
     """
@@ -158,10 +169,11 @@ class FilterKeyValue(FilterOp):
             items = list(self.args[0])
             self.key = items[0]
             self.val = items[-1]
-            # Middle items are transforms (list after as_list(), or ParseResults)
+            # Middle items are Transform objects
+            from .base import Transform
             self.transforms = tuple(
-                tuple(item) for item in items[1:-1]
-                if isinstance(item, (list, tuple))
+                item for item in items[1:-1]
+                if isinstance(item, Transform)
             )
         else:
             self.key = self.args[0]
@@ -172,7 +184,7 @@ class FilterKeyValue(FilterOp):
         return hash((self._eq_str, self.key, self.val, self.transforms))
 
     def __repr__(self):
-        t_str = ''.join(f'|{t[0]}' for t in self.transforms) if self.transforms else ''
+        t_str = ''.join('|' + t.operator() for t in self.transforms) if self.transforms else ''
         return f'{self.key}{t_str}{self._eq_str}{self.val}'
 
     def _eq_match(self, node):
@@ -220,6 +232,21 @@ class FilterKeyValue(FilterOp):
             return None
         return type(op)(op.key, op.val)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in key, val, and transforms.
+        """
+        new_key = self.key.resolve(bindings, partial) if hasattr(self.key, 'resolve') else self.key
+        new_val = self.val.resolve(bindings, partial) if hasattr(self.val, 'resolve') else self.val
+        new_transforms = tuple(
+            t.resolve(bindings, partial) for t in self.transforms)
+        if (new_key is self.key and new_val is self.val
+                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
+            return self
+        result = type(self)(new_key, new_val)
+        result.transforms = new_transforms
+        return result
+
 
 class FilterKeyValueNot(FilterKeyValue):
     """
@@ -259,6 +286,17 @@ class FilterGroup(FilterOp):
         if not self.matchable(op):
             return None
         return self.inner.match(op.inner)
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner filter.
+        """
+        if self.inner is None:
+            return self
+        new_inner = self.inner.resolve(bindings, partial) if hasattr(self.inner, 'resolve') else self.inner
+        if new_inner is self.inner:
+            return self
+        return FilterGroup(new_inner)
 
 
 class FilterAnd(FilterOp):
@@ -301,6 +339,17 @@ class FilterAnd(FilterOp):
             results.append(m)
         return FilterAnd(*results)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in each filter.
+        """
+        new_filters = tuple(
+            f.resolve(bindings, partial) if hasattr(f, 'resolve') else f
+            for f in self.filters)
+        if all(nf is of for nf, of in zip(new_filters, self.filters)):
+            return self
+        return FilterAnd(*new_filters)
+
 
 class FilterOr(FilterOp):
     """
@@ -329,6 +378,17 @@ class FilterOr(FilterOp):
                 if item_id not in seen:
                     seen.add(item_id)
                     yield item
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in each filter.
+        """
+        new_filters = tuple(
+            f.resolve(bindings, partial) if hasattr(f, 'resolve') else f
+            for f in self.filters)
+        if all(nf is of for nf, of in zip(new_filters, self.filters)):
+            return self
+        return FilterOr(*new_filters)
 
 
 class FilterKeyValueFirst(FilterOp):
@@ -363,6 +423,17 @@ class FilterKeyValueFirst(FilterOp):
         if self.inner and op.inner:
             return self.inner.match(op.inner)
         return None
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner filter.
+        """
+        if self.inner is None:
+            return self
+        new_inner = self.inner.resolve(bindings, partial) if hasattr(self.inner, 'resolve') else self.inner
+        if new_inner is self.inner:
+            return self
+        return FilterKeyValueFirst(new_inner)
 
 
 class FilterNot(FilterOp):
@@ -405,3 +476,14 @@ class FilterNot(FilterOp):
         if not self.matchable(op):
             return None
         return self.inner.match(op.inner)
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in inner filter.
+        """
+        if self.inner is None:
+            return self
+        new_inner = self.inner.resolve(bindings, partial) if hasattr(self.inner, 'resolve') else self.inner
+        if new_inner is self.inner:
+            return self
+        return FilterNot(new_inner)

@@ -67,7 +67,7 @@ def parse(key):
     """
     Parse dotted notation. Results are LRU-cached (same path string reuses cached parse).
     >>> parse('hello.there|str:"=%s"')
-    Dotted([hello, there], [('str', '=%s')])
+    Dotted([hello, there], [str:'=%s'])
     """
     if isinstance(key, results.Dotted):
         return key
@@ -697,41 +697,8 @@ def replace(template, bindings, partial=False):
     partial=False (default): raise IndexError if any $N is out of range.
     partial=True: leave unresolved $N as-is in the output.
     """
-    def _resolve(inner):
-        if not hasattr(inner, 'resolve'):
-            return None
-        resolved = inner.resolve(bindings)
-        if resolved is not None:
-            return resolved
-        if partial:
-            return repr(inner)
-        raise IndexError(
-            f'${inner.value} out of range ({len(bindings)} bindings)')
-
     parsed = parse(template)
-    result = []
-    for op in parsed:
-        inner = getattr(op, 'op', op)
-        resolved = _resolve(inner)
-        if resolved is None:
-            result.append(op.operator(top=not result))
-            continue
-        # Resolved: append with accessor prefix
-        if not result:
-            result.append(resolved)
-        elif isinstance(op, access.Attr):
-            result.append('@' + resolved)
-        elif isinstance(op, access.Slot):
-            result.append('[' + resolved + ']')
-        else:
-            result.append('.' + resolved)
-    # Resolve $N in transforms
-    for name, *args in parsed.transforms:
-        result.append('|' + name)
-        for arg in args:
-            resolved = _resolve(arg) if arg is not None else None
-            result.append(':' + resolved if resolved is not None else ':')
-    return ''.join(result)
+    return parsed.resolve(bindings, partial=partial).assemble()
 
 
 def overlaps(a, b):

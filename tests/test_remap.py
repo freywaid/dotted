@@ -104,12 +104,19 @@ def test_parse_subst_container_value():
 
 def test_resolve_in_range():
     s = PositionalSubst(2)
-    assert s.resolve(('a', 'b', 'c')) == 'c'
+    r = s.resolve(('a', 'b', 'c'))
+    assert r.value == 'c'
 
 
 def test_resolve_out_of_range():
     s = PositionalSubst(5)
-    assert s.resolve(('a', 'b')) is None
+    assert s.resolve(('a', 'b'), partial=True) is s
+
+
+def test_resolve_out_of_range_strict():
+    s = PositionalSubst(5)
+    with pytest.raises(IndexError):
+        s.resolve(('a', 'b'))
 
 
 # ---------------------------------------------------------------------------
@@ -176,3 +183,68 @@ def test_replace_no_substs():
 
 def test_replace_top_position():
     assert dotted.replace('$0.name', ('users',)) == 'users.name'
+
+
+# ---------------------------------------------------------------------------
+# replace() — deep resolution (ValueGuard, filters, nop, groups, recursive)
+# ---------------------------------------------------------------------------
+
+def test_replace_value_guard():
+    """$N in ValueGuard guard: status=$0"""
+    assert dotted.replace('status=$0', ('active',)) == 'status=active'
+
+
+def test_replace_value_guard_recursive():
+    """$N in recursive value guard: **=$0"""
+    assert dotted.replace('**=$0', ('hello',)) == '**=hello'
+
+
+def test_replace_type_restriction():
+    """$N with type restriction: $0:dict"""
+    assert dotted.replace('$0:dict', ('items',)) == 'items:dict'
+
+
+def test_replace_nop_wrap():
+    """$N inside NopWrap: ~$0.name"""
+    assert dotted.replace('~$0.name', ('users',)) == '~users.name'
+
+
+def test_replace_opgroup():
+    """$N in OpGroup branches: (.$0,.$1)"""
+    assert dotted.replace('a(.$0,.$1)', ('b', 'c')) == 'a(.b,.c)'
+
+
+def test_replace_recursive():
+    """$N after recursive descent: **.$0"""
+    assert dotted.replace('**.$0', ('name',)) == '**.name'
+
+
+def test_replace_negation():
+    """-$0 via replace"""
+    assert dotted.replace('-$0', ('hello',)) == '-hello'
+
+
+def test_replace_opgroup_partial():
+    """$N in OpGroup, partial mode"""
+    assert dotted.replace('a(.$0,.$1)', ('b',), partial=True) == 'a(.b,.$1)'
+
+
+def test_replace_value_guard_negate():
+    """$N in negated ValueGuard: status!=$0"""
+    assert dotted.replace('status!=$0', ('active',)) == 'status!=active'
+
+
+def test_replace_slot_guard():
+    """$N in slot ValueGuard: [*]=$0"""
+    assert dotted.replace('[*]=$0', ('hello',)) == '[*]=hello'
+
+
+def test_replace_slice_filter():
+    """$N in SliceFilter: a[*=$0]"""
+    assert dotted.replace('a[*=$0]', ('7',)) == 'a[*=7]'
+
+
+def test_replace_identity_no_substs():
+    """resolve() returns self when no $N present"""
+    parsed = parse('hello.world')
+    assert parsed.resolve((), partial=True) is parsed

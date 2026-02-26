@@ -118,14 +118,19 @@ class PositionalSubst(Pattern):
     @property
     def value(self):
         return self.args[0]
-    def resolve(self, groups):
+    def resolve(self, bindings, partial=False):
         """
-        Return resolved string value, or None if index out of range.
+        Resolve this substitution against bindings.
+        Returns ResolvedValue on success, self if partial and out of range,
+        or raises IndexError if not partial and out of range.
         """
         idx = self.value
-        if idx < len(groups):
-            return str(groups[idx])
-        return None
+        if idx < len(bindings):
+            return ResolvedValue(str(bindings[idx]))
+        if partial:
+            return self
+        raise IndexError(
+            f'${idx} out of range ({len(bindings)} bindings)')
     def __repr__(self):
         return f'${self.args[0]}'
     def matchable(self, op, specials=False):
@@ -214,3 +219,12 @@ class AppenderUnique(Appender):
     @property
     def value(self):
         return '+?'
+
+
+class ResolvedValue(Const):
+    """
+    Pre-resolved value from $N substitution.
+    repr() returns the raw string so operator()/assemble() splices it verbatim.
+    """
+    def __repr__(self):
+        return str(self.value)

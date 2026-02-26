@@ -51,6 +51,25 @@ class OpGroup(base.TraversalOp):
                     return first_op.default()
         return {}
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in all branches.
+        """
+        new_branches = []
+        changed = False
+        for item in self.branches:
+            if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
+                new_branches.append(item)
+                continue
+            new_branch = tuple(
+                op.resolve(bindings, partial) for op in item)
+            if not all(nb is ob for nb, ob in zip(new_branch, item)):
+                changed = True
+            new_branches.append(new_branch)
+        if not changed:
+            return self
+        return type(self)(*new_branches)
+
     def to_branches(self):
         return [self]
 

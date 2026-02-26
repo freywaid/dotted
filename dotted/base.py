@@ -63,6 +63,12 @@ class Op:
         return hash(self.args)
     def __eq__(self, op):
         return self.__class__ == op.__class__ and self.args == op.args
+    def resolve(self, bindings, partial=False):
+        """
+        Return a new op with all PositionalSubst resolved.
+        Default: return self (no substitutions).
+        """
+        return self
     def scrub(self, node):
         return node
     def is_recursive(self):
@@ -170,3 +176,53 @@ class MatchOp(Op):
     def to_branches(self):
         from .access import Key
         return [tuple([Key(self)])]
+
+
+class Transform(Op):
+    """
+    A named transform with optional parameters: |name or |name:param1:param2.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = self.args[0]
+        self.params = self.args[1:]
+
+    def __repr__(self):
+        return self.operator()
+
+    def __hash__(self):
+        try:
+            return hash(('transform', self.name, self.params))
+        except TypeError:
+            return hash(('transform', self.name,
+                         tuple(tuple(p) if isinstance(p, list) else p for p in self.params)))
+
+    def __eq__(self, other):
+        return (isinstance(other, Transform)
+                and self.name == other.name
+                and self.params == other.params)
+
+    def operator(self):
+        """
+        Render as name:param1:param2 (without leading |).
+        """
+        parts = [self.name]
+        for p in self.params:
+            if p is None:
+                parts.append(':')
+            elif isinstance(p, str):
+                parts.append(':' + repr(p))
+            else:
+                parts.append(':' + repr(p))
+        return ''.join(parts)
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in transform params.
+        """
+        new_params = tuple(
+            p.resolve(bindings, partial) if hasattr(p, 'resolve') else p
+            for p in self.params)
+        if all(np is op for np, op in zip(new_params, self.params)):
+            return self
+        return Transform(self.name, *new_params)
