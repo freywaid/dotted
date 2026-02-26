@@ -285,7 +285,7 @@ class Recursive(BaseOp):
                 continue
             if ops:
                 node = self._assign(acc, node, k, engine.removes(ops, v, val, nop=False, **kwargs))
-            elif not nop:
+            elif not nop and (val is base.ANY or v == val):
                 to_remove.append((acc, k))
         for acc, k in reversed(to_remove):
             if isinstance(acc, Attr):

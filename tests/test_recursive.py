@@ -529,3 +529,194 @@ def test_unpack_pattern():
     d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'hello': {'there': 'bye'}}
     result = dotted.pluck(d, '**:-2(.*, [])')
     assert result == (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('hello.there', 'bye'))
+
+
+# -- Cycle detection --
+
+def test_cycle_self_referencing_dict_dstar():
+    """
+    ** on a self-referencing dict terminates without infinite loop.
+    The cyclic ref is yielded as a value but not recursed into again.
+    """
+    d = {'a': 1}
+    d['self'] = d
+    result = dotted.get(d, '**')
+    assert 1 in result
+    assert d in result
+
+
+def test_cycle_mutual_reference_dstar():
+    """
+    ** on mutually referencing dicts terminates.
+    """
+    a = {'val': 1}
+    b = {'val': 2}
+    a['other'] = b
+    b['other'] = a
+    root = {'a': a, 'b': b}
+    result = dotted.get(root, '**')
+    assert 1 in result
+    assert 2 in result
+
+
+def test_cycle_star_key_chain():
+    """
+    *next on a circular linked-list terminates.
+    """
+    a = {'next': None, 'val': 'a'}
+    b = {'next': None, 'val': 'b'}
+    c = {'next': None, 'val': 'c'}
+    a['next'] = b
+    b['next'] = c
+    c['next'] = a  # cycle
+    result = dotted.get(a, '*next')
+    assert len(result) == 3  # a, b, c — cycle back to a is skipped
+
+
+def test_cycle_star_key_chain_with_continuation():
+    """
+    *next.val follows chain and extracts val at each node.
+    """
+    a = {'next': None, 'val': 'a'}
+    b = {'next': None, 'val': 'b'}
+    c = {'next': None, 'val': 'c'}
+    a['next'] = b
+    b['next'] = c
+    c['next'] = a  # cycle
+    result = dotted.get(a, '*next.val')
+    assert set(result) == {'a', 'b', 'c'}
+
+
+def test_cycle_dstar_continuation():
+    """
+    **.key on a cyclic structure terminates and finds nested keys.
+    """
+    inner = {'key': 'found'}
+    d = {'nested': inner}
+    d['self'] = d
+    result = dotted.get(d, '**.key')
+    assert result == ('found',)
+
+
+def test_cycle_dstar_first():
+    """
+    **? on a cyclic structure returns the first match without looping.
+    """
+    d = {'a': 1}
+    d['self'] = d
+    result = dotted.get(d, '**?')
+    assert len(result) == 1
+
+
+def test_cycle_update_dstar():
+    """
+    ** update on a cyclic structure terminates and updates all values.
+    """
+    d = {'a': 1, 'b': 2}
+    d['self'] = d
+    dotted.update(d, '**', 0)
+    assert d['a'] == 0
+    assert d['b'] == 0
+    # Cyclic ref is also a matched value, so it's replaced too
+    assert d['self'] == 0
+
+
+def test_cycle_update_star_key():
+    """
+    *next update on a circular chain terminates.
+    """
+    a = {'next': None, 'val': 'a'}
+    b = {'next': None, 'val': 'b'}
+    a['next'] = b
+    b['next'] = a  # cycle
+    dotted.update(a, '*next.val', 'x')
+    assert a['val'] == 'x'
+    assert b['val'] == 'x'
+
+
+def test_cycle_remove_dstar():
+    """
+    ** remove on a cyclic structure terminates.
+    """
+    d = {'a': 1, 'b': 2}
+    d['self'] = d
+    dotted.remove(d, '**')
+    assert d == {}
+
+
+def test_cycle_remove_dstar_by_value():
+    """
+    ** remove with val on a cyclic structure only removes matching values.
+    """
+    d = {'a': 1, 'b': 2}
+    d['self'] = d
+    dotted.remove(d, '**', 1)
+    assert 'a' not in d
+    assert d['b'] == 2
+
+
+def test_remove_dstar_by_value():
+    """
+    ** remove with val only removes keys whose value matches (no cycle).
+    """
+    d = {'a': {'x': 1, 'y': 2}, 'b': {'x': 3, 'y': 1}}
+    dotted.remove(d, '**', 1)
+    assert d == {'a': {'y': 2}, 'b': {'x': 3}}
+
+
+def test_cycle_remove_star_key():
+    """
+    *next remove on a circular chain terminates.
+    """
+    a = {'next': None, 'val': 'a'}
+    b = {'next': None, 'val': 'b'}
+    a['next'] = b
+    b['next'] = a  # cycle
+    dotted.remove(a, '*next.val')
+    assert 'val' not in a
+    assert 'val' not in b
+
+
+def test_cycle_deep_self_reference():
+    """
+    ** handles a cycle deeper in the structure.
+    """
+    root = {'a': {'b': {'c': 1}}}
+    root['a']['b']['loop'] = root['a']
+    result = dotted.get(root, '**')
+    assert 1 in result
+
+
+def test_cycle_pluck_dstar():
+    """
+    pluck with ** on a cyclic structure returns correct paths.
+    """
+    d = {'a': 1}
+    d['self'] = d
+    result = dotted.pluck(d, '**')
+    paths = [p for p, _ in result]
+    vals = [v for _, v in result]
+    assert 'a' in paths
+    assert 1 in vals
+
+
+def test_cycle_dstar_depth_slice():
+    """
+    **:0 on a cyclic structure terminates — depth-0 only.
+    """
+    d = {'a': 1}
+    d['self'] = d
+    result = dotted.get(d, '**:0')
+    assert 1 in result
+
+
+def test_cycle_accessor_group():
+    """
+    *(*#, [*]) on a structure with cyclic dict ref terminates.
+    """
+    d = {'items': [1, 2, 3]}
+    d['self'] = d
+    result = dotted.get(d, '*(*#, [*])')
+    assert 1 in result
+    assert 2 in result
+    assert 3 in result
