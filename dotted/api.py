@@ -466,6 +466,19 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True, strict=Fal
     return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict)
 
 
+def pack(keyvalues, apply_transforms=True, strict=False):
+    """
+    Build a new object from key-value pairs.
+    Infers root container type from the first key.
+
+    >>> pack([('a.b', 1), ('a.c', 2)])
+    {'a': {'b': 1, 'c': 2}}
+    >>> pack([('[0]', 'a'), ('[1]', 'b')])
+    ['a', 'b']
+    """
+    return update_multi(AUTO, keyvalues, apply_transforms=apply_transforms, strict=strict)
+
+
 def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True, strict=False):
     """
     Remove only when pred(key) is true.  Default pred skips None keys.
@@ -595,7 +608,8 @@ def _match_ops(pats, keys, partial):
             break  # chain-following: stop extending once a segment fails
         rest_result = _match_ops(rest_pats, keys[n:], partial)
         if rest_result is not None:
-            return list(keys[:n]) + rest_result
+            combined = results.assemble(keys[:n])
+            return [combined] + rest_result
     return None
 
 
@@ -686,6 +700,57 @@ def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
     if groups:
         return (m for m in matches if m[0])
     return (m for m in matches if m)
+
+
+def _resolve_subst(inner, bindings, partial):
+    """
+    Try to resolve a PositionalSubst op.  Returns the resolved string,
+    or the original op repr (if partial), or raises IndexError (if strict).
+    Returns None for non-subst ops.
+    """
+    if not hasattr(inner, 'resolve'):
+        return None
+    resolved = inner.resolve(bindings)
+    if resolved is not None:
+        return resolved
+    if not partial:
+        raise IndexError(
+            f'${inner.value} out of range ({len(bindings)} bindings)')
+    return repr(inner)
+
+
+def replace(template, bindings, partial=False):
+    """
+    Substitute $N ops in a template path with bound values.
+    Returns assembled path string.
+
+    partial=False (default): raise IndexError if any $N is out of range.
+    partial=True: leave unresolved $N as-is in the output.
+    """
+    parsed = parse(template)
+    result = []
+    for op in parsed:
+        inner = getattr(op, 'op', op)
+        resolved = _resolve_subst(inner, bindings, partial)
+        if resolved is None:
+            result.append(op.operator(top=not result))
+            continue
+        # Resolved: append with accessor prefix
+        if not result:
+            result.append(resolved)
+        elif isinstance(op, access.Attr):
+            result.append('@' + resolved)
+        elif isinstance(op, access.Slot):
+            result.append('[' + resolved + ']')
+        else:
+            result.append('.' + resolved)
+    # Resolve $N in transforms
+    for name, *args in parsed.transforms:
+        result.append('|' + name)
+        for arg in args:
+            resolved = _resolve_subst(arg, bindings, partial) if arg is not None else None
+            result.append(':' + resolved if resolved is not None else ':')
+    return ''.join(result)
 
 
 def overlaps(a, b):

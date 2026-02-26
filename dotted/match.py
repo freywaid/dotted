@@ -111,6 +111,27 @@ class Pattern(MatchOp):
         raise NotImplementedError
 
 
+class PositionalSubst(Pattern):
+    """
+    Substitution op for captured match groups: $0, $1, $2, etc.
+    """
+    @property
+    def value(self):
+        return self.args[0]
+    def resolve(self, groups):
+        """
+        Return resolved string value, or None if index out of range.
+        """
+        idx = self.value
+        if idx < len(groups):
+            return str(groups[idx])
+        return None
+    def __repr__(self):
+        return f'${self.args[0]}'
+    def matchable(self, op, specials=False):
+        return False
+
+
 class Wildcard(Pattern):
     @property
     def value(self):

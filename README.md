@@ -35,6 +35,7 @@ Or pick only what you need:
   - [Update](#update)
   - [Remove](#remove)
   - [Match](#match)
+  - [Replace](#replace)
   - [Expand](#expand)
   - [Overlaps](#overlaps)
   - [Has](#has)
@@ -43,6 +44,7 @@ Or pick only what you need:
   - [Pluck](#pluck)
   - [Walk](#walk)
   - [Unpack](#unpack)
+  - [Pack](#pack)
   - [Keys, Values, Items](#keys-values-items)
   - [Build](#build)
   - [Apply](#apply)
@@ -383,6 +385,36 @@ With the `groups=True` parameter, you'll see how it was matched:
 In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
 matching is enabled by default).
 
+<a id="replace"></a>
+### Replace
+
+Substitute `$N` placeholders in a template path with bound values. Template paths
+are validated at parse time — structural errors are caught immediately, not at runtime.
+
+    >>> import dotted
+    >>> dotted.replace('people.$1.$2', ('users', 'alice', 'age'))
+    'people.alice.age'
+
+Combine with `match` to remap paths — capture groups from one pattern and substitute
+into another:
+
+    >>> key, groups = dotted.match('users.*.*', 'users.alice.age', groups=True)
+    >>> dotted.replace('people.$0.$1', groups[1:])
+    'people.alice.age'
+
+`$N` works in key, slot, and attr positions:
+
+    >>> dotted.replace('items[$0]', ('3',))
+    'items[3]'
+    >>> dotted.replace('$0@$1', ('obj', 'name'))
+    'obj@name'
+
+By default, out-of-range `$N` raises `IndexError`. Pass `partial=True` to leave
+unresolved placeholders as-is — the output is still a valid template:
+
+    >>> dotted.replace('$0.$1.$2', ('a', 'b'), partial=True)
+    'a.b.$2'
+
 <a id="expand"></a>
 ### Expand
 
@@ -502,14 +534,14 @@ materializing the full result. Useful for streaming or large structures.
 ### Unpack
 
 Recursively unpack a nested structure into `(path, value)` pairs — its dotted
-normal form. The result can be replayed with `update_multi` to reconstruct the
-original object. Use `AUTO` as the base object to infer the root container type.
+normal form. The result can be replayed with `pack` to reconstruct the original
+object.
 
     >>> import dotted
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     >>> dotted.unpack(d)
     (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
-    >>> dotted.update_multi(dotted.AUTO, dotted.unpack(d)) == d
+    >>> dotted.pack(dotted.unpack(d)) == d
     True
 
 Pass `attrs=` to also descend into object attributes. The `Attrs` enum controls
@@ -526,6 +558,29 @@ which attributes are included:
     (('point@x', 3), ('point@y', 4))
 
 Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
+
+<a id="pack"></a>
+### Pack
+
+Build a new object from key-value pairs. The inverse of `unpack` — infers the root
+container type automatically.
+
+    >>> import dotted
+    >>> dotted.pack([('a.b', 1), ('a.c', 2)])
+    {'a': {'b': 1, 'c': 2}}
+    >>> dotted.pack([('[0]', 'a'), ('[1]', 'b')])
+    ['a', 'b']
+
+Accepts dicts as well as lists of pairs:
+
+    >>> dotted.pack({'x.y': 10, 'x.z': 20})
+    {'x': {'y': 10, 'z': 20}}
+
+Roundtrips with `unpack`:
+
+    >>> d = {'a': {'b': [1, 2, 3]}, 'x': 'hello'}
+    >>> dotted.pack(dotted.unpack(d)) == d
+    True
 
 <a id="keys-values-items"></a>
 ### Keys, Values, Items

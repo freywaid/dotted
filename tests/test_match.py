@@ -72,3 +72,23 @@ def test_pattern_to_pattern():
     assert dotted.match('*', '-*') is None
     assert dotted.match('-*', '*') is None
     assert dotted.match('-*', '-*') == '-*'
+
+
+def test_recursive_groups_dstar():
+    r = dotted.match('**.name', 'a.b.name', groups=True)
+    assert r == ('a.b.name', ('a.b', 'name'))
+
+
+def test_recursive_groups_star_key():
+    r = dotted.match('*k', 'k.k.k', groups=True)
+    assert r == ('k.k.k', ('k',))
+
+
+def test_recursive_groups_with_continuation():
+    r = dotted.match('**.c', 'a.b.c', groups=True)
+    assert r == ('a.b.c', ('a.b', 'c'))
+
+
+def test_recursive_groups_deep():
+    r = dotted.match('**.x', 'a.b.c.x', groups=True)
+    assert r == ('a.b.c.x', ('a.b.c', 'x'))

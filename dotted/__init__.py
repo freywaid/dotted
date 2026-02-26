@@ -22,11 +22,13 @@ mutable(obj, key)       Check if update would mutate in place
 Pattern Matching
 ----------------
 match(pattern, key)     Match pattern to key
+replace(template, bind) Substitute $N in template path
 expand(obj, pattern)    Expand pattern to concrete keys
 
 Building & Plucking
 -------------------
 build(obj, key)         Build default structure for key
+pack(keyvalues)         Build object from key-value pairs
 pluck(obj, pattern)     Extract field-value pairs
 walk(obj, pattern)      Yield (path, value) pairs (lazy)
 unpack(obj)             Extract to dotted normal form
@@ -59,11 +61,11 @@ from .api import \
     assemble, assemble_multi, \
     build, build_multi, \
     expand, expand_multi, \
-    match, match_multi, overlaps, \
+    match, match_multi, replace, overlaps, \
     apply, apply_multi, \
     get, get_multi, \
     has, setdefault, setdefault_multi, \
-    update, update_multi, update_if, update_if_multi, \
+    update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
 
@@ -71,9 +73,9 @@ __all__ = [
     # Core
     'get', 'update', 'remove', 'has', 'setdefault',
     # Multi
-    'get_multi', 'update_multi', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
+    'get_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern
-    'match', 'match_multi', 'overlaps', 'expand', 'expand_multi',
+    'match', 'match_multi', 'replace', 'overlaps', 'expand', 'expand_multi',
     # Build/Pluck
     'build', 'build_multi', 'pluck', 'pluck_multi', 'walk', 'walk_multi', 'unpack', 'keys', 'values', 'items',
     # Transform

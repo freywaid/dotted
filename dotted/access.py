@@ -571,7 +571,8 @@ class Slot(Key):
             elif isinstance(self.op, (match.Numeric, match.NumericQuoted)):
                 q = repr(self.op)
             else:
-                q = self.op.value
+                v = self.op.value
+                q = v if isinstance(v, str) else repr(self.op)
             iterable = itertools.chain((q,), iterable)
         return '[' + '.'.join(iterable) + ']'
 

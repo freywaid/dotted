@@ -40,7 +40,7 @@ none = pp.Literal('None').set_parse_action(match.NoneValue)
 true = pp.Literal('True').set_parse_action(match.Boolean)
 false = pp.Literal('False').set_parse_action(match.Boolean)
 
-reserved = '.[]*:|+?/=,@&()!~#{}' # {} added for container syntax
+reserved = '.[]*:|+?/=,@&()!~#{}$' # {} for container syntax, $ for substitution
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
@@ -76,10 +76,11 @@ wildcard_first = pp.Literal('*?').set_parse_action(match.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
 regex = _regex.copy().set_parse_action(match.Regex)
 regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(match.RegexFirst)
+subst = pp.Regex(r'\$[0-9]+').set_parse_action(lambda t: match.PositionalSubst(int(t[0][1:])))
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
-_common_pats = wildcard_first | wildcard | regex_first | regex
+_common_pats = wildcard_first | wildcard | subst | regex_first | regex
 _commons = bytes_literal | string | _common_pats | numeric_quoted
 
 
@@ -94,7 +95,7 @@ _ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).s
 container_value = pp.Forward()
 
 # Scalar atoms usable inside containers (same as value atoms minus containers)
-_val_atoms = bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+_val_atoms = bytes_literal | string | wildcard | subst | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
@@ -330,11 +331,11 @@ concrete_value <<= (
 value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
-value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | subst | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 key = _commons | numeric_extended | non_integer | numeric_key | word
 
 # Transform: |name or |name:param — defined early so filters and guards can reference it
-targ = concrete_value | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+targ = concrete_value | subst | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = pp.Group(transform_name.copy() + ZM(param))
 transforms = ZM(pipe + transform)
