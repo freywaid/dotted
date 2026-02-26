@@ -410,9 +410,12 @@ def _keycmd_guarded_action(negate):
         tr = None
         xforms = []
         args = []
+        filters = []
         for item in rest:
             if isinstance(item, utypes.TypeSpec):
                 tr = item
+            elif isinstance(item, flt.FilterOp):
+                filters.append(item)
             elif isinstance(item, pp.ParseResults):
                 xforms.append(tuple(item))
             else:
@@ -420,6 +423,8 @@ def _keycmd_guarded_action(negate):
         inner = access.Key(*args)
         if tr:
             inner = tr.wrap(inner)
+        if filters:
+            inner = wrappers.FilterWrap(inner, filters)
         return wrappers.ValueGuard(inner, guard, negate=negate, transforms=xforms)
     return action
 
@@ -433,14 +438,19 @@ def _keycmd_action(t):
     t = list(t)
     tr = None
     args = []
+    filters = []
     for item in t:
         if isinstance(item, utypes.TypeSpec):
             tr = item
+        elif isinstance(item, flt.FilterOp):
+            filters.append(item)
         else:
             args.append(item)
     result = access.Key(*args)
     if tr:
         result = tr.wrap(result)
+    if filters:
+        result = wrappers.FilterWrap(result, filters)
     return result
 
 keycmd = (key + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(_keycmd_action)
@@ -459,16 +469,21 @@ def _slotcmd_guarded_action(negate):
         nop = False
         xforms = []
         args = []
+        filters = []
         for item in rest:
             if isinstance(item, utypes.TypeSpec):
                 tr = item
             elif item == '~':
                 nop = True
+            elif isinstance(item, flt.FilterOp):
+                filters.append(item)
             elif isinstance(item, pp.ParseResults):
                 xforms.append(tuple(item))
             else:
                 args.append(item)
         inner = access.Slot(*args)
+        if filters:
+            inner = wrappers.FilterWrap(inner, filters)
         if tr:
             inner = tr.wrap(inner)
         if nop:
@@ -487,21 +502,26 @@ def _slotcmd_action(t):
     tr = None
     nop = False
     args = []
+    filters = []
     for item in t:
         if isinstance(item, utypes.TypeSpec):
             tr = item
         elif item == '~':
             nop = True
+        elif isinstance(item, flt.FilterOp):
+            filters.append(item)
         else:
             args.append(item)
     result = access.Slot(*args)
+    if filters:
+        result = wrappers.FilterWrap(result, filters)
     if tr:
         result = tr.wrap(result)
     if nop:
         result = wrappers.NopWrap(result)
     return result
 
-slotcmd = (lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction)).set_parse_action(_slotcmd_action)
+slotcmd =(lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction)).set_parse_action(_slotcmd_action)
 
 # @~ and ~@ both produce NopWrap (canonical form @~)
 def _attr_action(t, nop=False):
@@ -511,16 +531,21 @@ def _attr_action(t, nop=False):
     t = list(t)
     tr = None
     args = []
+    filters = []
     for item in t:
         if isinstance(item, utypes.TypeSpec):
             tr = item
         elif item == '~':
             pass  # consumed by grammar, marks nop
+        elif isinstance(item, flt.FilterOp):
+            filters.append(item)
         else:
             args.append(item)
     result = access.Attr(*args)
     if tr:
         result = tr.wrap(result)
+    if filters:
+        result = wrappers.FilterWrap(result, filters)
     if nop:
         result = wrappers.NopWrap(result)
     return result
@@ -541,8 +566,21 @@ softcut_marker = L('##')
 cut_marker = softcut_marker | L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
-_slot_item_plain = _slotguts.copy().set_parse_action(access.Slot)
-_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: wrappers.NopWrap(access.Slot(*t[1:])))
+def _slot_item_action(t):
+    args = []
+    filters = []
+    for item in t:
+        if isinstance(item, flt.FilterOp):
+            filters.append(item)
+        else:
+            args.append(item)
+    result = access.Slot(*args)
+    if filters:
+        result = wrappers.FilterWrap(result, filters)
+    return result
+
+_slot_item_plain = _slotguts.copy().set_parse_action(_slot_item_action)
+_slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: wrappers.NopWrap(_slot_item_action(t[1:])))
 _slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(access.SlotSpecial)
 _slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
 _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)

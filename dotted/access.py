@@ -286,7 +286,18 @@ class AccessOp(SimpleOp):
     Inside mid-path groups, every branch must begin with an access op
     (explicit form) or inherit one from a prefix (shorthand form).
     """
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.op = self.args[0]
+
+    def __repr__(self):
+        return self.operator(top=True)
+
+    def is_pattern(self):
+        return isinstance(self.op, match.Pattern)
+
+    def is_empty(self, node):
+        return not any(True for _ in self.keys(node))
 
 
 class Key(AccessOp):
@@ -305,24 +316,11 @@ class Key(AccessOp):
             return cls(match.NumericQuoted(val))
         return cls(match.Word(val))
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.op = self.args[0]
-        self.filters = self.args[1:]
-
-    def is_pattern(self):
-        return isinstance(self.op, match.Pattern)
-
-    def __repr__(self):
-        return '.'.join(repr(a) for a in self.args)
-
     def operator(self, top=False):
         q = normalize(self.op.value) if isinstance(self.op, (match.Word, match.String)) else repr(self.op)
-        iterable = itertools.chain((q,), (repr(f) for f in self.filters))
-        s = '.'.join(iterable)
         if top:
-            return s
-        return '.' + s
+            return q
+        return '.' + q
 
     def _items(self, node, keys, filtered=True):
         curkey = None
@@ -368,17 +366,15 @@ class Key(AccessOp):
         except (IndexError, TypeError):
             return ()
 
-    def is_empty(self, node):
-        return not any(True for _ in self.keys(node))
-
     def default(self):
         if self.is_pattern():
             return {}
-        if not self.filters:
-            return {self.op.value: None}
-        return {self.op.value: {}}
+        return {self.op.value: None}
 
     def match(self, op, specials=False):
+        from . import wrappers
+        if isinstance(op, wrappers.FilterWrap):
+            op = op.inner
         if not isinstance(op, Key):
             return None
         if not self.op.matchable(op.op, specials):
@@ -442,13 +438,9 @@ class Attr(Key):
     def concrete(cls, val):
         return cls(match.Word(val))
 
-    def __repr__(self):
-        return '@' + '.'.join(repr(a) for a in self.args)
-
     def operator(self, top=False):
         q = normalize(self.op.value) if isinstance(self.op, (match.Word, match.String)) else repr(self.op)
-        iterable = itertools.chain((q,), (repr(f) for f in self.filters))
-        return '@' + '.'.join(iterable)
+        return '@' + q
 
     def _items(self, node, keys, filtered=True):
         curkey = None
@@ -483,10 +475,7 @@ class Attr(Key):
         o = types.SimpleNamespace()
         if self.is_pattern():
             return o
-        if not self.filters:
-            setattr(o, self.op.value, None)
-            return o
-        setattr(o, self.op.value, types.SimpleNamespace())
+        setattr(o, self.op.value, None)
         return o
 
     def update(self, node, key, val):
@@ -560,21 +549,17 @@ class Slot(Key):
             return cls(match.Numeric(val))
         return match.String(val)
 
-    def __repr__(self):
-        return '[' + super().__repr__()  + ']'
-
     def operator(self, top=False):
-        iterable = (repr(a) for a in self.filters)
-        if self.op is not None:
-            if isinstance(self.op, (match.Word, match.String)):
-                q = normalize(self.op.value, as_key=False)
-            elif isinstance(self.op, (match.Numeric, match.NumericQuoted)):
-                q = repr(self.op)
-            else:
-                v = self.op.value
-                q = v if isinstance(v, str) else repr(self.op)
-            iterable = itertools.chain((q,), iterable)
-        return '[' + '.'.join(iterable) + ']'
+        if self.op is None:
+            return '[]'
+        if isinstance(self.op, (match.Word, match.String)):
+            q = normalize(self.op.value, as_key=False)
+        elif isinstance(self.op, (match.Numeric, match.NumericQuoted)):
+            q = repr(self.op)
+        else:
+            v = self.op.value
+            q = v if isinstance(v, str) else repr(self.op)
+        return '[' + q + ']'
 
     def items(self, node, filtered=True, **kwargs):
         if hasattr(node, 'keys'):

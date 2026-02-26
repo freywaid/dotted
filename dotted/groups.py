@@ -579,7 +579,7 @@ def slot_to_opgroup(parsed_result):
     Each slot item becomes a branch; # inserts base.BRANCH_CUT after that branch.
     Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
     """
-    _slot_types = (Slot, SlotSpecial, wrappers.NopWrap)
+    _slot_types = (Slot, SlotSpecial, wrappers.NopWrap, wrappers.FilterWrap)
     out = []
     for item in parsed_result:
         if isinstance(item, _slot_types):

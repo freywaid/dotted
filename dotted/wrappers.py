@@ -5,6 +5,7 @@ Wrap           — abstract base; delegates all access-op methods to .inner
 NopWrap        — match but don't mutate (~prefix)
 ValueGuard     — key=value / [slot]=value direct value test
 TypeRestriction — :type / :!type node-type constraint
+FilterWrap     — &filter value-level predicate
 """
 from . import base
 from . import access
@@ -336,3 +337,135 @@ class TypeRestriction(Wrap):
         if not self.allows(node):
             return node
         return self.inner.do_remove(ops, node, val, nop, **kwargs)
+
+
+class FilterWrap(Wrap):
+    """
+    Wraps an access op with value filters: key&filter, @attr&filter, [slot&filter].
+    Filters are &-separated predicates that narrow which values match.
+    """
+
+    def __init__(self, inner, filters, *args, **kwargs):
+        super().__init__(inner, *args, **kwargs)
+        self.inner = inner
+        self.filters = tuple(filters)
+
+    def __repr__(self):
+        return self.operator(top=True)
+
+    def __hash__(self):
+        return hash(('filter', self.inner, self.filters))
+
+    def __eq__(self, other):
+        return (isinstance(other, FilterWrap)
+                and self.inner == other.inner
+                and self.filters == other.filters)
+
+    def operator(self, top=False):
+        s = self.inner.operator(top)
+        filter_str = ''.join(f'&{f!r}' for f in self.filters)
+        # For slot-like inner ops, insert filter before closing bracket
+        if s.endswith(']'):
+            return s[:-1] + filter_str + ']'
+        return s + filter_str
+
+    def default(self):
+        """
+        Filters imply the value has structure to check against,
+        so upgrade None defaults to empty containers.
+        """
+        d = self.inner.default()
+        if isinstance(d, dict):
+            return {k: {} if v is None else v for k, v in d.items()}
+        import types as _types
+        if isinstance(d, _types.SimpleNamespace):
+            for k, v in vars(d).items():
+                if v is None:
+                    setattr(d, k, _types.SimpleNamespace())
+            return d
+        return d
+
+    def items(self, node, **kwargs):
+        """
+        Apply filters to the inner items stream, preserving stream
+        semantics (e.g. first-match filters only yield the first hit).
+        """
+        pairs = list(self.inner.items(node, **kwargs))
+        for f in self.filters:
+            vals = [v for _, v in pairs]
+            filtered_vals = list(f.filtered(iter(vals)))
+            # Build a set of object ids that survived filtering.
+            # Use a counter to handle duplicate objects correctly.
+            surviving = {}
+            for v in filtered_vals:
+                vid = id(v)
+                surviving[vid] = surviving.get(vid, 0) + 1
+            new_pairs = []
+            for k, v in pairs:
+                vid = id(v)
+                if surviving.get(vid, 0) > 0:
+                    new_pairs.append((k, v))
+                    surviving[vid] -= 1
+            pairs = new_pairs
+        return iter(pairs)
+
+    def values(self, node, **kwargs):
+        return (v for _, v in self.items(node, **kwargs))
+
+    def keys(self, node, **kwargs):
+        return (k for k, _ in self.items(node, **kwargs))
+
+    def is_empty(self, node):
+        return not any(True for _ in self.items(node))
+
+    def upsert(self, node, val):
+        matched_keys = [k for k, _ in self.items(node)]
+        if not matched_keys:
+            return node
+        for k in matched_keys:
+            node = self.inner.update(node, k, val)
+        return node
+
+    def remove(self, node, val, **kwargs):
+        to_remove = list(self.items(node, **kwargs))
+        for k, v in reversed(to_remove):
+            if val is base.ANY or v == val:
+                node = self.inner.pop(node, k)
+        return node
+
+    def push_children(self, stack, frame, paths):
+        """
+        Push only children that pass the filter.
+        """
+        children = list(self.items(frame.node, **(frame.kwargs or {})))
+        for k, v in reversed(children):
+            cp = frame.prefix + (self.inner.concrete(k),) if paths else frame.prefix
+            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+        return ()
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
+        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)
+
+    def do_remove(self, ops, node, val, nop, **kwargs):
+        return access.BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
+
+    def match(self, op, specials=False):
+        """
+        Match inner, then compare filters.
+        """
+        inner_op = op.inner if isinstance(op, FilterWrap) else op
+        try:
+            result = self.inner.match(inner_op, specials=specials)
+        except TypeError:
+            result = self.inner.match(inner_op)
+        if result is None:
+            return None
+        other_filters = op.filters if isinstance(op, FilterWrap) else ()
+        for f, of in zip(self.filters, other_filters):
+            if not f.matchable(of):
+                return None
+            m = f.match(of)
+            if m is None:
+                return None
+            result += (base.MatchResult(m),)
+        return result

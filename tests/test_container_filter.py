@@ -197,11 +197,11 @@ class TestAssembleRoundTrip:
 
     def test_filter_with_container(self):
         p = dotted.parse('[*&tags=[1, ...]]')
-        assert dotted.assemble(p) == '[*.tags=[1, ...]]'
+        assert dotted.assemble(p) == '[*&tags=[1, ...]]'
 
     def test_filter_dict_container(self):
         p = dotted.parse('[*&cfg={"a": 1, ...: *}]')
-        assert dotted.assemble(p) == "[*.cfg={'a': 1, ...: *}]"
+        assert dotted.assemble(p) == "[*&cfg={'a': 1, ...: *}]"
 
 
 # ---------------------------------------------------------------------------
