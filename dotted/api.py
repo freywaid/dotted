@@ -760,15 +760,15 @@ def translate(path, pattern_map):
 def translate_multi(paths, pattern_map):
     """
     Translate multiple paths via pattern_map.
+    Non-matching paths pass through unchanged.
 
     >>> pattern_map = {'a.*.b': '$0.there'}
-    >>> list(translate_multi(['a.hello.b', 'a.world.b', 'x.y'], pattern_map))
-    ['hello.there', 'world.there']
+    >>> list(translate_multi(['a.hello.b', 'x.y'], pattern_map))
+    ['hello.there', 'x.y']
     """
     for path in paths:
         result = translate(path, pattern_map)
-        if result is not None:
-            yield result
+        yield result if result is not None else path
 
 
 def overlaps(a, b):
