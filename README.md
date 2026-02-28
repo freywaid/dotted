@@ -448,6 +448,13 @@ Returns `None` if no pattern matches:
     >>> translate('no.match', {'a.*': '$0'}) is None
     True
 
+`translate_multi` applies the pattern map to multiple paths, yielding
+`(original, translated)` tuples (`translated` is `None` when no pattern matches):
+
+    >>> from dotted.api import translate_multi
+    >>> list(translate_multi(['a.hello.b', 'x.y'], {'a.*.b': '$0.there'}))
+    [('a.hello.b', 'hello.there'), ('x.y', None)]
+
 <a id="expand"></a>
 ### Expand
 
