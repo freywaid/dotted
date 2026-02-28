@@ -3,6 +3,8 @@
 import decimal
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
+
+pp.ParserElement.enable_packrat()
 from . import base
 from . import groups
 from . import match
