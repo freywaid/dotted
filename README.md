@@ -36,6 +36,7 @@ Or pick only what you need:
   - [Remove](#remove)
   - [Match](#match)
   - [Replace](#replace)
+  - [Translate](#translate)
   - [Expand](#expand)
   - [Overlaps](#overlaps)
   - [Has](#has)
@@ -385,6 +386,15 @@ With the `groups=True` parameter, you'll see how it was matched:
 In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
 matching is enabled by default).
 
+Use `groups=GroupMode.patterns` to capture only pattern segments (wildcards, regex, etc.),
+excluding literals:
+
+    >>> from dotted import GroupMode
+    >>> dotted.match('a.*.b', 'a.hello.b', groups=GroupMode.patterns, partial=False)
+    ('a.hello.b', ('hello',))
+    >>> dotted.match('hello.*', 'hello.there.bye', groups=GroupMode.patterns)
+    ('hello.there.bye', ('there.bye',))
+
 <a id="replace"></a>
 ### Replace
 
@@ -414,6 +424,29 @@ unresolved placeholders as-is — the output is still a valid template:
 
     >>> dotted.replace('$0.$1.$2', ('a', 'b'), partial=True)
     'a.b.$2'
+
+<a id="translate"></a>
+### Translate
+
+Translate a path using a pattern map (first exact match wins). Each key in the map
+is a match pattern; the value is a template with `$N` placeholders that refer to
+captured pattern segments only (wildcards, regex — not literals):
+
+    >>> from dotted.api import translate
+    >>> translate('a.hello.b', {'a.*.b': '$0.there'})
+    'hello.there'
+
+Here `*` captures `hello` as `$0`. Literal segments `a` and `b` are not numbered.
+With multiple wildcards, `$N` indices follow wildcard order:
+
+    >>> translate('a.X.b.Y.c', {'a.*.b.*.c': '$1.$0'})
+    'Y.X'
+
+The pattern map can be a dict or an iterable of `(pattern, template)` tuples.
+Returns `None` if no pattern matches:
+
+    >>> translate('no.match', {'a.*': '$0'}) is None
+    True
 
 <a id="expand"></a>
 ### Expand
