@@ -24,6 +24,12 @@ class Wrap(base.TraversalOp):
     def is_pattern(self):
         return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
 
+    def is_template(self):
+        """
+        Delegate to inner op.
+        """
+        return self.inner.is_template() if hasattr(self.inner, 'is_template') else False
+
     def default(self):
         return self.inner.default() if hasattr(self.inner, 'default') else {}
 

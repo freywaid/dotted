@@ -107,6 +107,11 @@ class NoneValue(Const):
 class Pattern(MatchOp):
     def __repr__(self):
         return str(self.value)
+    def is_pattern(self):
+        """
+        True — patterns (wildcards, regexes, etc.) are patterns.
+        """
+        return True
     def matchable(self, op, specials=False):
         raise NotImplementedError
 
@@ -133,6 +138,12 @@ class PositionalSubst(Pattern):
             f'${idx} out of range ({len(bindings)} bindings)')
     def __repr__(self):
         return f'${self.args[0]}'
+    def is_template(self):
+        """
+        True — this is a substitution reference.
+        """
+        return True
+
     def matchable(self, op, specials=False):
         return False
 

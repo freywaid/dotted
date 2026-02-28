@@ -73,6 +73,8 @@ Or pick only what you need:
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
+- [Substitution](#substitution)
+  - [Escaping](#escaping)
 - [Type Restrictions](#type-restrictions)
   - [Positive restrictions](#positive-restrictions)
   - [Negative restrictions](#negative-restrictions)
@@ -432,6 +434,8 @@ unresolved placeholders as-is — the output is still a valid template:
 
     >>> dotted.replace('$0.$1.$2', ('a', 'b'), partial=True)
     'a.b.$2'
+
+See [Substitution](#substitution) for `is_template`, escaping, and more.
 
 <a id="translate"></a>
 ### Translate
@@ -1112,6 +1116,48 @@ To chain through the items, use a pattern instead:
     ('alice', 'bob', 'alice')
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
+
+<a id="substitution"></a>
+## Substitution
+
+Substitution references (`$0`, `$1`, …) turn a path into a **template**. The
+`replace` function resolves them against a tuple of bound values:
+
+    >>> dotted.replace('people.$0.$1', ('alice', 'age'))
+    'people.alice.age'
+
+`$N` works in any position — key, slot, or attr:
+
+    >>> dotted.replace('items[$0]', ('3',))
+    'items[3]'
+
+Use `is_template` to test whether a path contains substitution references:
+
+    >>> dotted.is_template('a.$0')
+    True
+    >>> dotted.is_template('a.b')
+    False
+
+See [Replace](#replace) and [Translate](#translate) for full API details.
+
+<a id="escaping"></a>
+### Escaping
+
+If your data has keys that start with `$`, prefix with backslash to suppress
+substitution:
+
+    >>> dotted.get({'$0': 'hello'}, '\\$0')
+    'hello'
+
+Quoting also works — a quoted string is always literal:
+
+    >>> dotted.get({'$0': 'hello'}, "'$0'")
+    'hello'
+
+`normalize` and `unpack` emit `\$`-escaped forms automatically:
+
+    >>> dotted.normalize('$0')
+    '\\$0'
 
 <a id="type-restrictions"></a>
 ## Type Restrictions
@@ -2618,7 +2664,7 @@ example, removing an entire group without listing every key:
 
 Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&first=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None." Value guards (e.g. `name.first=None`) also preserve the pattern/non-pattern status of the underlying path segment.
 
-For `update` and `remove` you usually don't care: the result is the (possibly mutated) object either way. For `get`, the return shape depends on pattern vs non-pattern. Use `dotted.is_pattern(path)` if you need to branch on it.
+For `update` and `remove` you usually don't care: the result is the (possibly mutated) object either way. For `get`, the return shape depends on pattern vs non-pattern. Use `dotted.is_pattern(path)` if you need to branch on it. Similarly, `dotted.is_template(path)` tells you whether a path contains substitution references.
 
 <a id="how-do-i-craft-an-efficient-path"></a>
 ### How do I craft an efficient path?

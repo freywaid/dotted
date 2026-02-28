@@ -15,7 +15,7 @@ def itemof(node, val):
 
 # ---- quoting utilities ----
 
-_RESERVED = frozenset('.[]*:|+?/=,@&()!~#{}')
+_RESERVED = frozenset('.[]*:|+?/=,@&()!~#{}$<>')
 _NEEDS_QUOTE = _RESERVED | frozenset(' \t\n\r')
 
 _NUMERIC_RE = re.compile(
@@ -71,6 +71,8 @@ def quote(key, as_key=True):
     reserved characters or whitespace.
     """
     if isinstance(key, str):
+        if key.startswith('$'):
+            return '\\' + key
         if _needs_quoting(key):
             return _quote_str(key)
         return key
@@ -206,6 +208,12 @@ class Empty(SimpleOp):
     def is_pattern(self):
         return False
 
+    def is_template(self):
+        """
+        True if this op contains substitution references.
+        """
+        return False
+
     def is_empty(self, node):
         return False
 
@@ -294,7 +302,13 @@ class AccessOp(SimpleOp):
         return self.operator(top=True)
 
     def is_pattern(self):
-        return isinstance(self.op, match.Pattern)
+        return self.op.is_pattern()
+
+    def is_template(self):
+        """
+        True if the inner match op is a substitution.
+        """
+        return self.op.is_template()
 
     def resolve(self, bindings, partial=False):
         """

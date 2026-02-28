@@ -173,6 +173,18 @@ class MatchOp(Op):
     These are used by TraversalOps for pattern matching but never appear
     directly in the ops list processed by the engine.
     """
+    def is_pattern(self):
+        """
+        True if this op is a pattern (wildcard, regex, etc.).
+        """
+        return False
+
+    def is_template(self):
+        """
+        True if this op is a substitution reference.
+        """
+        return False
+
     def to_branches(self):
         from .access import Key
         return [tuple([Key(self)])]

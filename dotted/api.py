@@ -148,6 +148,28 @@ def is_pattern(key):
     return _is_pattern(parse(key))
 
 
+@functools.lru_cache(CACHE_SIZE)
+def _is_template(ops):
+    if not ops:
+        return False
+    if ops[0].is_template():
+        return True
+    return _is_template(ops[1:])
+
+
+def is_template(key):
+    """
+    True if dotted path contains substitution references.
+    >>> is_template('a.$0')
+    True
+    >>> is_template('a.b')
+    False
+    """
+    if isinstance(key, results.Dotted):
+        return _is_template(key)
+    return _is_template(parse(key))
+
+
 def is_inverted(key):
     """
     True if an inverted style pattern
