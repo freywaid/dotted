@@ -3,6 +3,7 @@ Dotted result model and transform registry.
 """
 import itertools
 
+from . import predicates
 from . import utils
 from .access import Invert
 
@@ -30,10 +31,17 @@ class Dotted:
         if guard_raw:
             op, val = guard_raw
             self.guard = val
-            self.guard_negate = (op == '!=')
+            self.guard_op = predicates.PRED_OPS.get(op, predicates.EQ)
         else:
             self.guard = None
-            self.guard_negate = False
+            self.guard_op = predicates.EQ
+
+    @property
+    def guard_negate(self):
+        """
+        Backward compat: True when guard_op is NE.
+        """
+        return self.guard_op is predicates.NE
 
     def guard_matches(self, val):
         """
@@ -41,8 +49,7 @@ class Dotted:
         """
         if self.guard is None:
             return True
-        matched = any(True for _ in self.guard.matches((val,)))
-        return not matched if self.guard_negate else matched
+        return any(True for _ in self.guard_op.matches((val,), self.guard))
 
     def assemble(self, start=0, pedantic=False):
         return assemble(self, start, pedantic=pedantic, transforms=self.transforms)
@@ -66,16 +73,16 @@ class Dotted:
         return obj
     def __hash__(self):
         try:
-            return hash((self.ops, self.transforms, self.guard, self.guard_negate))
+            return hash((self.ops, self.transforms, self.guard, self.guard_op))
         except TypeError:
-            return hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_negate))
+            return hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_op))
     def __len__(self):
         return len(self.ops)
     def __iter__(self):
         return iter(self.ops)
     def __eq__(self, ops):
         return (self.ops == ops.ops and self.transforms == ops.transforms
-                and self.guard == ops.guard and self.guard_negate == ops.guard_negate)
+                and self.guard == ops.guard and self.guard_op == ops.guard_op)
     def __getitem__(self, key):
         return self.ops[key]
     def resolve(self, bindings, partial=False):
@@ -92,7 +99,7 @@ class Dotted:
                 and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))
                 and new_guard is self.guard):
             return self
-        guard_raw = (('!=' if self.guard_negate else '='), new_guard) if new_guard is not None else ()
+        guard_raw = (self.guard_op.op, new_guard) if new_guard is not None else ()
         return Dotted({'ops': new_ops, 'transforms': new_transforms, 'guard': guard_raw})
 
     def apply(self, val):

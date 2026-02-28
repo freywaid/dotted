@@ -103,6 +103,7 @@ Or pick only what you need:
   - [Conjunction vs disjunction](#conjunction-vs-disjunction)
   - [Grouping with parentheses](#grouping-with-parentheses)
   - [Filter negation and not-equals](#filter-negation-and-not-equals)
+  - [Comparison operators](#comparison-operators)
   - [Boolean and None filter values](#boolean-and-none-filter-values)
   - [Value guard](#value-guard)
   - [Guard transforms](#guard-transforms)
@@ -165,6 +166,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | Transforms/coercion | ✅ | ✅ | ✅ | ❌ |
 | Slicing | ✅ | ❌ | ✅ | ❌ |
 | Filters | ✅ | ❌ | ✅ | ❌ |
+| Comparison operators (`<`, `>`, `<=`, `>=`) | ✅ | ❌ | ❌ | ❌ |
 | AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
 | Grouping `(a,b)`, `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
 | Recursive patterns (`**`, `*key`, `*([*])`, `*(@*)`) | ✅ | ✅ | ❌ | ❌ |
@@ -193,6 +195,12 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
+
+### v0.38.0
+- **`<` and `>` are now reserved characters**: These are used for
+  [comparison operators](#comparison-operators) in filters and value guards
+  (`<`, `>`, `<=`, `>=`). If you have keys containing literal `<` or `>`,
+  quote them: `"my<key>"`.
 
 ### v0.35.0
 - **Recursive traversal now walks into `str` and `bytes`**: Previously, recursive
@@ -1315,13 +1323,16 @@ Depth slicing also works with accessor groups:
 <a id="recursive-with-value-guard"></a>
 ### Recursive patterns with value guard
 
-Combine recursive patterns with value guards to find specific values at any depth:
+Combine recursive patterns with value guards to find specific values at any depth.
+All comparison operators are supported:
 
     >>> d = {'a': {'b': 7, 'c': 3}, 'd': {'e': 7}}
     >>> dotted.get(d, '**=7')
     (7, 7)
     >>> dotted.get(d, '**!=7')
     ({'b': 7, 'c': 3}, 3, {'e': 7})
+    >>> dotted.get(d, '**>5')
+    (7, 7)
 
 <a id="recursive-update-and-remove"></a>
 ### Recursive update and remove
@@ -1705,9 +1716,9 @@ for full details.
 <a id="the-key-value-filter"></a>
 ### The key-value filter
 
-You may filter by key-value to narrow your result set. Use `key=value` for equality and
-`key!=value` for not-equals (syntactic sugar for `!(key=value)`). Filter keys can be
-dotted paths and may include slice notation (e.g. `name[:5]="hello"`, `file[-3:]=".py"`).
+You may filter by key-value to narrow your result set. All six comparison operators are
+supported: `=`, `!=`, `<`, `>`, `<=`, `>=`. Filter keys can be dotted paths and may
+include slice notation (e.g. `name[:5]="hello"`, `file[-3:]=".py"`).
 You may use with __key__ or __bracketed__ fields. Key-value fields may be disjunctively (OR)
 specified via the `,` delimiter.
 
@@ -1850,6 +1861,42 @@ value `None`):
 This works because `email=*` matches any value when the field exists, so `!email=*`
 only passes when the field is missing.
 
+<a id="comparison-operators"></a>
+### Comparison operators
+
+Filters and value guards support `<`, `>`, `<=`, `>=` for range queries:
+
+    >>> items = [
+    ...     {'name': 'alice', 'age': 15},
+    ...     {'name': 'bob', 'age': 20},
+    ...     {'name': 'charlie', 'age': 25},
+    ... ]
+    >>> dotted.get(items, '[age>=18][*].name')
+    ('bob', 'charlie')
+    >>> dotted.get(items, '[age<20][*].name')
+    ('alice',)
+
+Comparison operators work in all the same contexts as `=` and `!=`—value guards,
+recursive guards, and with transforms:
+
+    >>> d = {'a': 5, 'b': 15, 'c': 25}
+    >>> dotted.get(d, '*<10')
+    (5,)
+    >>> dotted.get(d, '*>=15')
+    (15, 25)
+
+    >>> deep = {'x': 1, 'y': {'z': 100, 'w': 3}}
+    >>> dotted.get(deep, '**<10')
+    (1, 3)
+
+    >>> dotted.get({'val': '7'}, 'val|int>5')
+    '7'
+
+Incomparable types silently fail to match (no exception):
+
+    >>> dotted.get({'a': 'hello', 'b': 3}, '*>1')
+    (3,)
+
 <a id="boolean-and-none-filter-values"></a>
 ### Boolean and None filter values
 
@@ -1868,7 +1915,8 @@ Filters support `True`, `False`, and `None` as values:
 ### Value guard
 
 A **value guard** tests the value at a path and yields it only if it matches.
-Use `key=value` or `[slot]=value` after accessing a field:
+Use `key=value` or `[slot]=value` after accessing a field. All comparison
+operators (`=`, `!=`, `<`, `>`, `<=`, `>=`) are supported:
 
     >>> d = {'first': 7, 'last': 3}
     >>> dotted.get(d, 'first=7')
@@ -1897,11 +1945,15 @@ and [container patterns](#container-filter-values) (`[1, ...]`, `{"a": 1, ...: *
     >>> dotted.get(['hello', 'world', 'help'], '[*]=/hel.*/')
     ('hello', 'help')
 
-Use `!=` for negation:
+Use `!=` for negation, or ordered operators for range checks:
 
     >>> dotted.get([True, False, None, 1, 2], '[*]!=True')
     (False, None, 2)
     >>> dotted.get({'a': 7, 'b': 3}, '*!=7')
+    (3,)
+    >>> dotted.get([10, 20, 30, 40], '[*]>25')
+    (30, 40)
+    >>> dotted.get({'a': 7, 'b': 3}, '*<=5')
     (3,)
 
 Guards compose with continuation (dot paths):
@@ -1922,7 +1974,7 @@ the item values directly. For primitive lists, use `[*]=value`.
 ### Guard transforms
 
 Guards and filters can apply transforms before comparing. Place transforms
-between the field and the `=`/`!=` operator:
+between the field and the comparison operator:
 
     >>> d = {'a': '7', 'b': '3'}
     >>> dotted.get(d, '*|int=7')

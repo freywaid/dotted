@@ -9,6 +9,7 @@ FilterWrap     — &filter value-level predicate
 """
 from . import base
 from . import access
+from . import predicates
 from . import utypes
 
 
@@ -126,22 +127,34 @@ class ValueGuard(Wrap):
     Optionally applies transforms before the guard check: key|int=7.
     """
 
-    def __init__(self, inner, guard, negate=False, transforms=(), *args, **kwargs):
+    def __init__(self, inner, guard, negate=False, transforms=(), pred_op=None, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
         self.inner = inner    # Key or Slot
         self.guard = guard    # value op (match.Numeric, match.String, match.Wildcard, match.Regex, etc.)
-        self.negate = negate
+        if pred_op is not None:
+            self.pred_op = pred_op
+        elif negate:
+            self.pred_op = predicates.NE
+        else:
+            self.pred_op = predicates.EQ
         self.transforms = tuple(transforms)
+
+    @property
+    def negate(self):
+        """
+        Backward compat: True when pred_op is NE.
+        """
+        return self.pred_op is predicates.NE
 
     def __repr__(self):
         return self.operator(top=True)
 
     def __hash__(self):
-        return hash(('guard', self.inner, self.guard, self.negate, self.transforms))
+        return hash(('guard', self.inner, self.guard, self.pred_op, self.transforms))
 
     def __eq__(self, other):
         return (isinstance(other, ValueGuard) and self.inner == other.inner
-                and self.guard == other.guard and self.negate == other.negate
+                and self.guard == other.guard and self.pred_op == other.pred_op
                 and self.transforms == other.transforms)
 
     def _guard_matches(self, val):
@@ -151,8 +164,7 @@ class ValueGuard(Wrap):
         if self.transforms:
             from .results import apply_transforms
             val = apply_transforms(val, self.transforms)
-        matched = any(True for _ in self.guard.matches((val,)))
-        return not matched if self.negate else matched
+        return any(True for _ in self.pred_op.matches((val,), self.guard))
 
     def _transforms_operator(self):
         """
@@ -163,8 +175,7 @@ class ValueGuard(Wrap):
         return ''.join('|' + t.operator() for t in self.transforms)
 
     def operator(self, top=False):
-        eq = '!=' if self.negate else '='
-        return self.inner.operator(top) + self._transforms_operator() + eq + _guard_repr(self.guard)
+        return self.inner.operator(top) + self._transforms_operator() + self.pred_op.op + _guard_repr(self.guard)
 
     def is_pattern(self):
         return self.inner.is_pattern()
@@ -249,7 +260,7 @@ class ValueGuard(Wrap):
         if (new_inner is self.inner and new_guard is self.guard
                 and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
             return self
-        return ValueGuard(new_inner, new_guard, negate=self.negate, transforms=new_transforms)
+        return ValueGuard(new_inner, new_guard, pred_op=self.pred_op, transforms=new_transforms)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
         if self.inner.is_recursive():

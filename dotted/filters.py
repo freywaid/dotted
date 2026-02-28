@@ -2,6 +2,7 @@
 Filter ops: key-value filters, boolean combinators, and negation.
 """
 from . import base
+from . import predicates
 from .access import Slot, Slice
 
 
@@ -202,6 +203,21 @@ class FilterKeyValue(FilterOp):
                     return True
         return False
 
+    def _pred_match(self, node, pred_op):
+        """
+        True if any value from self.key in node satisfies pred_op against self.val.
+        """
+        if not hasattr(node, 'keys'):
+            return False
+        for val, found in self.key.get_values(node):
+            if found:
+                if self.transforms:
+                    from .results import apply_transforms
+                    val = apply_transforms(val, self.transforms)
+                if any(True for _ in pred_op.matches((val,), self.val)):
+                    return True
+        return False
+
     def is_filtered(self, node):
         return self._eq_match(node)
 
@@ -257,6 +273,54 @@ class FilterKeyValueNot(FilterKeyValue):
 
     def is_filtered(self, node):
         return not self._eq_match(node)
+
+
+class FilterKeyValueLt(FilterKeyValue):
+    """
+    Single key<value filter (less-than).
+    """
+    _eq_str = '<'
+
+    def is_filtered(self, node):
+        return self._pred_match(node, predicates.LT)
+
+
+class FilterKeyValueGt(FilterKeyValue):
+    """
+    Single key>value filter (greater-than).
+    """
+    _eq_str = '>'
+
+    def is_filtered(self, node):
+        return self._pred_match(node, predicates.GT)
+
+
+class FilterKeyValueLe(FilterKeyValue):
+    """
+    Single key<=value filter (less-than-or-equal).
+    """
+    _eq_str = '<='
+
+    def is_filtered(self, node):
+        return self._pred_match(node, predicates.LE)
+
+
+class FilterKeyValueGe(FilterKeyValue):
+    """
+    Single key>=value filter (greater-than-or-equal).
+    """
+    _eq_str = '>='
+
+    def is_filtered(self, node):
+        return self._pred_match(node, predicates.GE)
+
+
+# Lookup by operator string → filter class (built from _eq_str on each subclass).
+FILTER_PRED_CLS = {cls._eq_str: cls for cls in (
+    FilterKeyValue, FilterKeyValueNot,
+    FilterKeyValueLt, FilterKeyValueGt,
+    FilterKeyValueLe, FilterKeyValueGe,
+)}
 
 
 class FilterGroup(FilterOp):
