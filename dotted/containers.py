@@ -29,7 +29,7 @@ from itertools import combinations
 
 from . import utils
 from . import base
-from . import match
+from . import matchers
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ class ContainerList(base.Op):
         """
         ContainerList can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -229,7 +229,7 @@ class ContainerDict(base.Op):
         """
         ContainerDict can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -291,7 +291,7 @@ class ContainerSet(base.Op):
         """
         ContainerSet can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         prefix = self.type_prefix or ''
@@ -330,7 +330,7 @@ class StringGlob(base.Op):
             if isinstance(p, str):
                 regex_parts.append(re.escape(p))
             elif isinstance(p, Glob):
-                if p.pattern is not None and isinstance(p.pattern, match.Regex):
+                if p.pattern is not None and isinstance(p.pattern, matchers.Regex):
                     char_pat = p.pattern.args[0]
                 else:
                     char_pat = '.'
@@ -358,7 +358,7 @@ class StringGlob(base.Op):
         """
         StringGlob can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         parts = []
@@ -402,7 +402,7 @@ class BytesGlob(base.Op):
             if isinstance(p, bytes):
                 regex_parts.append(re.escape(p))
             elif isinstance(p, Glob):
-                if p.pattern is not None and isinstance(p.pattern, match.Regex):
+                if p.pattern is not None and isinstance(p.pattern, matchers.Regex):
                     char_pat = p.pattern.args[0].encode()
                 else:
                     char_pat = b'.'
@@ -430,7 +430,7 @@ class BytesGlob(base.Op):
         """
         BytesGlob can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         parts = []
@@ -473,7 +473,7 @@ class ValueGroup(base.Op):
         """
         ValueGroup can match against Const values.
         """
-        return isinstance(op, match.Const)
+        return isinstance(op, matchers.Const)
 
     def __repr__(self):
         return '(' + ', '.join(repr(a) for a in self.alternatives) + ')'

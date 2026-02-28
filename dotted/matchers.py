@@ -48,8 +48,18 @@ class NumericExtended(Numeric):
                 f = float(raw.replace('_', ''))
                 val = int(f) if f == int(f) else f
             super().__init__(args[0], args[1], pp.ParseResults([val]), **kwargs)
+            self._raw = raw
         else:
             super().__init__(*args, **kwargs)
+            self._raw = None
+
+    def quote(self):
+        """
+        Return the original notation form of this extended numeric literal.
+        """
+        if self._raw is not None:
+            return self._raw
+        return repr(self)
 
 
 class NumericQuoted(Numeric):
@@ -63,10 +73,29 @@ class Word(Const):
     def __repr__(self):
         return f'{self.value}'
 
+    def quote(self):
+        """
+        Return the dotted notation form of this word.
+        """
+        from .access import _needs_quoting, _quote_str, _is_numeric_str
+        v = self.value
+        if _is_numeric_str(v):
+            return _quote_str(v)
+        if _needs_quoting(v):
+            return _quote_str(v)
+        return v
+
 
 class String(Const):
     def __repr__(self):
         return f'{repr(self.value)}'
+
+    def quote(self):
+        """
+        Return the dotted notation form of this quoted string.
+        """
+        from .access import _quote_str
+        return _quote_str(self.value)
 
 
 class Bytes(Const):
@@ -138,6 +167,7 @@ class PositionalSubst(Pattern):
             f'${idx} out of range ({len(bindings)} bindings)')
     def __repr__(self):
         return f'${self.args[0]}'
+
     def is_template(self):
         """
         True — this is a substitution reference.
@@ -210,6 +240,11 @@ class Special(MatchOp):
     @property
     def value(self):
         return self.args[0]
+    def quote(self):
+        """
+        Return the dotted notation form of this special op.
+        """
+        return self.value
     def matchable(self, op, specials=False):
         return isinstance(op, Special)
     def matches(self, vals):

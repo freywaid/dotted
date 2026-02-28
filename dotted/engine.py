@@ -6,7 +6,7 @@ Core traversal functions (walk, gets, updates, removes, expands).
 import copy
 
 from . import base
-from . import match
+from . import matchers
 from . import wrappers
 from .access import Attr, Slot
 from .results import Dotted
@@ -16,7 +16,7 @@ def build_default(ops):
     cur, *ops = ops
     if not ops:
         # At leaf - for numeric Slot, populate index with None
-        if isinstance(cur, Slot) and isinstance(cur.op, match.Numeric) and cur.op.is_int():
+        if isinstance(cur, Slot) and isinstance(cur.op, matchers.Numeric) and cur.op.is_int():
             idx = cur.op.value
             return [None] * (idx + 1)
         return cur.default()

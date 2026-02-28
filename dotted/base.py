@@ -185,6 +185,12 @@ class MatchOp(Op):
         """
         return False
 
+    def quote(self):
+        """
+        Return the dotted notation form of this op.
+        """
+        return repr(self)
+
     def to_branches(self):
         from .access import Key
         return [tuple([Key(self)])]

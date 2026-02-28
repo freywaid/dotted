@@ -6,7 +6,7 @@ import re
 import types
 
 from . import base
-from . import match
+from . import matchers
 
 
 def itemof(node, val):
@@ -34,7 +34,7 @@ def _needs_quoting(s):
     """
     if not s:
         return True
-    # match.Numeric forms (integers, scientific notation, underscore separators)
+    # matchers.Numeric forms (integers, scientific notation, underscore separators)
     # are handled by the grammar and don't need quoting, even if they
     # contain reserved characters like '+' in '1e+10'.
     if s[0].isdigit() or (len(s) > 1 and s[0] == '-' and s[1].isdigit()):
@@ -62,45 +62,6 @@ def _quote_str(s):
     s = s.replace('\\', '\\\\').replace("'", "\\'")
     return f"'{s}'"
 
-
-def quote(key, as_key=True):
-    """
-    Quote a key for use in a dotted notation path string.
-
-    For raw string keys, wraps in double quotes if the key contains
-    reserved characters or whitespace.
-    """
-    if isinstance(key, str):
-        if key.startswith('$'):
-            return '\\' + key
-        if _needs_quoting(key):
-            return _quote_str(key)
-        return key
-    elif isinstance(key, int):
-        return str(key)
-    elif isinstance(key, float):
-        s = str(key)
-        if '.' not in s:
-            return s
-        if as_key:
-            return f"#'{s}'"
-        return s
-    elif isinstance(key, base.Op):
-        return str(key)
-    else:
-        raise NotImplementedError
-
-
-def normalize(key, as_key=True):
-    """
-    Convert a raw Python key to its dotted normal form representation.
-
-    Like quote(), but also quotes string keys that look numeric so they
-    round-trip correctly through pack/unpack (preserving string vs int type).
-    """
-    if isinstance(key, str) and _is_numeric_str(key):
-        return _quote_str(key)
-    return quote(key, as_key=as_key)
 
 
 class BaseOp(base.TraversalOp):
@@ -301,6 +262,12 @@ class AccessOp(SimpleOp):
     def __repr__(self):
         return self.operator(top=True)
 
+    def quote(self):
+        """
+        Return the dotted notation form of this op's key.
+        """
+        return self.op.quote()
+
     def is_pattern(self):
         return self.op.is_pattern()
 
@@ -336,11 +303,11 @@ class Key(AccessOp):
     def _concrete_cached(cls, _type, val):
         import numbers
         if isinstance(val, numbers.Number):
-            return cls(match.NumericQuoted(val))
-        return cls(match.Word(val))
+            return cls(matchers.NumericQuoted(val))
+        return cls(matchers.Word(val))
 
     def operator(self, top=False):
-        q = normalize(self.op.value) if isinstance(self.op, (match.Word, match.String)) else repr(self.op)
+        q = self.op.quote()
         if top:
             return q
         return '.' + q
@@ -376,7 +343,7 @@ class Key(AccessOp):
         # Key only handles lists with concrete numeric keys
         if not hasattr(node, '__getitem__'):
             return ()
-        if not isinstance(self.op, match.Const):
+        if not isinstance(self.op, matchers.Const):
             return ()
         key = self.op.value
         if not isinstance(key, int):
@@ -459,11 +426,10 @@ class Attr(Key):
     @classmethod
     @functools.lru_cache()
     def concrete(cls, val):
-        return cls(match.Word(val))
+        return cls(matchers.Word(val))
 
     def operator(self, top=False):
-        q = normalize(self.op.value) if isinstance(self.op, (match.Word, match.String)) else repr(self.op)
-        return '@' + q
+        return '@' + self.op.quote()
 
     def _items(self, node, keys, filtered=True):
         curkey = None
@@ -569,20 +535,13 @@ class Slot(Key):
     def _concrete_cached(cls, _type, val):
         import numbers
         if isinstance(val, numbers.Number):
-            return cls(match.Numeric(val))
-        return cls(match.String(val))
+            return cls(matchers.Numeric(val))
+        return cls(matchers.String(val))
 
     def operator(self, top=False):
         if self.op is None:
             return '[]'
-        elif isinstance(self.op, (match.Word, match.String)):
-            q = normalize(self.op.value, as_key=False)
-        elif isinstance(self.op, (match.Numeric, match.NumericQuoted)):
-            q = repr(self.op)
-        else:
-            v = self.op.value
-            q = v if isinstance(v, str) else repr(self.op)
-        return '[' + q + ']'
+        return '[' + self.op.quote() + ']'
 
     def items(self, node, filtered=True, **kwargs):
         if hasattr(node, 'keys'):
@@ -603,7 +562,7 @@ class Slot(Key):
         return self._items(node, keys, filtered)
 
     def default(self):
-        if isinstance(self.op, match.Numeric) and self.op.is_int():
+        if isinstance(self.op, matchers.Numeric) and self.op.is_int():
             return []
         return super().default()
 
@@ -865,7 +824,7 @@ class Slice(SimpleOp):
         self.args = tuple(self.munge(self.args))
     def __repr__(self):
         def s(a):
-            return quote(a, False) if a is not None else ''
+            return str(a) if a is not None else ''
         if not self.args or self.args == (None, None, None):
             return '[]'
         start, stop, step = self.args

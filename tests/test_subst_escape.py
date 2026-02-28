@@ -2,8 +2,8 @@
 Tests for $N substitution escaping and is_template API.
 """
 import dotted
-from dotted.api import parse, assemble, normalize
-from dotted.match import Word, PositionalSubst
+from dotted.api import parse, assemble, quote
+from dotted.matchers import Word, PositionalSubst
 
 
 # ---- escaping: \$ produces literal dollar-sign keys ----
@@ -33,15 +33,15 @@ def test_parse_raw_subst_still_works():
 
 
 def test_roundtrip_escaped_dollar():
-    assert assemble(parse('\\$0')) == '\\$0'
+    assert assemble(parse('\\$0')) == "'$0'"
 
 
 def test_roundtrip_escaped_dollar_bare():
-    assert assemble(parse('\\$')) == '\\$'
+    assert assemble(parse('\\$')) == "'$'"
 
 
 def test_roundtrip_escaped_dollar_nested():
-    assert assemble(parse('a.\\$1.b')) == 'a.\\$1.b'
+    assert assemble(parse('a.\\$1.b')) == "a.'$1'.b"
 
 
 def test_get_dollar_key():
@@ -56,25 +56,25 @@ def test_get_bare_dollar_key():
     assert dotted.get({'$': 'x'}, '\\$') == 'x'
 
 
-def test_normalize_dollar_prefix():
-    assert normalize('$0') == '\\$0'
+def test_quote_dollar_prefix():
+    assert quote('$0') == "'$0'"
 
 
-def test_normalize_dollar_bare():
-    assert normalize('$') == '\\$'
+def test_quote_dollar_bare():
+    assert quote('$') == "'$'"
 
 
-def test_normalize_mid_dollar_quoted():
-    assert normalize('foo$bar') == "'foo$bar'"
+def test_quote_mid_dollar_quoted():
+    assert quote('foo$bar') == "'foo$bar'"
 
 
-def test_normalize_angle_bracket_quoted():
-    assert normalize('a<b') == "'a<b'"
+def test_quote_angle_bracket_quoted():
+    assert quote('a<b') == "'a<b'"
 
 
 def test_unpack_dollar_key():
     result = dict(dotted.unpack({'$0': 'x'}))
-    assert result == {'\\$0': 'x'}
+    assert result == {"'$0'": 'x'}
 
 
 # ---- is_template ----

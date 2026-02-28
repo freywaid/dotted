@@ -7,7 +7,7 @@ from pyparsing import pyparsing_common as ppc
 pp.ParserElement.enable_packrat()
 from . import base
 from . import groups
-from . import match
+from . import matchers
 from . import filters as flt
 from . import access
 from . import predicates
@@ -40,23 +40,23 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', esc_char='\\') | pp.QuotedString("'", esc_char='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').set_parse_action(match.NoneValue)
-true = pp.Literal('True').set_parse_action(match.Boolean)
-false = pp.Literal('False').set_parse_action(match.Boolean)
+none = pp.Literal('None').set_parse_action(matchers.NoneValue)
+true = pp.Literal('True').set_parse_action(matchers.Boolean)
+false = pp.Literal('False').set_parse_action(matchers.Boolean)
 
 reserved = '.[]*:|+?/=,@&()!~#{}$<>' # {} for container syntax, $ for substitution, <> for comparisons
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
 # atomic ops
-appender = pp.Literal('+').set_parse_action(match.Appender)
-appender_unique = pp.Literal('+?').set_parse_action(match.AppenderUnique)
+appender = pp.Literal('+').set_parse_action(matchers.Appender)
+appender_unique = pp.Literal('+?').set_parse_action(matchers.AppenderUnique)
 
 _numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.number + S('"')))
-numeric_quoted = _numeric_quoted.set_parse_action(match.NumericQuoted)
+numeric_quoted = _numeric_quoted.set_parse_action(matchers.NumericQuoted)
 
-numeric_key = integer.copy().set_parse_action(match.Numeric)
-numeric_slot = ppc.number.copy().set_parse_action(match.Numeric)
+numeric_key = integer.copy().set_parse_action(matchers.Numeric)
+numeric_slot = ppc.number.copy().set_parse_action(matchers.Numeric)
 
 # Extended numeric literals: scientific (1e10), underscore (1_000), hex (0x1F), octal (0o17), binary (0b1010)
 _numeric_extended_re = pp.Regex(
@@ -66,24 +66,24 @@ _numeric_extended_re = pp.Regex(
     r'|[-]?[0-9][0-9_]*[eE][+-]?[0-9]+'  # scientific notation
     r'|[-]?[0-9]+(?:_[0-9]+)+'      # underscore separators
 )
-numeric_extended = _numeric_extended_re.copy().set_parse_action(match.NumericExtended)
+numeric_extended = _numeric_extended_re.copy().set_parse_action(matchers.NumericExtended)
 
 # Exclude whitespace so "first )" parses as key "first", not "first "
-word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(match.Word)
-non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(match.Word)
-nameop = name.copy().set_parse_action(match.Word)
+word = (pp.Optional(backslash) + pp.CharsNotIn(reserved + ' \t\n\r')).set_parse_action(matchers.Word)
+non_integer = pp.Regex(f'[-]?[0-9]+[^0-9{breserved}]+').set_parse_action(matchers.Word)
+nameop = name.copy().set_parse_action(matchers.Word)
 
-string = quoted.copy().set_parse_action(match.String)
-bytes_literal = (S(L('b')) + quoted).set_parse_action(match.Bytes)
-wildcard = pp.Literal('*').set_parse_action(match.Wildcard)
-wildcard_first = pp.Literal('*?').set_parse_action(match.WildcardFirst)
+string = quoted.copy().set_parse_action(matchers.String)
+bytes_literal = (S(L('b')) + quoted).set_parse_action(matchers.Bytes)
+wildcard = pp.Literal('*').set_parse_action(matchers.Wildcard)
+wildcard_first = pp.Literal('*?').set_parse_action(matchers.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
-regex = _regex.copy().set_parse_action(match.Regex)
-regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(match.RegexFirst)
+regex = _regex.copy().set_parse_action(matchers.Regex)
+regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(matchers.RegexFirst)
 _escaped_dollar = pp.Regex(r'\\\$[0-9]*').set_parse_action(
-    lambda t: match.Word(t[0][1:]))
+    lambda t: matchers.Word(t[0][1:]))
 _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
-    lambda t: match.PositionalSubst(int(t[0][1:])))
+    lambda t: matchers.PositionalSubst(int(t[0][1:])))
 subst = _escaped_dollar | _raw_subst
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
@@ -107,7 +107,7 @@ _val_atoms = bytes_literal | string | wildcard | subst | regex | numeric_quoted 
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
-_glob_regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).set_parse_action(match.Regex)
+_glob_regex = (slash + pp.Regex(r'(\\/|[^/])+') + slash).set_parse_action(matchers.Regex)
 
 # Count forms: min:max, min:, max (single number)
 _glob_count_full = integer + S(':') + integer       # min:max
@@ -167,10 +167,10 @@ def _make_strblob(t):
     """
     Produce StringGlob or BytesGlob depending on whether any b"..." part is present.
     """
-    has_bytes = any(isinstance(p, match.Bytes) for p in t)
+    has_bytes = any(isinstance(p, matchers.Bytes) for p in t)
     if has_bytes:
         def to_bytes(p):
-            if isinstance(p, match.Bytes):
+            if isinstance(p, matchers.Bytes):
                 return p.value
             if isinstance(p, str):
                 return p.encode()
@@ -695,7 +695,7 @@ def _make_recursive(t, first=False):
     accessors = None
     if isinstance(inner, (groups.OpGroup, wrappers.TypeRestriction)):
         accessors = _extract_accessors(inner)
-        inner = match.Wildcard()
+        inner = matchers.Wildcard()
     # Type restriction on the recursive operator (e.g. **:!(str, bytes))
     # Distribute to each accessor branch via TypeRestriction wrapper
     if type_spec is not None:
@@ -788,7 +788,7 @@ def _rec_dstar_guarded_action(pred_op):
     """
     def action(t):
         return wrappers.ValueGuard(
-            _make_recursive([match.Wildcard()] + _extract_non_transform(list(t[:-1]))),
+            _make_recursive([matchers.Wildcard()] + _extract_non_transform(list(t[:-1]))),
             t[-1], pred_op=pred_op, transforms=_extract_transforms(list(t[:-1])))
     return action
 
@@ -825,13 +825,13 @@ _rec_pat_guarded_all = (_pat_body() + ZM(pipe + transform) + _pred_op_re + value
 
 # First-match: **?, *name?
 rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
-    lambda t: _make_recursive([match.Wildcard()] + list(t), first=True))
+    lambda t: _make_recursive([matchers.Wildcard()] + list(t), first=True))
 rec_pat_first = (_pat_body() + S('?')).set_parse_action(
     lambda t: _make_recursive(t, first=True))
 
 # Plain: **, *name
 rec_dstar = _dstar_body().set_parse_action(
-    lambda t: _make_recursive([match.Wildcard()] + list(t)))
+    lambda t: _make_recursive([matchers.Wildcard()] + list(t)))
 rec_pat = _pat_body().set_parse_action(
     lambda t: _make_recursive(t))
 

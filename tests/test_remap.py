@@ -5,7 +5,7 @@ import pytest
 import dotted
 from dotted.api import parse
 from dotted.access import Key, Attr, Slot
-from dotted.match import PositionalSubst
+from dotted.matchers import PositionalSubst
 from dotted.results import assemble
 
 

@@ -12,6 +12,7 @@ from . import results
 from . import transforms
 from . import base
 from . import access
+from . import matchers
 from . import utypes
 
 
@@ -89,41 +90,41 @@ def parse(key):
 
 def quote(key, as_key=True):
     """
-    Quote a key for use in a dotted path.  Wraps in single quotes if
-    the key contains reserved characters or whitespace.
+    Quote a key for use in a dotted path.  Idempotent: quote(quote(x)) == quote(x).
+
     >>> quote('hello')
     'hello'
     >>> quote(7)
-    '7'
-    >>> quote(7, as_key=False)
     '7'
     >>> quote(7.2)
     "#'7.2'"
     >>> quote(7.2, as_key=False)
     '7.2'
-    >>> quote('7')
-    '7'
     >>> quote('a.b')
     "'a.b'"
+    >>> quote('$0')
+    "'$0'"
     """
-    return access.quote(key, as_key=as_key)
+    if isinstance(key, float):
+        s = str(key)
+        if '.' not in s:
+            return s
+        if as_key:
+            key = f"#'{s}'"
+        else:
+            return s
+    elif not isinstance(key, str):
+        key = str(key)
+    try:
+        ops = parse(key)
+        if len(ops) == 1 and not ops[0].is_template():
+            q = ops[0].quote()
+            if q == key:
+                return q
+    except Exception:
+        pass
+    return matchers.String(key).quote()
 
-
-def normalize(key, as_key=True):
-    """
-    Convert a raw Python key to dotted normal form.  Like quote(), but
-    also quotes string keys that look numeric so they round-trip correctly
-    through pack/unpack (preserving string vs int key type).
-    >>> normalize('hello')
-    'hello'
-    >>> normalize(7)
-    '7'
-    >>> normalize('7')
-    "'7'"
-    >>> normalize('a.b')
-    "'a.b'"
-    """
-    return access.normalize(key, as_key=as_key)
 
 
 @functools.lru_cache(CACHE_SIZE)

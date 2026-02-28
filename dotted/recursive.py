@@ -1,8 +1,8 @@
 """
 """
 from . import base
-from . import match
-from .access import BaseOp, Key, Attr, normalize
+from . import matchers
+from .access import BaseOp, Key, Attr
 
 
 class Recursive(BaseOp):
@@ -10,9 +10,9 @@ class Recursive(BaseOp):
     Recursive traversal operator. Matches a pattern at each level and recurses
     into matched values.
 
-    *key        = follow key chains (inner = match.Word('key'))
-    **          = recursive dict-key wildcard (inner = match.Wildcard())
-    */re/       = recursive regex (inner = match.Regex('re'))
+    *key        = follow key chains (inner = matchers.Word('key'))
+    **          = recursive dict-key wildcard (inner = matchers.Wildcard())
+    */re/       = recursive regex (inner = matchers.Regex('re'))
     *(*, [*])   = recurse through dict keys and list slots
     *(*, @*)    = recurse through dict keys and attributes
     *(*, [*], @*) = recurse through all accessor types
@@ -20,7 +20,7 @@ class Recursive(BaseOp):
 
     def __init__(self, inner, *args, accessors=None, depth_start=None, depth_stop=None, depth_step=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.inner = inner          # match.Pattern op: match.Wildcard, match.Word, match.Regex, etc.
+        self.inner = inner          # matchers.Pattern op: matchers.Wildcard, matchers.Word, matchers.Regex, etc.
         self.accessors = accessors  # None = dict-key only, or branches tuple with cuts
         self.depth_start = depth_start
         self.depth_stop = depth_stop
@@ -43,7 +43,7 @@ class Recursive(BaseOp):
     def __repr__(self):
         if self.accessors is not None:
             return f'*({self._render_accessors()})'
-        if isinstance(self.inner, match.Wildcard):
+        if isinstance(self.inner, matchers.Wildcard):
             return f'**'
         return f'*{self.inner!r}'
 
@@ -67,10 +67,10 @@ class Recursive(BaseOp):
     def operator(self, top=False):
         if self.accessors is not None:
             s = f'*({self._render_accessors()})'
-        elif isinstance(self.inner, match.Wildcard):
+        elif isinstance(self.inner, matchers.Wildcard):
             s = '**'
         else:
-            q = normalize(self.inner.value) if isinstance(self.inner, (match.Word, match.String, match.Numeric, match.NumericQuoted)) else repr(self.inner)
+            q = self.inner.quote()
             s = f'*{q}'
         # Depth slice
         if self.depth_start is not None or self.depth_stop is not None or self.depth_step is not None:

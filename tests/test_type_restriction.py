@@ -6,7 +6,7 @@ import pytest
 import dotted
 from dotted import access
 from dotted import wrappers
-from dotted.match import Wildcard
+from dotted.matchers import Wildcard
 
 
 def _w():

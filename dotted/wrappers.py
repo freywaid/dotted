@@ -136,7 +136,7 @@ class ValueGuard(Wrap):
     def __init__(self, inner, guard, negate=False, transforms=(), pred_op=None, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
         self.inner = inner    # Key or Slot
-        self.guard = guard    # value op (match.Numeric, match.String, match.Wildcard, match.Regex, etc.)
+        self.guard = guard    # value op (matchers.Numeric, matchers.String, matchers.Wildcard, matchers.Regex, etc.)
         if pred_op is not None:
             self.pred_op = pred_op
         elif negate:

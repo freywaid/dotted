@@ -51,7 +51,6 @@ Or pick only what you need:
   - [Apply](#apply)
   - [Assemble](#assemble)
   - [Quote](#quote)
-  - [Normalize](#normalize)
   - [AUTO](#auto)
   - [Multi Operations](#multi-operations)
   - [Strict Mode](#strict-mode)
@@ -699,8 +698,8 @@ Build a dotted notation string from a list of path segments.
 <a id="quote"></a>
 ### Quote
 
-Quote a key for use in a dotted path. Wraps in single quotes if the key
-contains reserved characters or whitespace.
+Quote a key for use in a dotted path. Idempotent: `quote(quote(x)) == quote(x)`.
+Wraps in single quotes if the key contains reserved characters or whitespace.
 
     >>> import dotted
     >>> dotted.quote('hello')
@@ -714,25 +713,7 @@ contains reserved characters or whitespace.
     >>> dotted.quote('7')
     '7'
 
-<a id="normalize"></a>
-### Normalize
-
-Convert a raw Python key to dotted normal form. Like `quote()`, but also
-quotes string keys that look numeric so they round-trip correctly through
-`unpack`/`update_multi` (preserving string vs int key type).
-
-    >>> import dotted
-    >>> dotted.normalize('hello')
-    'hello'
-    >>> dotted.normalize('has.dot')
-    "'has.dot'"
-    >>> dotted.normalize(7)
-    '7'
-    >>> dotted.normalize('7')
-    "'7'"
-
-`unpack` uses `normalize` internally, so dotted normal form paths always
-round-trip correctly:
+Dotted normal form paths round-trip correctly:
 
     >>> d = {'7': 'seven', 'a.b': 'dotted', 'hello': 'world'}
     >>> flat = dict(dotted.unpack(d))
@@ -1154,10 +1135,10 @@ Quoting also works — a quoted string is always literal:
     >>> dotted.get({'$0': 'hello'}, "'$0'")
     'hello'
 
-`normalize` and `unpack` emit `\$`-escaped forms automatically:
+`quote` and `unpack` emit single-quoted forms for `$`-prefixed keys:
 
-    >>> dotted.normalize('$0')
-    '\\$0'
+    >>> dotted.quote('$0')
+    "'$0'"
 
 <a id="type-restrictions"></a>
 ## Type Restrictions

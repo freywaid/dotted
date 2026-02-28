@@ -29,9 +29,10 @@ def test_quote_numeric():
 
 
 def test_quote_string_numeric():
-    # quote leaves numeric strings bare — use normalize() for type-preserving round-trips
+    # quote leaves numeric strings bare when they round-trip cleanly
     assert dotted.quote('7') == '7'
-    assert dotted.quote('007') == '007'
+    # 007 parses lossily (→ Numeric(7)), so gets quoted
+    assert dotted.quote('007') == "'007'"
 
 
 def test_quote_numeric_prefix():
@@ -39,7 +40,8 @@ def test_quote_numeric_prefix():
     assert dotted.quote('1e10') == '1e10'
     assert dotted.quote('1e+10') == '1e+10'
     assert dotted.quote('1_000') == '1_000'
-    assert dotted.quote('-1e5') == '-1e5'
+    # -1e5 parses as two segments (- and 1e5), so needs quoting
+    assert dotted.quote('-1e5') == "'-1e5'"
     assert dotted.quote('0x1F') == '0x1F'
     assert dotted.quote('0o17') == '0o17'
     assert dotted.quote('0b1010') == '0b1010'
@@ -47,28 +49,6 @@ def test_quote_numeric_prefix():
     assert dotted.quote('1abc') == "'1abc'"
     assert dotted.quote('3rd') == "'3rd'"
 
-
-# normalize
-
-def test_normalize_string():
-    assert dotted.normalize('hello') == 'hello'
-    assert dotted.normalize('has space') == "'has space'"
-    assert dotted.normalize('has.dot') == "'has.dot'"
-    assert dotted.normalize('a[0]') == "'a[0]'"
-    assert dotted.normalize('') == "''"
-
-
-def test_normalize_numeric_string():
-    # numeric strings are quoted to preserve string type on round-trip
-    assert dotted.normalize('7') == "'7'"
-    assert dotted.normalize('0') == "'0'"
-    assert dotted.normalize('-1') == "'-1'"
-
-
-def test_normalize_int():
-    # actual ints stay bare
-    assert dotted.normalize(7) == '7'
-    assert dotted.normalize(0) == '0'
 
 
 # is_inverted

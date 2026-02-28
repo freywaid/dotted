@@ -160,7 +160,7 @@ def test_format_path_attr_segment():
     """_format_path consumes (op, k) segments and renders obj@attr (no dot before @)."""
     from dotted import engine
     from dotted.access import Key, Attr, Slot
-    from dotted.match import Word, Wildcard
+    from dotted.matchers import Word, Wildcard
     # Segments: (Key, 'obj'), (Attr, 'name') -> obj@name
     path = [(Key(Word('obj')), 'obj'), (Attr(Word('name')), 'name')]
     assert engine._format_path(path) == 'obj@name'
