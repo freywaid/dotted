@@ -56,7 +56,7 @@ For full documentation including all options and flags:
     or see README.md
 """
 from .api import \
-    parse, is_pattern, is_inverted, mutable, quote, normalize, ANY, AUTO, Attrs, \
+    parse, is_pattern, is_inverted, mutable, quote, normalize, ANY, AUTO, Attrs, GroupMode, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -83,5 +83,5 @@ __all__ = [
     # Utility
     'parse', 'assemble', 'assemble_multi', 'quote', 'normalize', 'is_pattern', 'is_inverted', 'mutable',
     # Constants
-    'ANY', 'AUTO', 'Attrs',
+    'ANY', 'AUTO', 'Attrs', 'GroupMode',
 ]

@@ -22,6 +22,17 @@ class Attrs(enum.StrEnum):
     standard = 'standard'
     special = 'special'
 
+
+class GroupMode(enum.StrEnum):
+    """
+    Controls what match() returns in groups.
+
+    all      — every segment produces a group entry
+    patterns — only pattern segments (wildcards, regex, etc.)
+    """
+    all = 'all'
+    patterns = 'patterns'
+
 CACHE_SIZE = 300
 ANY = utypes.ANY
 AUTO = type('AUTO', (), {'__repr__': lambda self: 'AUTO'})()
@@ -618,6 +629,12 @@ def match(pattern, key, groups=False, partial=True, strict=False):
     >>> match('hello.*', 'hello.there.bye', groups=True)
     ('hello.there.bye', ('hello', 'there.bye'))
 
+    groups='patterns' returns only captures from pattern segments:
+    >>> match('a.*.b', 'a.hello.b', groups='patterns', partial=False)
+    ('a.hello.b', ('hello',))
+    >>> match('hello.*', 'hello.there.bye', groups='patterns')
+    ('hello.there.bye', ('there.bye',))
+
     Recursive patterns:
     >>> match('**.c', 'a.b.c')
     'a.b.c'
@@ -625,8 +642,14 @@ def match(pattern, key, groups=False, partial=True, strict=False):
     'b.b.b'
     >>> match('*b', 'a.b.c')
     """
-    def returns(r, matches):
-        return (r, tuple(matches)) if groups else r
+    _patterns_only = (groups == GroupMode.patterns)
+
+    def returns(r, matches, is_pat=None):
+        if not groups:
+            return r
+        if _patterns_only and is_pat is not None:
+            matches = [m for m, ip in zip(matches, is_pat) if ip]
+        return (r, tuple(matches))
 
     pats = parse(pattern)
     keys = parse(key)
@@ -638,43 +661,48 @@ def match(pattern, key, groups=False, partial=True, strict=False):
         result = _match_ops(list(pats), list(keys), partial)
         if result is None:
             return returns(None, [])
+        # TODO: pattern-only filtering for recursive matches
         return returns(key, result)
 
     # Original non-recursive match logic
     _matches = []
+    _is_pat = []
     for idx,(pop,kop) in enumerate(zip(pats, keys)):
         # this means we have more pattern constraints than key items
         if kop is None:
-            return returns(None, [])
+            return returns(None, [], [])
         if pop is None:
             break
         m = pop.match(kop, specials=True)
         if not m:
-            return returns(None, [])
+            return returns(None, [], [])
         if isinstance(m, (tuple, list)):
             _matches.extend(_m.val for _m in m)
+            _is_pat.extend(pop.is_pattern() for _ in m)
         else:
             _matches.append(m.val)
+            _is_pat.append(pop.is_pattern())
 
     # we've completed matching but the last item in match groups is treated 'greedily'
     assert kop is not None          # sanity
 
     # exact match
     if len(pats) == len(keys):
-        return returns(key, _matches)
+        return returns(key, _matches, _is_pat)
 
     # if we're not doing partial matches or we haven't consumed all pats, fail
     if not partial or idx < len(pats) - 1:
-        return returns(None, [])
+        return returns(None, [], [])
 
     # otherwise inexact (partial) match
     # assemble remaining keys
     rkey = keys.assemble(start=idx)
     if pop is None:
         _matches.append(rkey)
+        _is_pat.append(False)
     else:
         _matches[-1] = rkey
-    return returns(key, _matches)
+    return returns(key, _matches, _is_pat)
 
 
 def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
@@ -699,6 +727,34 @@ def replace(template, bindings, partial=False):
     """
     parsed = parse(template)
     return parsed.resolve(bindings, partial=partial).assemble()
+
+
+def translate(path, pattern_map):
+    """
+    Translate a path via pattern_map (first exact match wins).
+    $N indices refer to pattern segments only (wildcards, regex, etc.).
+    Returns None if no pattern matches.
+
+    >>> pattern_map = {
+    ...     'bye[*]': 'gone.$0',
+    ...     'a.*.b': '$0.there',
+    ... }
+    >>> translate('a.hello.b', pattern_map)
+    'hello.there'
+    >>> translate('no.match', pattern_map) is None
+    True
+    """
+    map_items = pattern_map.items() if hasattr(pattern_map, 'items') else pattern_map
+    for pattern, template in map_items:
+        (r, groups) = match(pattern, path, groups=GroupMode.patterns, partial=False)
+        if not r:
+            continue
+        try:
+            return replace(template, groups)
+        except IndexError:
+            continue
+
+    return None
 
 
 def overlaps(a, b):
