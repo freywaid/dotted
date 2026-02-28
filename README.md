@@ -197,6 +197,13 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.39.0
+- **`normalize()` removed**: Use `quote()` instead, which is now idempotent.
+- **`match` module renamed to `matchers`**: Update imports from
+  `from dotted.match import ...` to `from dotted.matchers import ...`.
+- **`$`-prefixed keys now canonicalize to single-quoted form**: `quote('$0')`
+  returns `'$0'` instead of `\$0`. The `\$` form is still accepted as input.
+
 ### v0.38.0
 - **`<` and `>` are now reserved characters**: These are used for
   [comparison operators](#comparison-operators) in filters and value guards
