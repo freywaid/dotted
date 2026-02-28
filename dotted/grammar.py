@@ -833,9 +833,9 @@ _explicit_nop_inner = (
     recursive_op |
     _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
     _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
-    _dot_recursive |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
@@ -854,9 +854,9 @@ _op_seq_cont_items = (
     keycmd_guarded_neq | keycmd_guarded | keycmd |
     _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
     _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
-    _dot_recursive |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
@@ -887,9 +887,9 @@ _explicit_op_seq_cont_items = (
     _inner_grouped_explicit_first | _inner_grouped_explicit |
     _dot_keycmd_guarded_neq | _dot_plain_keycmd_guarded_neq |
     _dot_keycmd_guarded | _dot_plain_keycmd_guarded |
+    _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
-    _dot_recursive |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
