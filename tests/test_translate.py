@@ -4,7 +4,7 @@ Tests for translate() and mid-path ** grammar fix.
 import pytest
 import dotted
 from dotted import GroupMode
-from dotted.api import parse, translate
+from dotted.api import parse, translate, translate_multi
 from dotted.recursive import Recursive
 
 
@@ -201,3 +201,39 @@ def test_translate_dict_and_iterable():
     t = [('a.*', 'tuple.$0')]
     assert translate('a.hello', d) == 'key.hello'
     assert translate('a.hello', t) == 'tuple.hello'
+
+
+# ---------------------------------------------------------------------------
+# translate_multi()
+# ---------------------------------------------------------------------------
+
+def test_translate_multi_basic():
+    """
+    Translates matching paths, skips non-matching.
+    """
+    pmap = {'a.*.b': '$0.there'}
+    result = list(translate_multi(['a.hello.b', 'a.world.b', 'x.y'], pmap))
+    assert result == ['hello.there', 'world.there']
+
+
+def test_translate_multi_empty():
+    """
+    Empty input yields empty output.
+    """
+    assert list(translate_multi([], {'a.*': '$0'})) == []
+
+
+def test_translate_multi_no_matches():
+    """
+    No matches yields empty output.
+    """
+    assert list(translate_multi(['x', 'y', 'z'], {'a.*': '$0'})) == []
+
+
+def test_translate_multi_is_lazy():
+    """
+    translate_multi returns a generator.
+    """
+    import types
+    result = translate_multi(['a.b'], {'a.*': '$0'})
+    assert isinstance(result, types.GeneratorType)

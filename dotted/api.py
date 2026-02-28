@@ -757,6 +757,20 @@ def translate(path, pattern_map):
     return None
 
 
+def translate_multi(paths, pattern_map):
+    """
+    Translate multiple paths via pattern_map.
+
+    >>> pattern_map = {'a.*.b': '$0.there'}
+    >>> list(translate_multi(['a.hello.b', 'a.world.b', 'x.y'], pattern_map))
+    ['hello.there', 'world.there']
+    """
+    for path in paths:
+        result = translate(path, pattern_map)
+        if result is not None:
+            yield result
+
+
 def overlaps(a, b):
     """
     Return True if paths a and b overlap — i.e. one is a prefix of the other.
