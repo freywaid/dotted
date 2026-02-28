@@ -209,11 +209,15 @@ def test_translate_dict_and_iterable():
 
 def test_translate_multi_basic():
     """
-    Translates matching paths, passes through non-matching.
+    Returns (original, translated) tuples.
     """
     pmap = {'a.*.b': '$0.there'}
     result = list(translate_multi(['a.hello.b', 'a.world.b', 'x.y'], pmap))
-    assert result == ['hello.there', 'world.there', 'x.y']
+    assert result == [
+        ('a.hello.b', 'hello.there'),
+        ('a.world.b', 'world.there'),
+        ('x.y', None),
+    ]
 
 
 def test_translate_multi_empty():
@@ -225,9 +229,10 @@ def test_translate_multi_empty():
 
 def test_translate_multi_no_matches():
     """
-    Non-matching paths pass through unchanged.
+    Non-matching paths yield None as translated.
     """
-    assert list(translate_multi(['x', 'y', 'z'], {'a.*': '$0'})) == ['x', 'y', 'z']
+    result = list(translate_multi(['x', 'y', 'z'], {'a.*': '$0'}))
+    assert result == [('x', None), ('y', None), ('z', None)]
 
 
 def test_translate_multi_is_lazy():
