@@ -414,12 +414,19 @@ excluding literals:
 <a id="replace"></a>
 ### Replace
 
-Substitute `$N` placeholders in a template path with bound values. Template paths
+Substitute placeholders in a template path with bound values. Template paths
 are validated at parse time — structural errors are caught immediately, not at runtime.
+
+Positional (`$N`) placeholders resolve against a tuple:
 
     >>> import dotted
     >>> dotted.replace('people.$1.$2', ('users', 'alice', 'age'))
     'people.alice.age'
+
+Named (`$(name)`) placeholders resolve against a dict:
+
+    >>> dotted.replace('$(table).$(key)', {'table': 'users', 'key': 'alice'})
+    'users.alice'
 
 Combine with `match` to remap paths — capture groups from one pattern and substitute
 into another:
@@ -428,18 +435,20 @@ into another:
     >>> dotted.replace('people.$0.$1', groups[1:])
     'people.alice.age'
 
-`$N` works in key, slot, and attr positions:
+Placeholders work in key, slot, and attr positions:
 
     >>> dotted.replace('items[$0]', ('3',))
     'items[3]'
     >>> dotted.replace('$0@$1', ('obj', 'name'))
     'obj@name'
 
-By default, out-of-range `$N` raises `IndexError`. Pass `partial=True` to leave
+By default, missing bindings raise an error. Pass `partial=True` to leave
 unresolved placeholders as-is — the output is still a valid template:
 
     >>> dotted.replace('$0.$1.$2', ('a', 'b'), partial=True)
     'a.b.$2'
+    >>> dotted.replace('$(a).$(b)', {'a': 'x'}, partial=True)
+    'x.$(b)'
 
 See [Substitution](#substitution) for `is_template`, escaping, and more.
 
@@ -1108,20 +1117,23 @@ To chain through the items, use a pattern instead:
 <a id="substitution"></a>
 ## Substitution
 
-Substitution references (`$0`, `$1`, …) turn a path into a **template**. The
-`replace` function resolves them against a tuple of bound values:
+Substitution references turn a path into a **template**. There are two forms:
+
+- **Positional** (`$0`, `$1`, …) — resolved against a tuple of values
+- **Named** (`$(name)`, `$(key)`, …) — resolved against a dict
+
+The `replace` function resolves them:
 
     >>> dotted.replace('people.$0.$1', ('alice', 'age'))
     'people.alice.age'
-
-`$N` works in any position — key, slot, or attr:
-
-    >>> dotted.replace('items[$0]', ('3',))
-    'items[3]'
+    >>> dotted.replace('$(table).$(field)', {'table': 'users', 'field': 'email'})
+    'users.email'
 
 Use `is_template` to test whether a path contains substitution references:
 
     >>> dotted.is_template('a.$0')
+    True
+    >>> dotted.is_template('a.$(name)')
     True
     >>> dotted.is_template('a.b')
     False
@@ -1132,10 +1144,12 @@ See [Replace](#replace) and [Translate](#translate) for full API details.
 ### Escaping
 
 If your data has keys that start with `$`, prefix with backslash to suppress
-substitution:
+substitution. This works for both positional and named forms:
 
     >>> dotted.get({'$0': 'hello'}, '\\$0')
     'hello'
+    >>> dotted.get({'$(name)': 'val'}, '\\$(name)')
+    'val'
 
 Quoting also works — a quoted string is always literal:
 

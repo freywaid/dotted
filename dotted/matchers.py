@@ -145,13 +145,28 @@ class Pattern(MatchOp):
         raise NotImplementedError
 
 
-class PositionalSubst(Pattern):
+class Subst(Pattern):
     """
-    Substitution op for captured match groups: $0, $1, $2, etc.
+    Base class for substitution ops ($0, $(name), etc.).
     """
     @property
     def value(self):
         return self.args[0]
+
+    def is_template(self):
+        """
+        True — this is a substitution reference.
+        """
+        return True
+
+    def matchable(self, op, specials=False):
+        return False
+
+
+class PositionalSubst(Subst):
+    """
+    Substitution op for captured match groups: $0, $1, $2, etc.
+    """
     def resolve(self, bindings, partial=False):
         """
         Resolve this substitution against bindings.
@@ -168,14 +183,26 @@ class PositionalSubst(Pattern):
     def __repr__(self):
         return f'${self.args[0]}'
 
-    def is_template(self):
-        """
-        True — this is a substitution reference.
-        """
-        return True
 
-    def matchable(self, op, specials=False):
-        return False
+class NamedSubst(Subst):
+    """
+    Substitution op for named bindings: $(name), $(key), etc.
+    """
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve this substitution against a dict of bindings.
+        Returns ResolvedValue on success, self if partial and missing,
+        or raises KeyError if not partial and missing.
+        """
+        name = self.value
+        if name in bindings:
+            return ResolvedValue(str(bindings[name]))
+        if partial:
+            return self
+        raise KeyError(
+            f'$({name}) not found in bindings')
+    def __repr__(self):
+        return f'$({self.args[0]})'
 
 
 class Wildcard(Pattern):

@@ -80,11 +80,13 @@ wildcard_first = pp.Literal('*?').set_parse_action(matchers.WildcardFirst)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
 regex = _regex.copy().set_parse_action(matchers.Regex)
 regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(matchers.RegexFirst)
-_escaped_dollar = pp.Regex(r'\\\$[0-9]*').set_parse_action(
+_escaped_dollar = pp.Regex(r'\\\$(\([^)]*\)|[0-9]*)').set_parse_action(
     lambda t: matchers.Word(t[0][1:]))
+_named_subst = pp.Regex(r'\$\([a-zA-Z_]\w*\)').set_parse_action(
+    lambda t: matchers.NamedSubst(t[0][2:-1]))
 _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
     lambda t: matchers.PositionalSubst(int(t[0][1:])))
-subst = _escaped_dollar | _raw_subst
+subst = _escaped_dollar | _named_subst | _raw_subst
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
