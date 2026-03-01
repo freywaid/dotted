@@ -8,29 +8,29 @@ from dotted import AUTO
 def test_unpack_nested_mixed():
     d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     r = dotted.unpack(d)
-    assert r == (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+    assert r == {'a.b': [1, 2, 3], 'x.y.z': [4, 5], 'extra': 'stuff'}
 
 
 def test_unpack_flat_dict():
     d = {'a': 1, 'b': 2}
     r = dotted.unpack(d)
-    assert r == (('a', 1), ('b', 2))
+    assert r == {'a': 1, 'b': 2}
 
 
 def test_unpack_deep_scalar():
     d = {'a': {'b': {'c': 1}}}
     r = dotted.unpack(d)
-    assert r == (('a.b.c', 1),)
+    assert r == {'a.b.c': 1}
 
 
 def test_unpack_list_values():
     d = {'items': [1, 2, 3], 'name': 'test'}
     r = dotted.unpack(d)
-    assert r == (('items', [1, 2, 3]), ('name', 'test'))
+    assert r == {'items': [1, 2, 3], 'name': 'test'}
 
 
 def test_unpack_empty():
-    assert dotted.unpack({}) == ()
+    assert dotted.unpack({}) == {}
 
 
 def test_unpack_roundtrip():
@@ -57,7 +57,7 @@ def test_unpack_roundtrip_deep():
 def test_unpack_nested_lists():
     d = {'a': {'b': [1, 2]}, 'c': {'d': [3, 4]}}
     r = dotted.unpack(d)
-    assert r == (('a.b', [1, 2]), ('c.d', [3, 4]))
+    assert r == {'a.b': [1, 2], 'c.d': [3, 4]}
 
 
 def test_unpack_mixed_depth():
@@ -66,9 +66,9 @@ def test_unpack_mixed_depth():
     """
     d = {'shallow': 1, 'deep': {'a': {'b': 2}}, 'mid': {'x': 3}}
     r = dotted.unpack(d)
-    assert ('deep.a.b', 2) in r
-    assert ('mid.x', 3) in r
-    assert ('shallow', 1) in r
+    assert r['deep.a.b'] == 2
+    assert r['mid.x'] == 3
+    assert r['shallow'] == 1
 
 
 # --- attrs tests ---
@@ -84,8 +84,8 @@ def test_unpack_attrs():
 
     d = {'point': Pt(3, 4)}
     r = dotted.unpack(d, attrs=[dotted.Attrs.standard])
-    assert ('point@x', 3) in r
-    assert ('point@y', 4) in r
+    assert r['point@x'] == 3
+    assert r['point@y'] == 4
 
 
 def test_unpack_attrs_false_skips_attrs():
@@ -101,7 +101,7 @@ def test_unpack_attrs_false_skips_attrs():
     r = dotted.unpack(d)
     # With attrs=False, the object is a leaf — returned as-is
     assert len(r) == 1
-    assert r[0][0] == 'point'
+    assert 'point' in r
 
 
 # --- AUTO tests ---

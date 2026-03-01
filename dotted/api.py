@@ -988,8 +988,9 @@ def pack(keyvalues, apply_transforms=True, strict=False):
 
 def unpack(obj, attrs=None):
     """
-    Convert obj to dotted normal form.  A tuple of (path, value) pairs which
-    can be replayed to regenerate the obj (see `pack`).  Internally, this calls:
+    Convert obj to dotted normal form.  A dict mapping dotted paths to leaf
+    values, which can be replayed to regenerate the obj (see `pack`).
+    Internally, this calls:
          pluck(obj, '*(*#, [*]:!(str, bytes)):-2(.*, [])##, (*, [])')
 
     Pass attrs= to include object attributes:
@@ -1000,7 +1001,7 @@ def unpack(obj, attrs=None):
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     >>> r = unpack(d)
     >>> r
-    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+    {'a.b': [1, 2, 3], 'x.y.z': [4, 5], 'extra': 'stuff'}
     >>> pack(r) == d
     True
     """
@@ -1012,7 +1013,7 @@ def unpack(obj, attrs=None):
         extra = ', @/(?!__).*/'
     else:
         extra = ', @/__.*/'
-    return pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})')
+    return dict(pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})'))
 
 
 def items(obj, attrs=None):
@@ -1024,7 +1025,7 @@ def items(obj, attrs=None):
     >>> sorted(items(d))
     [('a.b', 1), ('x', 2)]
     """
-    return dict(unpack(obj, attrs=attrs)).items()
+    return unpack(obj, attrs=attrs).items()
 
 
 def keys(obj, attrs=None):
@@ -1036,7 +1037,7 @@ def keys(obj, attrs=None):
     >>> sorted(keys(d))
     ['a.b', 'x']
     """
-    return items(obj, attrs=attrs).mapping.keys()
+    return unpack(obj, attrs=attrs).keys()
 
 
 def values(obj, attrs=None):
@@ -1048,7 +1049,7 @@ def values(obj, attrs=None):
     >>> sorted(values(d))
     [1, 2]
     """
-    return items(obj, attrs=attrs).mapping.values()
+    return unpack(obj, attrs=attrs).values()
 
 
 #

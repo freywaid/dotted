@@ -73,7 +73,7 @@ def test_quote_angle_bracket_quoted():
 
 
 def test_unpack_dollar_key():
-    result = dict(dotted.unpack({'$0': 'x'}))
+    result = dotted.unpack({'$0': 'x'})
     assert result == {"'$0'": 'x'}
 
 

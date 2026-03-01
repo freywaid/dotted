@@ -97,7 +97,7 @@ def test_items_returns_dict_items():
 
 def test_items_consistent_with_unpack():
     d = {'a': {'b': 1}, 'x': 2, 'extra': 'stuff'}
-    assert list(dotted.items(d)) == list(dotted.unpack(d))
+    assert dict(dotted.items(d)) == dotted.unpack(d)
 
 
 def test_items_set_operations():
@@ -112,6 +112,6 @@ def test_keys_values_consistent_with_unpack():
     keys() and values() should correspond to unpack() paths and values.
     """
     d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
-    pairs = dotted.unpack(d)
-    assert list(dotted.keys(d)) == [k for k, _ in pairs]
-    assert list(dotted.values(d)) == [v for _, v in pairs]
+    unpacked = dotted.unpack(d)
+    assert list(dotted.keys(d)) == list(unpacked.keys())
+    assert list(dotted.values(d)) == list(unpacked.values())

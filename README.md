@@ -198,6 +198,11 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.40.0
+- **`unpack()` now returns a `dict`**: Previously returned a tuple of
+  `(path, value)` pairs. Now returns `{path: value, ...}` directly.
+  Replace `dict(dotted.unpack(d))` with `dotted.unpack(d)`.
+
 ### v0.39.0
 - **`normalize()` removed**: Use `quote()` instead, which is now idempotent.
 - **`match` module renamed to `matchers`**: Update imports from
@@ -601,14 +606,14 @@ materializing the full result. Useful for streaming or large structures.
 <a id="unpack"></a>
 ### Unpack
 
-Recursively unpack a nested structure into `(path, value)` pairs — its dotted
-normal form. The result can be replayed with `pack` to reconstruct the original
-object.
+Recursively unpack a nested structure into a flat dict mapping dotted paths to
+leaf values — its dotted normal form. The result can be replayed with `pack` to
+reconstruct the original object.
 
     >>> import dotted
     >>> d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     >>> dotted.unpack(d)
-    (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('extra', 'stuff'))
+    {'a.b': [1, 2, 3], 'x.y.z': [4, 5], 'extra': 'stuff'}
     >>> dotted.pack(dotted.unpack(d)) == d
     True
 
@@ -623,7 +628,7 @@ which attributes are included:
     ...         self.x = x
     ...         self.y = y
     >>> dotted.unpack({'point': Pt(3, 4)}, attrs=[dotted.Attrs.standard])
-    (('point@x', 3), ('point@y', 4))
+    {'point@x': 3, 'point@y': 4}
 
 Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
 
@@ -733,8 +738,8 @@ Wraps in single quotes if the key contains reserved characters or whitespace.
 Dotted normal form paths round-trip correctly:
 
     >>> d = {'7': 'seven', 'a.b': 'dotted', 'hello': 'world'}
-    >>> flat = dict(dotted.unpack(d))
-    >>> dotted.update_multi(dotted.AUTO, flat.items()) == d
+    >>> flat = dotted.unpack(d)
+    >>> dotted.pack(flat) == d
     True
 
 <a id="auto"></a>
