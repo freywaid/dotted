@@ -5,7 +5,7 @@ import pytest
 import dotted
 from dotted.api import parse
 from dotted.access import Key, Attr, Slot
-from dotted.matchers import PositionalSubst
+from dotted.matchers import Subst
 from dotted.results import assemble
 
 
@@ -17,7 +17,7 @@ def test_parse_subst_key_position():
     ops = parse('a.$0')
     assert len(ops) == 2
     assert isinstance(ops[1], Key)
-    assert isinstance(ops[1].op, PositionalSubst)
+    assert isinstance(ops[1].op, Subst)
     assert ops[1].op.value == 0
 
 
@@ -25,7 +25,7 @@ def test_parse_subst_slot_position():
     ops = parse('a[$0]')
     assert len(ops) == 2
     assert isinstance(ops[1], Slot)
-    assert isinstance(ops[1].op, PositionalSubst)
+    assert isinstance(ops[1].op, Subst)
     assert ops[1].op.value == 0
 
 
@@ -33,15 +33,15 @@ def test_parse_subst_attr_position():
     ops = parse('$0@$1')
     assert len(ops) == 2
     assert isinstance(ops[0], Key)
-    assert isinstance(ops[0].op, PositionalSubst)
+    assert isinstance(ops[0].op, Subst)
     assert isinstance(ops[1], Attr)
-    assert isinstance(ops[1].op, PositionalSubst)
+    assert isinstance(ops[1].op, Subst)
     assert ops[1].op.value == 1
 
 
 def test_parse_subst_multi_digit():
     ops = parse('$10')
-    assert isinstance(ops[0].op, PositionalSubst)
+    assert isinstance(ops[0].op, Subst)
     assert ops[0].op.value == 10
 
 
@@ -99,22 +99,22 @@ def test_parse_subst_container_value():
 
 
 # ---------------------------------------------------------------------------
-# PositionalSubst.resolve
+# Subst.resolve
 # ---------------------------------------------------------------------------
 
 def test_resolve_in_range():
-    s = PositionalSubst(2)
+    s = Subst(2)
     r = s.resolve(('a', 'b', 'c'))
     assert r.value == 'c'
 
 
 def test_resolve_out_of_range():
-    s = PositionalSubst(5)
+    s = Subst(5)
     assert s.resolve(('a', 'b'), partial=True) is s
 
 
 def test_resolve_out_of_range_strict():
-    s = PositionalSubst(5)
+    s = Subst(5)
     with pytest.raises(IndexError):
         s.resolve(('a', 'b'))
 

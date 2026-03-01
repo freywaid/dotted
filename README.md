@@ -74,6 +74,7 @@ Or pick only what you need:
   - [Slicing vs Patterns](#slicing-vs-patterns)
 - [Substitutions and References](#substitutions-and-references)
   - [Substitution](#substitution)
+    - [Substitution transforms](#substitution-transforms)
   - [References](#references)
   - [Relative References](#relative-references)
   - [Escaping](#escaping)
@@ -425,7 +426,7 @@ excluding literals:
 Substitute placeholders in a template path with bound values. Template paths
 are validated at parse time — structural errors are caught immediately, not at runtime.
 
-Positional (`$N`) placeholders resolve against a tuple:
+Positional (`$N`) placeholders resolve against a list or tuple:
 
     >>> import dotted
     >>> dotted.replace('people.$1.$2', ('users', 'alice', 'age'))
@@ -435,6 +436,11 @@ Named (`$(name)`) placeholders resolve against a dict:
 
     >>> dotted.replace('$(table).$(key)', {'table': 'users', 'key': 'alice'})
     'users.alice'
+
+Placeholders support transforms inside the parenthesized form:
+
+    >>> dotted.replace('$(0|uppercase)', ['hello'])
+    'HELLO'
 
 Combine with `match` to remap paths — capture groups from one pattern and substitute
 into another:
@@ -1130,8 +1136,10 @@ at replace time) and **references** (resolved during traversal).
 
 | Syntax | Type | Resolved against |
 |---|---|---|
-| `$0`, `$1` | Positional substitution | `replace()` bindings |
-| `$(name)` | Named substitution | `replace()` bindings |
+| `$0`, `$1` | Positional substitution | `replace()` bindings (list/tuple) |
+| `$(name)` | Named substitution | `replace()` bindings (dict) |
+| `$(0)`, `$(name)` | Substitution with parens | `replace()` bindings via `__getitem__` |
+| `$(name\|int)` | Substitution with transform | `replace()` bindings, then transform |
 | `$$(path)` | Reference | Root object during traversal |
 | `$$(^path)` | Relative reference | Current node during traversal |
 | `$$(^^path)` | Relative reference | Parent node during traversal |
@@ -1141,7 +1149,7 @@ at replace time) and **references** (resolved during traversal).
 
 Substitution references turn a path into a **template**. There are two forms:
 
-- **Positional** (`$0`, `$1`, …) — resolved against a tuple of values
+- **Positional** (`$0`, `$1`, …) — resolved against a list or tuple
 - **Named** (`$(name)`, `$(key)`, …) — resolved against a dict
 
 The `replace` function resolves them:
@@ -1151,6 +1159,13 @@ The `replace` function resolves them:
     >>> dotted.replace('$(table).$(field)', {'table': 'users', 'field': 'email'})
     'users.email'
 
+The parenthesized form `$(N)` adapts to the binding type — it uses `__getitem__`,
+so `$(0)` works as a positional index against a list or as a numeric key against
+a dict:
+
+    >>> dotted.replace('$(0)', {0: 'zero'})
+    'zero'
+
 Use `is_template` to test whether a path contains substitution references:
 
     >>> dotted.is_template('a.$0')
@@ -1159,6 +1174,25 @@ Use `is_template` to test whether a path contains substitution references:
     True
     >>> dotted.is_template('a.b')
     False
+
+#### Substitution transforms
+
+Substitutions support per-substitution transforms using the `|` separator inside
+the parenthesized form. The transform is applied to the resolved value before it
+is spliced into the path:
+
+    >>> dotted.replace('$(name|uppercase)', {'name': 'hello'})
+    'HELLO'
+    >>> dotted.replace('$(0|str)', [42])
+    '42'
+
+Multiple transforms chain left to right:
+
+    >>> dotted.replace('$(name|strip|lowercase)', {'name': '  HELLO  '})
+    'hello'
+
+All [built-in transforms](#built-in-transforms) are available. The bare `$N` form
+does not support transforms — use `$(N|transform)` instead.
 
 See [Replace](#replace) and [Translate](#translate) for full API details.
 

@@ -84,11 +84,23 @@ _escaped_dollar = pp.Regex(r'\\\$\${0,2}(\([^)]*\)|[0-9]*)').set_parse_action(
     lambda t: matchers.Word(t[0][1:]))
 _reference = pp.Regex(r'\$\$\([^)]+\)').set_parse_action(
     lambda t: matchers.Reference(t[0][3:-1]))
-_named_subst = pp.Regex(r'\$\([a-zA-Z_]\w*\)').set_parse_action(
-    lambda t: matchers.NamedSubst(t[0][2:-1]))
+def _paren_subst_action(t):
+    """
+    Parse $(content) where content is name_or_index[|transform1|transform2...].
+    """
+    content = t[0][2:-1]  # strip $( and )
+    parts = content.split('|')
+    name = parts[0]
+    xforms = tuple(base.Transform(p) for p in parts[1:]) if len(parts) > 1 else ()
+    try:
+        return matchers.Subst(int(name), transforms=xforms)
+    except ValueError:
+        return matchers.Subst(name, transforms=xforms)
+
+_paren_subst = pp.Regex(r'\$\([^)]+\)').set_parse_action(_paren_subst_action)
 _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
-    lambda t: matchers.PositionalSubst(int(t[0][1:])))
-subst = _escaped_dollar | _reference | _named_subst | _raw_subst
+    lambda t: matchers.Subst(int(t[0][1:])))
+subst = _escaped_dollar | _reference | _paren_subst | _raw_subst
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 

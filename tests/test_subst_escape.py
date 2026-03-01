@@ -3,7 +3,7 @@ Tests for $N substitution escaping and is_template API.
 """
 import dotted
 from dotted.api import parse, assemble, quote
-from dotted.matchers import Word, PositionalSubst
+from dotted.matchers import Word, Subst
 
 
 # ---- escaping: \$ produces literal dollar-sign keys ----
@@ -28,7 +28,7 @@ def test_parse_escaped_dollar_multi_digit():
 
 def test_parse_raw_subst_still_works():
     ops = parse('$0')
-    assert isinstance(ops[0].op, PositionalSubst)
+    assert isinstance(ops[0].op, Subst)
     assert ops[0].op.value == 0
 
 

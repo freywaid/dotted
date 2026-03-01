@@ -4,27 +4,27 @@ Tests for $(name) named substitutions.
 import pytest
 import dotted
 from dotted.api import parse, assemble, replace, quote
-from dotted.matchers import NamedSubst, Word
+from dotted.matchers import Subst, Word
 
 
 # ---- parsing ----
 
 def test_parse_named_subst():
     ops = parse('$(name)')
-    assert isinstance(ops[0].op, NamedSubst)
+    assert isinstance(ops[0].op, Subst)
     assert ops[0].op.value == 'name'
 
 
 def test_parse_named_subst_underscore():
     ops = parse('$(my_key)')
-    assert isinstance(ops[0].op, NamedSubst)
+    assert isinstance(ops[0].op, Subst)
     assert ops[0].op.value == 'my_key'
 
 
 def test_parse_named_subst_nested():
     ops = parse('a.$(key).b')
     assert len(ops) == 3
-    assert isinstance(ops[1].op, NamedSubst)
+    assert isinstance(ops[1].op, Subst)
     assert ops[1].op.value == 'key'
 
 

@@ -147,8 +147,15 @@ class Pattern(MatchOp):
 
 class Subst(Pattern):
     """
-    Base class for substitution ops ($0, $(name), etc.).
+    Substitution op: $0, $(name), $(0|transform), $(name|int), etc.
+    Resolves against bindings via __getitem__: list for positional,
+    dict for named or numeric keys.  Optional transforms applied
+    after lookup.
     """
+    def __init__(self, *args, transforms=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transforms = tuple(transforms)
+
     @property
     def value(self):
         return self.args[0]
@@ -162,47 +169,42 @@ class Subst(Pattern):
     def matchable(self, op, specials=False):
         return False
 
+    def _apply_transforms(self, val):
+        """
+        Apply this op's transforms to a resolved value.
+        """
+        if not self.transforms:
+            return val
+        from .results import apply_transforms
+        return apply_transforms(val, self.transforms)
 
-class PositionalSubst(Subst):
-    """
-    Substitution op for captured match groups: $0, $1, $2, etc.
-    """
+    def _transform_suffix(self):
+        """
+        Render |transform1|transform2 suffix for quote/repr.
+        """
+        if not self.transforms:
+            return ''
+        return ''.join(f'|{t.operator()}' for t in self.transforms)
+
     def resolve(self, bindings, partial=False):
         """
         Resolve this substitution against bindings.
-        Returns ResolvedValue on success, self if partial and out of range,
-        or raises IndexError if not partial and out of range.
         """
-        idx = self.value
-        if idx < len(bindings):
-            return ResolvedValue(str(bindings[idx]))
-        if partial:
-            return self
-        raise IndexError(
-            f'${idx} out of range ({len(bindings)} bindings)')
-    def __repr__(self):
-        return f'${self.args[0]}'
+        try:
+            val = self._apply_transforms(bindings[self.value])
+            return ResolvedValue(str(val))
+        except (KeyError, IndexError, TypeError):
+            if partial:
+                return self
+            raise
 
-
-class NamedSubst(Subst):
-    """
-    Substitution op for named bindings: $(name), $(key), etc.
-    """
-    def resolve(self, bindings, partial=False):
-        """
-        Resolve this substitution against a dict of bindings.
-        Returns ResolvedValue on success, self if partial and missing,
-        or raises KeyError if not partial and missing.
-        """
-        name = self.value
-        if name in bindings:
-            return ResolvedValue(str(bindings[name]))
-        if partial:
-            return self
-        raise KeyError(
-            f'$({name}) not found in bindings')
     def __repr__(self):
-        return f'$({self.args[0]})'
+        suffix = self._transform_suffix()
+        v = self.args[0]
+        if isinstance(v, int) and not suffix:
+            return f'${v}'
+        return f'$({v}{suffix})'
+
 
 
 class Reference(MatchOp):

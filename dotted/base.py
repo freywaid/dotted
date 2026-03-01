@@ -65,7 +65,7 @@ class Op:
         return self.__class__ == op.__class__ and self.args == op.args
     def resolve(self, bindings, partial=False):
         """
-        Return a new op with all PositionalSubst resolved.
+        Return a new op with all substitutions resolved.
         Default: return self (no substitutions).
         """
         return self
