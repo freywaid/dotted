@@ -18,7 +18,7 @@ def _needs_parents(ops):
     (parent or higher), requiring _parents tracking during traversal.
     """
     for op in ops:
-        inner = op.most_inner if isinstance(op, wrappers.Wrap) else op
+        inner = op.most_inner
         if (hasattr(inner, 'is_reference') and inner.is_reference()
                 and inner.op.depth >= 2):
             return True

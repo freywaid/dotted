@@ -149,6 +149,13 @@ class TraversalOp(Op):
     Base class for ops that participate in stack-based traversal.
     Subclasses must implement push_children(stack, frame, paths).
     """
+    @property
+    def most_inner(self):
+        """
+        Return self — no wrapping to unwrap.
+        """
+        return self
+
     def to_branches(self):
         return [tuple([self])]
 
