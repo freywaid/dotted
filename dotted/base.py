@@ -173,6 +173,12 @@ class TraversalOp(Op):
         """
         return set(self.keys(node))
 
+    def is_template(self):
+        """
+        True if this op contains unresolved substitution references.
+        """
+        return False
+
 
 class MatchOp(Op):
     """

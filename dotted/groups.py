@@ -32,6 +32,16 @@ class OpGroup(base.TraversalOp):
     def is_pattern(self):
         return True
 
+    def is_template(self):
+        """
+        True if any branch contains a template op.
+        """
+        for branch in base.branches_only(self.branches):
+            for op in branch:
+                if hasattr(op, 'is_template') and op.is_template():
+                    return True
+        return False
+
     def default(self):
         """
         Derive default from the first branch's first op, so auto-creation works
