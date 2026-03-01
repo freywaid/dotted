@@ -105,11 +105,15 @@ class BaseOp(base.TraversalOp):
                 return node
             built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, **kwargs)
             return self.upsert(node, built)
+        inner_kwargs = kwargs
+        if kwargs.get('_parents') is not None:
+            inner_kwargs = dict(kwargs)
+            inner_kwargs['_parents'] = (node,) + kwargs['_parents']
         pass_nop = nop and not nop_from_unwrap
         for k, v in self.items(node, **kwargs):
             if v is None:
                 v = engine.build_default(ops)
-            node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **kwargs))
+            node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **inner_kwargs))
         return node
 
     def do_remove(self, ops, node, val, nop, **kwargs):
@@ -120,8 +124,12 @@ class BaseOp(base.TraversalOp):
             if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
                 return node
             return self.remove(node, val)
+        inner_kwargs = kwargs
+        if kwargs.get('_parents') is not None:
+            inner_kwargs = dict(kwargs)
+            inner_kwargs['_parents'] = (node,) + kwargs['_parents']
         for k, v in self.items(node, **kwargs):
-            node = self.update(node, k, engine.removes(ops, v, val, nop=False, **kwargs))
+            node = self.update(node, k, engine.removes(ops, v, val, nop=False, **inner_kwargs))
         return node
 
 
@@ -144,9 +152,13 @@ class SimpleOp(BaseOp):
         the simple uniform path for clarity.
         """
         children = list(self.items(frame.node, **(frame.kwargs or {})))
+        kw = frame.kwargs
+        if kw and kw.get('_parents') is not None:
+            kw = dict(kw)
+            kw['_parents'] = (frame.node,) + kw['_parents']
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(frame.ops, v, cp, kwargs=kw))
         return ()
 
 
@@ -292,17 +304,16 @@ class AccessOp(SimpleOp):
             return self
         return self.__class__(new_op)
 
-    def _resolved(self, **kwargs):
+    def _resolved(self, node=None, **kwargs):
         """
-        Resolve a Reference against _root.  Returns a tuple of concrete
-        ops (empty if the reference path is not found).
+        Resolve a Reference against the appropriate target.  Returns a
+        tuple of concrete ops (empty if the reference path is not found).
         Callers must guard with is_reference() before calling.
         """
         root = (kwargs or {}).get('_root')
-        if root is None:
-            return ()
+        parents = (kwargs or {}).get('_parents', ())
         try:
-            val = self.op.resolve_ref(root)
+            val = self.op.resolve_ref(root, node=node, parents=parents)
         except KeyError:
             return ()
         if self.op.is_pattern():
@@ -314,7 +325,7 @@ class AccessOp(SimpleOp):
         Resolve references before updating.
         """
         if self.is_reference():
-            for r in self._resolved(**kwargs):
+            for r in self._resolved(node=node, **kwargs):
                 node = r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
             return node
         return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
@@ -324,7 +335,7 @@ class AccessOp(SimpleOp):
         Resolve references before removing.
         """
         if self.is_reference():
-            for r in self._resolved(**kwargs):
+            for r in self._resolved(node=node, **kwargs):
                 node = r.do_remove(ops, node, val, nop, **kwargs)
             return node
         return super().do_remove(ops, node, val, nop, **kwargs)
@@ -379,7 +390,7 @@ class Key(AccessOp):
         if self.is_reference():
             return itertools.chain.from_iterable(
                 r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(**kwargs))
+                for r in self._resolved(node=node, **kwargs))
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
             keys = self.op.matches(node.keys()) if filtered else node.keys()
@@ -502,7 +513,7 @@ class Attr(Key):
         if self.is_reference():
             return itertools.chain.from_iterable(
                 r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(**kwargs))
+                for r in self._resolved(node=node, **kwargs))
         # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
             all_keys = node.__dict__.keys()
@@ -598,7 +609,7 @@ class Slot(Key):
         if self.is_reference():
             return itertools.chain.from_iterable(
                 r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(**kwargs))
+                for r in self._resolved(node=node, **kwargs))
         if hasattr(node, 'keys'):
             if kwargs.get('strict'):
                 return ()

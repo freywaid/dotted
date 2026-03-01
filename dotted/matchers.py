@@ -208,11 +208,34 @@ class NamedSubst(Subst):
 class Reference(MatchOp):
     """
     Internal reference: $$(dotted.path) resolves against the root object
-    during traversal.
+    during traversal.  Relative references use ^ prefixes:
+      $$(^path)   — resolve against current node
+      $$(^^path)  — resolve against parent node
+      $$(^^^path) — grandparent, etc.
     """
     @property
     def value(self):
         return self.args[0]
+
+    @property
+    def depth(self):
+        """
+        Number of leading ^ characters.
+        0 = root, 1 = current node, 2 = parent, 3 = grandparent, etc.
+        """
+        count = 0
+        for ch in self.value:
+            if ch != '^':
+                break
+            count += 1
+        return count
+
+    @property
+    def inner_path(self):
+        """
+        The dotted path after stripping ^ prefixes.
+        """
+        return self.value.lstrip('^')
 
     def is_reference(self):
         """
@@ -225,20 +248,35 @@ class Reference(MatchOp):
         True if the reference path is itself a pattern.
         """
         from .api import is_pattern
-        return is_pattern(self.value)
+        path = self.inner_path
+        return is_pattern(path) if path else False
 
     def matchable(self, op, specials=False):
         return False
 
-    def resolve_ref(self, root):
+    def resolve_ref(self, root, node=None, parents=()):
         """
-        Resolve this reference by looking up the path in root.
+        Resolve this reference against the appropriate target.
+        depth 0 = root, 1 = current node, 2+ = ancestor from parents stack.
         """
         from .api import get
+        d = self.depth
+        if d == 0:
+            target = root
+        elif d == 1:
+            target = node
+        else:
+            idx = d - 2
+            if idx >= len(parents):
+                raise KeyError(f'$$({self.value}): not enough ancestors')
+            target = parents[idx]
+        path = self.inner_path
+        if not path:
+            return target
         _marker = object()
-        val = get(root, self.value, default=_marker)
+        val = get(target, path, default=_marker)
         if val is _marker:
-            raise KeyError(f'$$({self.value}) not found in root object')
+            raise KeyError(f'$$({self.value}) not found')
         return val
 
     def quote(self):

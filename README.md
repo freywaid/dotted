@@ -72,9 +72,11 @@ Or pick only what you need:
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
-- [Substitution](#substitution)
+- [Substitutions and References](#substitutions-and-references)
+  - [Substitution](#substitution)
+  - [References](#references)
+  - [Relative References](#relative-references)
   - [Escaping](#escaping)
-- [References](#references)
 - [Type Restrictions](#type-restrictions)
   - [Positive restrictions](#positive-restrictions)
   - [Negative restrictions](#negative-restrictions)
@@ -1120,8 +1122,22 @@ To chain through the items, use a pattern instead:
     >>> dotted.get(data, '[*&name="alice"]')
     ({'name': 'alice'}, {'name': 'alice'})
 
+<a id="substitutions-and-references"></a>
+## Substitutions and References
+
+All `$`-prefixed syntax falls into two categories: **substitutions** (resolved
+at replace time) and **references** (resolved during traversal).
+
+| Syntax | Type | Resolved against |
+|---|---|---|
+| `$0`, `$1` | Positional substitution | `replace()` bindings |
+| `$(name)` | Named substitution | `replace()` bindings |
+| `$$(path)` | Reference | Root object during traversal |
+| `$$(^path)` | Relative reference | Current node during traversal |
+| `$$(^^path)` | Relative reference | Parent node during traversal |
+
 <a id="substitution"></a>
-## Substitution
+### Substitution
 
 Substitution references turn a path into a **template**. There are two forms:
 
@@ -1146,29 +1162,8 @@ Use `is_template` to test whether a path contains substitution references:
 
 See [Replace](#replace) and [Translate](#translate) for full API details.
 
-<a id="escaping"></a>
-### Escaping
-
-If your data has keys that start with `$`, prefix with backslash to suppress
-substitution. This works for both positional and named forms:
-
-    >>> dotted.get({'$0': 'hello'}, '\\$0')
-    'hello'
-    >>> dotted.get({'$(name)': 'val'}, '\\$(name)')
-    'val'
-
-Quoting also works — a quoted string is always literal:
-
-    >>> dotted.get({'$0': 'hello'}, "'$0'")
-    'hello'
-
-`quote` and `unpack` emit single-quoted forms for `$`-prefixed keys:
-
-    >>> dotted.quote('$0')
-    "'$0'"
-
 <a id="references"></a>
-## References
+### References
 
 A **reference** resolves a dotted path against the root object during traversal
 and uses the result as a literal key. The syntax is `$$(path)`:
@@ -1230,13 +1225,57 @@ dotted path. If the reference path is not found, the reference matches nothing
     >>> dotted.get(data, '$$(missing.path)', default='fallback')
     'fallback'
 
-References are distinct from substitutions:
+<a id="relative-references"></a>
+### Relative References
 
-| Syntax | Type | Resolved against |
-|---|---|---|
-| `$0`, `$1` | Positional substitution | `replace()` bindings |
-| `$(name)` | Named substitution | `replace()` bindings |
-| `$$(path)` | Reference | Root object during traversal |
+By default, references resolve against the **root** object. Prefix the path
+with `^` to resolve against the **current node** instead:
+
+    >>> data = {'a': {'field': 'name', 'name': 'Alice'}}
+    >>> dotted.get(data, 'a.$$(^field)')
+    'Alice'
+
+Here `$$(^field)` looks up `field` in the current node (`data['a']`), gets
+`'name'`, then looks up `data['a']['name']`.
+
+Use `^^` for the **parent** node, `^^^` for the grandparent, and so on:
+
+    >>> data = {'field': 'x', 'a': {'x': 1, 'y': 2}}
+    >>> dotted.update(data, 'a.$$(^^field)', 99)
+    {'field': 'x', 'a': {'x': 99, 'y': 2}}
+
+Relative references combine with patterns:
+
+    >>> data = {
+    ...     'a': {
+    ...         'config': {'x': {'field': 'name'}, 'y': {'field': 'age'}},
+    ...         'name': 'Alice',
+    ...         'age': 30,
+    ...     },
+    ... }
+    >>> dotted.get(data, 'a.$$(^config.*.field)')
+    ('Alice', 30)
+
+<a id="escaping"></a>
+### Escaping
+
+If your data has keys that start with `$`, prefix with backslash to suppress
+substitution. This works for both positional and named forms:
+
+    >>> dotted.get({'$0': 'hello'}, '\\$0')
+    'hello'
+    >>> dotted.get({'$(name)': 'val'}, '\\$(name)')
+    'val'
+
+Quoting also works — a quoted string is always literal:
+
+    >>> dotted.get({'$0': 'hello'}, "'$0'")
+    'hello'
+
+`quote` and `unpack` emit single-quoted forms for `$`-prefixed keys:
+
+    >>> dotted.quote('$0')
+    "'$0'"
 
 To use a literal `$$` as a key, escape with backslash (`\$$`) or quote it
 (`'$$(…)'`).

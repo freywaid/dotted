@@ -12,6 +12,19 @@ from .access import Attr, Slot
 from .results import Dotted
 
 
+def _needs_parents(ops):
+    """
+    True if any op in the chain is a relative reference with depth >= 2
+    (parent or higher), requiring _parents tracking during traversal.
+    """
+    for op in ops:
+        inner = op.inner if isinstance(op, wrappers.Wrap) else op
+        if (hasattr(inner, 'is_reference') and inner.is_reference()
+                and inner.op.depth >= 2):
+            return True
+    return False
+
+
 def build_default(ops):
     cur, *ops = ops
     if not ops:
@@ -67,6 +80,8 @@ def walk(ops, node, paths=True, **kwargs):
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
     kwargs.setdefault('_root', node)
+    if '_parents' not in kwargs:
+        kwargs['_parents'] = () if _needs_parents(ops) else None
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), kwargs=kwargs or None))
     yield from process(stack, paths)
@@ -118,6 +133,8 @@ def _format_path(segments):
 
 def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
     kwargs.setdefault('_root', node)
+    if '_parents' not in kwargs:
+        kwargs['_parents'] = () if _needs_parents(ops) else None
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -133,6 +150,8 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs)
 
 def removes(ops, node, val=base.ANY, nop=False, **kwargs):
     kwargs.setdefault('_root', node)
+    if '_parents' not in kwargs:
+        kwargs['_parents'] = () if _needs_parents(ops) else None
     cur, *ops = ops
     return cur.do_remove(ops, node, val, nop, **kwargs)
 

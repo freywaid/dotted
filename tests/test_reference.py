@@ -213,3 +213,108 @@ def test_reference_path_not_found():
     data = {'other': 'value'}
     # get with default should return default
     assert get(data, '$$(missing.path)', default='fallback') == 'fallback'
+
+
+# ---- relative references: current node (^) ----
+
+def test_get_relative_current():
+    """
+    $$(^field) resolves against the current node.
+    """
+    data = {'a': {'field': 'name', 'name': 'Alice'}}
+    assert get(data, 'a.$$(^field)') == 'Alice'
+
+
+def test_get_relative_current_nested():
+    """
+    $$(^meta.key) resolves a nested path within the current node.
+    """
+    data = {'a': {'meta': {'key': 'x'}, 'x': 42}}
+    assert get(data, 'a.$$(^meta.key)') == 42
+
+
+def test_update_relative_current():
+    """
+    Update using $$(^field) to pick the target key from the current node.
+    """
+    data = {'a': {'field': 'x', 'x': 1, 'y': 2}}
+    result = update(data, 'a.$$(^field)', 99)
+    assert result['a']['x'] == 99
+    assert result['a']['y'] == 2
+
+
+def test_remove_relative_current():
+    """
+    Remove using $$(^field) to pick the target key from the current node.
+    """
+    data = {'a': {'field': 'x', 'x': 1, 'y': 2}}
+    result = remove(data, 'a.$$(^field)')
+    assert 'x' not in result['a']
+    assert result['a']['y'] == 2
+
+
+# ---- relative references: parent (^^) ----
+
+def test_get_relative_parent():
+    """
+    $$(^^field) resolves against the parent node.
+    """
+    data = {'field': 'name', 'a': {'name': 'Alice'}}
+    assert get(data, 'a.$$(^^field)') == 'Alice'
+
+
+def test_update_relative_parent():
+    """
+    Update using $$(^^field) to pick the target key from the parent.
+    """
+    data = {'field': 'x', 'a': {'x': 1, 'y': 2}}
+    result = update(data, 'a.$$(^^field)', 99)
+    assert result['a']['x'] == 99
+    assert result['a']['y'] == 2
+
+
+def test_remove_relative_parent():
+    """
+    Remove using $$(^^field) to pick the target key from the parent.
+    """
+    data = {'field': 'x', 'a': {'x': 1, 'y': 2}}
+    result = remove(data, 'a.$$(^^field)')
+    assert 'x' not in result['a']
+    assert result['a']['y'] == 2
+
+
+# ---- relative references: grandparent (^^^) ----
+
+def test_get_relative_grandparent():
+    """
+    $$(^^^field) resolves against the grandparent node.
+    """
+    data = {'field': 'x', 'a': {'b': {'x': 42}}}
+    assert get(data, 'a.b.$$(^^^field)') == 42
+
+
+# ---- relative + pattern ----
+
+def test_get_relative_current_pattern():
+    """
+    $$(^config.*.field) — relative reference with pattern.
+    """
+    data = {
+        'a': {
+            'config': {'x': {'field': 'name'}, 'y': {'field': 'age'}},
+            'name': 'Alice',
+            'age': 30,
+        },
+    }
+    result = get(data, 'a.$$(^config.*.field)')
+    assert set(result) == {'Alice', 30}
+
+
+# ---- relative: root references still work ----
+
+def test_root_reference_unchanged():
+    """
+    $$(path) without ^ still resolves against root.
+    """
+    data = {'config': {'field': 'name'}, 'name': 'Alice'}
+    assert get(data, '$$(config.field)') == 'Alice'
