@@ -21,6 +21,16 @@ class Wrap(base.TraversalOp):
 
     inner = None  # subclasses set in __init__
 
+    @property
+    def most_inner(self):
+        """
+        Unwrap through nested Wraps to the innermost op.
+        """
+        op = self.inner
+        while isinstance(op, Wrap):
+            op = op.inner
+        return op
+
     def is_pattern(self):
         return self.inner.is_pattern() if hasattr(self.inner, 'is_pattern') else False
 
