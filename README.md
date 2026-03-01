@@ -75,6 +75,7 @@ Or pick only what you need:
 - [Substitutions and References](#substitutions-and-references)
   - [Substitution](#substitution)
     - [Substitution transforms](#substitution-transforms)
+  - [Template bindings](#template-bindings)
   - [References](#references)
   - [Relative References](#relative-references)
   - [Escaping](#escaping)
@@ -1196,6 +1197,37 @@ All [built-in transforms](#built-in-transforms) are available. The bare `$N` for
 does not support transforms — use `$(N|transform)` instead.
 
 See [Replace](#replace) and [Translate](#translate) for full API details.
+
+<a id="template-bindings"></a>
+### Template bindings
+
+All traversal APIs — `get`, `update`, `remove`, `has`, `walk`, `expand`, `pluck`,
+`apply`, `build`, `mutable`, `setdefault`, and their multi variants — accept a
+`bindings=` keyword argument to resolve template paths inline:
+
+    >>> data = {'users': {'alice': 42}}
+    >>> dotted.get(data, 'users.$(name)', bindings={'name': 'alice'})
+    42
+    >>> dotted.update(data, 'users.$(name)', 99, bindings={'name': 'alice'})
+    {'users': {'alice': 99}}
+
+If a template path reaches a traversal API without bindings, a `TypeError` is
+raised — unresolved templates cannot be traversed:
+
+    >>> dotted.get({}, 'a.$(name)')
+    Traceback (most recent call last):
+        ...
+    TypeError: unresolved template path; call replace() first or pass bindings=
+
+The `parse()` function also supports `bindings=` and `partial=`:
+
+    >>> ops = dotted.parse('$0.b', bindings=['x'], partial=False)
+    >>> dotted.is_template(ops)
+    False
+
+When `partial=True` (the default for `parse()`), unresolved substitutions are
+allowed through. When `partial=False` (the default for traversal APIs),
+unresolved templates raise `TypeError`.
 
 <a id="references"></a>
 ### References
