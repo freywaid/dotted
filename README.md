@@ -74,6 +74,7 @@ Or pick only what you need:
   - [Slicing vs Patterns](#slicing-vs-patterns)
 - [Substitution](#substitution)
   - [Escaping](#escaping)
+- [References](#references)
 - [Type Restrictions](#type-restrictions)
   - [Positive restrictions](#positive-restrictions)
   - [Negative restrictions](#negative-restrictions)
@@ -1160,6 +1161,66 @@ Quoting also works — a quoted string is always literal:
 
     >>> dotted.quote('$0')
     "'$0'"
+
+<a id="references"></a>
+## References
+
+A **reference** resolves a dotted path against the root object during traversal
+and uses the result as a literal key. The syntax is `$$(path)`:
+
+    >>> data = {'config': {'field': 'name'}, 'name': 'Alice'}
+    >>> dotted.get(data, '$$(config.field)')
+    'Alice'
+
+Here `$$(config.field)` resolves to `'name'`, then looks up `data['name']`.
+
+References work with all access types and in any position:
+
+    >>> data = {'meta': {'key': 'users'}, 'users': [{'name': 'Alice'}]}
+    >>> dotted.get(data, '$$(meta.key)[0].name')
+    'Alice'
+
+    >>> data = {'meta': {'idx': 1}, 'items': ['a', 'b', 'c']}
+    >>> dotted.get(data, 'items[$$(meta.idx)]')
+    'b'
+
+References are **not** templates — they resolve during traversal, not via
+`replace`. They also work with `update` and `remove`:
+
+    >>> data = {'config': {'field': 'name'}, 'name': 'Alice'}
+    >>> dotted.update(data, '$$(config.field)', 'Bob')
+    {'config': {'field': 'name'}, 'name': 'Bob'}
+
+References combine naturally with patterns. The reference resolves to a
+concrete key while the rest of the path can still be a pattern:
+
+    >>> data = {
+    ...     'config': {'key': 'name'},
+    ...     'users': [{'name': 'Alice', 'age': 30}, {'name': 'Bob', 'age': 25}],
+    ... }
+    >>> dotted.get(data, 'users[*].$$(config.key)')
+    ('Alice', 'Bob')
+
+Here `$$(config.key)` resolves to `'name'`, making the effective path
+`users[*].name`.
+
+The resolved value is used as a **literal key** — it is not re-parsed as a
+dotted path. If the reference path is not found, the reference matches nothing
+(same as a missing key):
+
+    >>> dotted.get(data, '$$(missing.path)', default='fallback')
+    'fallback'
+
+References are distinct from substitutions:
+
+| Syntax | Type | Resolved against |
+|---|---|---|
+| `$0`, `$1` | Positional substitution | `replace()` bindings |
+| `$(name)` | Named substitution | `replace()` bindings |
+| `$$(path)` | Reference | Root object during traversal |
+
+To use a literal `$$` as a key, escape with backslash (`\$$`) or quote it
+(`'$$(…)'`).
 
 <a id="type-restrictions"></a>
 ## Type Restrictions
