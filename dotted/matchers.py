@@ -205,6 +205,52 @@ class NamedSubst(Subst):
         return f'$({self.args[0]})'
 
 
+class Reference(MatchOp):
+    """
+    Internal reference: $$(dotted.path) resolves against the root object
+    during traversal.
+    """
+    @property
+    def value(self):
+        return self.args[0]
+
+    def is_reference(self):
+        """
+        True — this is an internal reference.
+        """
+        return True
+
+    def is_pattern(self):
+        """
+        True if the reference path is itself a pattern.
+        """
+        from .api import is_pattern
+        return is_pattern(self.value)
+
+    def matchable(self, op, specials=False):
+        return False
+
+    def resolve_ref(self, root):
+        """
+        Resolve this reference by looking up the path in root.
+        """
+        from .api import get
+        _marker = object()
+        val = get(root, self.value, default=_marker)
+        if val is _marker:
+            raise KeyError(f'$$({self.value}) not found in root object')
+        return val
+
+    def quote(self):
+        """
+        Return the dotted notation form of this reference.
+        """
+        return f'$$({self.args[0]})'
+
+    def __repr__(self):
+        return f'$$({self.args[0]})'
+
+
 class Wildcard(Pattern):
     @property
     def value(self):

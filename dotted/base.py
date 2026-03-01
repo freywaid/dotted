@@ -185,6 +185,12 @@ class MatchOp(Op):
         """
         return False
 
+    def is_reference(self):
+        """
+        True if this op is an internal reference ($(path)).
+        """
+        return False
+
     def quote(self):
         """
         Return the dotted notation form of this op.

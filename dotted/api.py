@@ -117,7 +117,7 @@ def quote(key, as_key=True):
         key = str(key)
     try:
         ops = parse(key)
-        if len(ops) == 1 and not ops[0].is_template():
+        if len(ops) == 1 and not ops[0].is_template() and not ops[0].is_reference():
             q = ops[0].quote()
             if q == key:
                 return q

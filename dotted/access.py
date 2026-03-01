@@ -277,6 +277,12 @@ class AccessOp(SimpleOp):
         """
         return self.op.is_template()
 
+    def is_reference(self):
+        """
+        True if the inner match op is an internal reference.
+        """
+        return self.op.is_reference()
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in the inner match op.
@@ -285,6 +291,56 @@ class AccessOp(SimpleOp):
         if new_op is self.op:
             return self
         return self.__class__(new_op)
+
+    def _resolved(self, kwargs):
+        """
+        If this op wraps a Reference, resolve it against _root and return
+        a new op with a concrete match op. Otherwise return self.
+        Returns None if the reference path is not found in root.
+        """
+        if not self.is_reference():
+            return self
+        root = (kwargs or {}).get('_root')
+        if root is None:
+            return self
+        try:
+            val = self.op.resolve_ref(root)
+        except KeyError:
+            return None
+        return self.__class__(matchers.Const(val))
+
+    def push_children(self, stack, frame, paths):
+        """
+        Resolve references before pushing children onto the traversal stack.
+        """
+        resolved = self._resolved(frame.kwargs)
+        if resolved is None:
+            return ()
+        if resolved is not self:
+            return resolved.push_children(stack, frame, paths)
+        return super().push_children(stack, frame, paths)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+        """
+        Resolve references before updating.
+        """
+        resolved = self._resolved(kwargs)
+        if resolved is None:
+            return node
+        if resolved is not self:
+            return resolved.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
+        return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
+
+    def do_remove(self, ops, node, val, nop, **kwargs):
+        """
+        Resolve references before removing.
+        """
+        resolved = self._resolved(kwargs)
+        if resolved is None:
+            return node
+        if resolved is not self:
+            return resolved.do_remove(ops, node, val, nop, **kwargs)
+        return super().do_remove(ops, node, val, nop, **kwargs)
 
     def is_empty(self, node):
         return not any(True for _ in self.keys(node))
@@ -333,6 +389,12 @@ class Key(AccessOp):
         return _items()
 
     def items(self, node, filtered=True, **kwargs):
+        # Resolve references before matching
+        resolved = self._resolved(kwargs)
+        if resolved is None:
+            return ()
+        if resolved is not self:
+            return resolved.items(node, filtered=filtered, **kwargs)
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
             keys = self.op.matches(node.keys()) if filtered else node.keys()
@@ -452,6 +514,12 @@ class Attr(Key):
         return _items()
 
     def items(self, node, filtered=True, **kwargs):
+        # Resolve references before matching
+        resolved = self._resolved(kwargs)
+        if resolved is None:
+            return ()
+        if resolved is not self:
+            return resolved.items(node, filtered=filtered, **kwargs)
         # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
             all_keys = node.__dict__.keys()
@@ -544,6 +612,12 @@ class Slot(Key):
         return '[' + self.op.quote() + ']'
 
     def items(self, node, filtered=True, **kwargs):
+        # Resolve references before matching
+        resolved = self._resolved(kwargs)
+        if resolved is None:
+            return ()
+        if resolved is not self:
+            return resolved.items(node, filtered=filtered, **kwargs)
         if hasattr(node, 'keys'):
             if kwargs.get('strict'):
                 return ()

@@ -66,6 +66,7 @@ def walk(ops, node, paths=True, **kwargs):
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
+    kwargs.setdefault('_root', node)
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), kwargs=kwargs or None))
     yield from process(stack, paths)
@@ -116,6 +117,7 @@ def _format_path(segments):
 
 
 def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
+    kwargs.setdefault('_root', node)
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -130,6 +132,7 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs)
 
 
 def removes(ops, node, val=base.ANY, nop=False, **kwargs):
+    kwargs.setdefault('_root', node)
     cur, *ops = ops
     return cur.do_remove(ops, node, val, nop, **kwargs)
 
