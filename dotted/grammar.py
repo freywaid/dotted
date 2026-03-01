@@ -356,13 +356,61 @@ value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
 value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | subst | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
-key = _commons | numeric_extended | non_integer | numeric_key | word
+# ---------------------------------------------------------------------------
+# Concat: part+part for key construction using Python's native + operator.
+# Each part can carry per-part transforms: part|xform+part|xform
+# ---------------------------------------------------------------------------
+
+_key_atom = _commons | numeric_extended | non_integer | numeric_key | word
+_slot_atom = _commons | numeric_extended | numeric_slot
 
 # Transform: |name or |name:param — defined early so filters and guards can reference it
 targ = concrete_value | subst | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = (transform_name.copy() + ZM(param)).set_parse_action(lambda s, loc, t: base.Transform(*t))
 transforms = ZM(pipe + transform)
+
+def _concat_part_action(t):
+    """
+    Build a ConcatPart from an atom with optional trailing transforms.
+    """
+    t = list(t)
+    op = t[0]
+    xforms = tuple(x for x in t[1:] if isinstance(x, base.Transform))
+    return matchers.ConcatPart(op, xforms)
+
+def _concat_action(t):
+    """
+    Build a Concat from two or more ConcatParts.
+    If all parts are Const with no transforms, collapse via + at parse time.
+    """
+    parts = list(t)
+    all_const = all(isinstance(p.op, matchers.Const) and not p.transforms
+                    for p in parts)
+    if all_const:
+        import functools, operator
+        vals = [p.op.value for p in parts]
+        result = functools.reduce(operator.add, vals)
+        if isinstance(result, int):
+            return matchers.Numeric(result)
+        if isinstance(result, float):
+            return matchers.Numeric(result)
+        return matchers.Word(str(result))
+    return matchers.Concat(*parts)
+
+_key_concat_part = (_key_atom + ZM(pipe + transform)).set_parse_action(_concat_part_action)
+_concat_key = (_key_concat_part + OM(S('+') + _key_concat_part)).set_parse_action(_concat_action)
+
+# Slot concat allows word in addition to slot atoms (only valid inside concat, where + disambiguates)
+_slot_concat_atom = _slot_atom | word
+_slot_concat_part = (_slot_concat_atom + ZM(pipe + transform)).set_parse_action(_concat_part_action)
+_slot_concat = (_slot_concat_part + OM(S('+') + _slot_concat_part)).set_parse_action(_concat_action)
+
+_attr_atom = nameop | _common_pats
+_attr_concat_part = (_attr_atom + ZM(pipe + transform)).set_parse_action(_concat_part_action)
+_concat_attr = (_attr_concat_part + OM(S('+') + _attr_concat_part)).set_parse_action(_concat_action)
+
+key = _concat_key | _key_atom
 
 # filter_key: dotted paths (user.id), slot paths (tags[*], tags[0]), slice (name[:5], name[-5:]).
 # Dot introduces a key part only; slot/slice directly after key. Try slice before slot so [:] parses as slice.
@@ -491,7 +539,7 @@ def _keycmd_action(t):
 
 keycmd = (key + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(_keycmd_action)
 
-_slotguts = (_commons | numeric_extended | numeric_slot) + ZM(amp + filters)
+_slotguts = (_slot_concat | _commons | numeric_extended | numeric_slot) + ZM(amp + filters)
 
 def _slotcmd_guarded_action(pred_op):
     """
@@ -594,9 +642,9 @@ def _attr_action(t, nop=False):
         result = wrappers.NopWrap(result)
     return result
 
-_attr_nop = ((at + tilde) | (tilde + at)) + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)
+_attr_nop = ((at + tilde) | (tilde + at)) + (_concat_attr | nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)
 _attr_nop = _attr_nop.set_parse_action(lambda t: _attr_action(t, nop=True))
-_attr_plain = (at + (nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(lambda t: _attr_action(t))
+_attr_plain = (at + (_concat_attr | nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(lambda t: _attr_action(t))
 attrcmd = _attr_nop | _attr_plain
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(access.SlotSpecial)

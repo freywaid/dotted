@@ -95,6 +95,7 @@ Or pick only what you need:
   - [Path grouping](#path-grouping)
   - [Precedence](#precedence)
 - [Operators](#operators)
+  - [The concat `+` operator](#the-concat--operator)
   - [The append `+` operator](#the-append--operator)
   - [The append-unique `+?` operator](#the-append-unique--operator)
   - [The invert `-` operator](#the-invert---operator)
@@ -1772,6 +1773,37 @@ Since `.` binds tightest, `!a.b&c` is `(!a.b) & c`, not `!(a.b&c)`:
 
 <a id="operators"></a>
 ## Operators
+
+<a id="the-concat--operator"></a>
+### The concat `+` operator
+
+Outside of brackets, `+` joins parts of a key segment using Python's native `+`
+operator. Each part can be a literal, substitution, or reference:
+
+    >>> dotted.replace('user_+$(name)', {'name': 'alice'})
+    'user_alice'
+
+    >>> data = {'config': {'key': 'name'}, 'name_v2': 42}
+    >>> dotted.get(data, '$$(config.key)+_v2')
+    42
+
+All-literal concats collapse at parse time — `hello+world` becomes the key
+`helloworld`. When any part is dynamic (substitution or reference), a `Concat`
+node is preserved and resolved at traversal or replace time.
+
+Python's native `+` semantics apply: `str + str` concatenates, `int + int` adds,
+and mixed types raise `TypeError`. Per-part transforms allow type coercion:
+
+    >>> dotted.get({'x': {3: 'found'}}, 'x[1+2]')
+    'found'
+
+Concat works in all three access contexts — key (`.`), slot (`[]`), and attr (`@`):
+
+    >>> dotted.replace('$0+_suffix', ['hello'])
+    'hello_suffix'
+
+Inside brackets, `+` as concat is distinguished from `+` as append by context:
+`[+]` and `[+:]` remain append/slice operators, while `[a+b]` is a concat.
 
 <a id="the-append--operator"></a>
 ### The append `+` operator

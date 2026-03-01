@@ -1,7 +1,10 @@
 """
 Match ops: constants, patterns, and specials for key/value matching.
 """
+import functools
+import operator
 import re
+from collections import namedtuple
 
 import pyparsing as pp
 
@@ -387,3 +390,160 @@ class ResolvedValue(Const):
     """
     def __repr__(self):
         return str(self.value)
+
+
+ConcatPart = namedtuple('ConcatPart', ['op', 'transforms'])
+
+
+class Concat(MatchOp):
+    """
+    Concatenation of key parts using Python's native + operator.
+    Each part is a ConcatPart(op, transforms) where op is a matcher
+    and transforms are applied to that part's resolved value before
+    the + reduction.
+
+    str + str = concat, int + int = add, mixed = TypeError.
+    """
+    def __init__(self, *parts):
+        self._parts = tuple(parts)
+        # MatchOp.__init__ expects args; store parts as args
+        super().__init__(*[p.op for p in parts])
+
+    @property
+    def parts(self):
+        """
+        The ConcatPart tuple.
+        """
+        return self._parts
+
+    def _apply_part_transforms(self, val, transforms):
+        """
+        Apply per-part transforms to a value.
+        """
+        if not transforms:
+            return val
+        from .results import apply_transforms
+        return apply_transforms(val, transforms)
+
+    def _reduce(self, values):
+        """
+        Reduce values with Python's native + operator.
+        """
+        return functools.reduce(operator.add, values)
+
+    @property
+    def value(self):
+        """
+        Concrete value: reduce all parts' values with +.
+        Only valid when all parts are concrete (Const).
+        """
+        vals = []
+        for p in self._parts:
+            v = self._apply_part_transforms(p.op.value, p.transforms)
+            vals.append(v)
+        return self._reduce(vals)
+
+    def matches(self, vals):
+        """
+        Filter vals by equality with the concatenated value.
+        """
+        target = self.value
+        return (v for v in vals if v == target)
+
+    def matchable(self, op, specials=False):
+        """
+        Concat can match against concrete keys.
+        """
+        return isinstance(op, Const)
+
+    def is_template(self):
+        """
+        True if any part is a substitution reference.
+        """
+        return any(p.op.is_template() for p in self._parts)
+
+    def is_reference(self):
+        """
+        True if any part is an internal reference.
+        """
+        return any(p.op.is_reference() for p in self._parts)
+
+    def is_pattern(self):
+        """
+        Concat is not a pattern — it resolves to a single concrete key.
+        """
+        return False
+
+    @property
+    def depth(self):
+        """
+        Max depth of any Reference part (for _needs_parents).
+        """
+        d = 0
+        for p in self._parts:
+            if hasattr(p.op, 'depth'):
+                d = max(d, p.op.depth)
+        return d
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve substitution parts against bindings.
+        If all parts become concrete after resolution, collapse via +.
+        """
+        new_parts = []
+        all_concrete = True
+        changed = False
+        for p in self._parts:
+            new_op = p.op.resolve(bindings, partial)
+            if new_op is not p.op:
+                changed = True
+            new_parts.append(ConcatPart(new_op, p.transforms))
+            if not isinstance(new_op, Const):
+                all_concrete = False
+        if not changed:
+            return self
+        if all_concrete:
+            vals = [self._apply_part_transforms(p.op.value, p.transforms)
+                    for p in new_parts]
+            return ResolvedValue(str(self._reduce(vals)))
+        return Concat(*new_parts)
+
+    def resolve_ref(self, root, node=None, parents=()):
+        """
+        Resolve reference parts, apply per-part transforms, reduce with +.
+        """
+        vals = []
+        for p in self._parts:
+            if p.op.is_reference():
+                v = p.op.resolve_ref(root, node=node, parents=parents)
+            else:
+                v = p.op.value
+            v = self._apply_part_transforms(v, p.transforms)
+            vals.append(v)
+        return self._reduce(vals)
+
+    def _transform_suffix(self, transforms):
+        """
+        Render |transform1|transform2 suffix for a part.
+        """
+        if not transforms:
+            return ''
+        return ''.join(f'|{t.operator()}' for t in transforms)
+
+    def quote(self):
+        """
+        Return the dotted notation form: part1+part2+part3.
+        """
+        parts = []
+        for p in self._parts:
+            parts.append(p.op.quote() + self._transform_suffix(p.transforms))
+        return '+'.join(parts)
+
+    def __repr__(self):
+        return self.quote()
+
+    def __eq__(self, other):
+        return isinstance(other, Concat) and self._parts == other._parts
+
+    def __hash__(self):
+        return hash(self._parts)
