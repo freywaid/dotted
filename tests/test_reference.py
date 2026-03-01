@@ -153,6 +153,50 @@ def test_remove_reference_slot():
     assert result['items'] == ['a', 'c']
 
 
+# ---- pattern references ----
+
+def test_get_pattern_reference():
+    """
+    $$(path.*.with.wildcards) resolves to multiple values,
+    each used as a separate key.
+    """
+    data = {
+        'config': {'a': {'field': 'name'}, 'b': {'field': 'age'}},
+        'name': 'Alice',
+        'age': 30,
+    }
+    result = get(data, '$$(config.*.field)')
+    assert set(result) == {'Alice', 30}
+
+
+def test_update_pattern_reference():
+    """
+    Pattern reference update applies to all resolved keys.
+    """
+    data = {
+        'config': {'a': {'field': 'x'}, 'b': {'field': 'y'}},
+        'x': 1, 'y': 2, 'z': 3,
+    }
+    result = update(data, '$$(config.*.field)', 99)
+    assert result['x'] == 99
+    assert result['y'] == 99
+    assert result['z'] == 3
+
+
+def test_remove_pattern_reference():
+    """
+    Pattern reference remove applies to all resolved keys.
+    """
+    data = {
+        'config': {'a': {'field': 'x'}, 'b': {'field': 'y'}},
+        'x': 1, 'y': 2, 'z': 3,
+    }
+    result = remove(data, '$$(config.*.field)')
+    assert 'x' not in result
+    assert 'y' not in result
+    assert result['z'] == 3
+
+
 # ---- escaped references ----
 
 def test_escaped_reference():

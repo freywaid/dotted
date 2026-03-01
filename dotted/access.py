@@ -292,54 +292,41 @@ class AccessOp(SimpleOp):
             return self
         return self.__class__(new_op)
 
-    def _resolved(self, kwargs):
+    def _resolved(self, **kwargs):
         """
-        If this op wraps a Reference, resolve it against _root and return
-        a new op with a concrete match op. Otherwise return self.
-        Returns None if the reference path is not found in root.
+        Resolve a Reference against _root.  Returns a tuple of concrete
+        ops (empty if the reference path is not found).
+        Callers must guard with is_reference() before calling.
         """
-        if not self.is_reference():
-            return self
         root = (kwargs or {}).get('_root')
         if root is None:
-            return self
+            return ()
         try:
             val = self.op.resolve_ref(root)
         except KeyError:
-            return None
-        return self.__class__(matchers.Const(val))
-
-    def push_children(self, stack, frame, paths):
-        """
-        Resolve references before pushing children onto the traversal stack.
-        """
-        resolved = self._resolved(frame.kwargs)
-        if resolved is None:
             return ()
-        if resolved is not self:
-            return resolved.push_children(stack, frame, paths)
-        return super().push_children(stack, frame, paths)
+        if self.op.is_pattern():
+            return tuple(self.__class__(matchers.Const(v)) for v in val)
+        return (self.__class__(matchers.Const(val)),)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         """
         Resolve references before updating.
         """
-        resolved = self._resolved(kwargs)
-        if resolved is None:
+        if self.is_reference():
+            for r in self._resolved(**kwargs):
+                node = r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
             return node
-        if resolved is not self:
-            return resolved.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
         return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
 
     def do_remove(self, ops, node, val, nop, **kwargs):
         """
         Resolve references before removing.
         """
-        resolved = self._resolved(kwargs)
-        if resolved is None:
+        if self.is_reference():
+            for r in self._resolved(**kwargs):
+                node = r.do_remove(ops, node, val, nop, **kwargs)
             return node
-        if resolved is not self:
-            return resolved.do_remove(ops, node, val, nop, **kwargs)
         return super().do_remove(ops, node, val, nop, **kwargs)
 
     def is_empty(self, node):
@@ -389,12 +376,10 @@ class Key(AccessOp):
         return _items()
 
     def items(self, node, filtered=True, **kwargs):
-        # Resolve references before matching
-        resolved = self._resolved(kwargs)
-        if resolved is None:
-            return ()
-        if resolved is not self:
-            return resolved.items(node, filtered=filtered, **kwargs)
+        if self.is_reference():
+            return itertools.chain.from_iterable(
+                r.items(node, filtered=filtered, **kwargs)
+                for r in self._resolved(**kwargs))
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
             keys = self.op.matches(node.keys()) if filtered else node.keys()
@@ -514,12 +499,10 @@ class Attr(Key):
         return _items()
 
     def items(self, node, filtered=True, **kwargs):
-        # Resolve references before matching
-        resolved = self._resolved(kwargs)
-        if resolved is None:
-            return ()
-        if resolved is not self:
-            return resolved.items(node, filtered=filtered, **kwargs)
+        if self.is_reference():
+            return itertools.chain.from_iterable(
+                r.items(node, filtered=filtered, **kwargs)
+                for r in self._resolved(**kwargs))
         # Try __dict__ first (normal objects), then _fields (namedtuple)
         try:
             all_keys = node.__dict__.keys()
@@ -612,12 +595,10 @@ class Slot(Key):
         return '[' + self.op.quote() + ']'
 
     def items(self, node, filtered=True, **kwargs):
-        # Resolve references before matching
-        resolved = self._resolved(kwargs)
-        if resolved is None:
-            return ()
-        if resolved is not self:
-            return resolved.items(node, filtered=filtered, **kwargs)
+        if self.is_reference():
+            return itertools.chain.from_iterable(
+                r.items(node, filtered=filtered, **kwargs)
+                for r in self._resolved(**kwargs))
         if hasattr(node, 'keys'):
             if kwargs.get('strict'):
                 return ()

@@ -1204,6 +1204,20 @@ concrete key while the rest of the path can still be a pattern:
 Here `$$(config.key)` resolves to `'name'`, making the effective path
 `users[*].name`.
 
+The reference path itself can be a pattern. When it resolves to multiple
+values, each is used as a separate key:
+
+    >>> data = {
+    ...     'config': {'a': {'field': 'name'}, 'b': {'field': 'age'}},
+    ...     'name': 'Alice',
+    ...     'age': 30,
+    ... }
+    >>> dotted.get(data, '$$(config.*.field)')
+    ('Alice', 30)
+
+Here `config.*.field` resolves to `('name', 'age')`, so the reference
+looks up both `data['name']` and `data['age']`.
+
 The resolved value is used as a **literal key** — it is not re-parsed as a
 dotted path. If the reference path is not found, the reference matches nothing
 (same as a missing key):
