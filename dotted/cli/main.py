@@ -325,7 +325,7 @@ def main(argv=None):
                 result = process_remove(doc, entries)
             if args.unpack:
                 attrs = [dotted.Attrs(a) for a in args.unpack_attrs] if args.unpack_attrs else None
-                result = dict(dotted.unpack(result, attrs=attrs))
+                result = dotted.unpack(result, attrs=attrs)
             writer.write(result)
     except ParseError as e:
         print(f"dq: {e}", file=sys.stderr)
