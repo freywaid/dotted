@@ -195,7 +195,7 @@ class Subst(Pattern):
         """
         try:
             val = self._apply_transforms(bindings[self.value])
-            return ResolvedValue(str(val))
+            return ResolvedValue(val)
         except (KeyError, IndexError, TypeError):
             if partial:
                 return self
@@ -505,7 +505,7 @@ class Concat(MatchOp):
         if all_concrete:
             vals = [self._apply_part_transforms(p.op.value, p.transforms)
                     for p in new_parts]
-            return ResolvedValue(str(self._reduce(vals)))
+            return ResolvedValue(self._reduce(vals))
         return Concat(*new_parts)
 
     def resolve_ref(self, root, node=None, parents=()):

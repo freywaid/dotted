@@ -76,6 +76,17 @@ class Glob(base.Op):
         """
         return _element_matches(self.pattern, val)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in pattern.
+        """
+        if not hasattr(self.pattern, 'resolve'):
+            return self
+        new_pat = self.pattern.resolve(bindings, partial)
+        if new_pat is self.pattern:
+            return self
+        return Glob(new_pat, self.min_count, self.max_count)
+
     def __repr__(self):
         parts = ['...']
         if self.pattern is not None:
@@ -119,6 +130,16 @@ class DictGlobEntry(base.Op):
         if self.val_pattern is not None:
             return _element_matches(self.val_pattern, val)
         return True
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in key_glob and val_pattern.
+        """
+        new_kg = self.key_glob.resolve(bindings, partial) if hasattr(self.key_glob, 'resolve') else self.key_glob
+        new_vp = self.val_pattern.resolve(bindings, partial) if hasattr(self.val_pattern, 'resolve') else self.val_pattern
+        if new_kg is self.key_glob and new_vp is self.val_pattern:
+            return self
+        return DictGlobEntry(new_kg, new_vp)
 
     def __repr__(self):
         val_repr = repr(self.val_pattern) if self.val_pattern is not None else ''
@@ -181,6 +202,17 @@ class ContainerList(base.Op):
         """
         return isinstance(op, matchers.Const)
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in elements.
+        """
+        new_elems = tuple(
+            e.resolve(bindings, partial) if hasattr(e, 'resolve') else e
+            for e in self.elements)
+        if all(ne is oe for ne, oe in zip(new_elems, self.elements)):
+            return self
+        return ContainerList(*new_elems, type_prefix=self.type_prefix)
+
     def __repr__(self):
         prefix = self.type_prefix or ''
         return prefix + '[' + ', '.join(repr(e) for e in self.elements) + ']'
@@ -224,6 +256,29 @@ class ContainerDict(base.Op):
                 continue
             if _match_dict(self.entries, v):
                 yield v
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in entries (key/value patterns and DictGlobEntry).
+        """
+        new_entries = []
+        changed = False
+        for e in self.entries:
+            if hasattr(e, 'resolve'):
+                ne = e.resolve(bindings, partial)
+                new_entries.append(ne)
+                if ne is not e:
+                    changed = True
+                continue
+            k, v = e
+            nk = k.resolve(bindings, partial) if hasattr(k, 'resolve') else k
+            nv = v.resolve(bindings, partial) if hasattr(v, 'resolve') else v
+            new_entries.append((nk, nv))
+            if nk is not k or nv is not v:
+                changed = True
+        if not changed:
+            return self
+        return ContainerDict(*new_entries, type_prefix=self.type_prefix)
 
     def matchable(self, op, specials=False):
         """
@@ -287,6 +342,17 @@ class ContainerSet(base.Op):
             if _match_set(self.elements, v):
                 yield v
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in elements.
+        """
+        new_elems = tuple(
+            e.resolve(bindings, partial) if hasattr(e, 'resolve') else e
+            for e in self.elements)
+        if all(ne is oe for ne, oe in zip(new_elems, self.elements)):
+            return self
+        return ContainerSet(*new_elems, type_prefix=self.type_prefix)
+
     def matchable(self, op, specials=False):
         """
         ContainerSet can match against Const values.
@@ -313,6 +379,9 @@ class StringGlob(base.Op):
       "a"..."b"..."c"      contains substrings in order
       "hello"...5          prefix + at most 5 more chars
       "hello"...2:5"world" 2-5 chars between fragments
+
+    Parts may include Subst/Reference objects for deferred resolution.
+    The regex is compiled lazily — only when all parts are concrete.
     """
 
     def __init__(self, *parts, **kwargs):
@@ -321,10 +390,24 @@ class StringGlob(base.Op):
         super().__init__(**kwargs)
         self.args = self.parts
 
+    def _has_unresolved(self):
+        """
+        True if any part is a Subst or Reference (not yet resolved).
+        """
+        for p in self.parts:
+            if hasattr(p, 'is_template') and p.is_template():
+                return True
+            if hasattr(p, 'is_reference') and p.is_reference():
+                return True
+        return False
+
     def _compile(self):
         """
         Build compiled regex from parts.
+        Returns None if any parts are unresolved (Subst/Reference).
         """
+        if self._has_unresolved():
+            return None
         regex_parts = []
         for p in self.parts:
             if isinstance(p, str):
@@ -346,10 +429,46 @@ class StringGlob(base.Op):
                     regex_parts.append(f'{char_pat}{{{lo},{hi}}}')
         return re.compile('^' + ''.join(regex_parts) + '$')
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in parts.  Resolved values must be str;
+        use $(var|str) to coerce non-str bindings.
+        """
+        new_parts = []
+        changed = False
+        for p in self.parts:
+            if not hasattr(p, 'resolve'):
+                new_parts.append(p)
+                continue
+            np = p.resolve(bindings, partial)
+            if np is not p:
+                changed = True
+            if hasattr(np, 'value') and not hasattr(np, 'is_template'):
+                if not isinstance(np.value, str):
+                    raise TypeError(
+                        f'StringGlob requires str, got {type(np.value).__name__}'
+                        f' — use $(var|str) to coerce')
+                new_parts.append(np.value)
+                continue
+            if hasattr(np, 'is_template') and not np.is_template():
+                if not isinstance(np.value, str):
+                    raise TypeError(
+                        f'StringGlob requires str, got {type(np.value).__name__}'
+                        f' — use $(var|str) to coerce')
+                new_parts.append(np.value)
+                continue
+            new_parts.append(np)
+        if not changed:
+            return self
+        return StringGlob(*new_parts)
+
     def matches(self, vals):
         """
         Yield str vals matching the glob pattern.
+        Returns nothing if the pattern has unresolved parts.
         """
+        if self._pattern is None:
+            return
         for v in vals:
             if isinstance(v, str) and self._pattern.fullmatch(v):
                 yield v
@@ -385,6 +504,9 @@ class BytesGlob(base.Op):
       b"a"...b"b"...b"c"     contains substrings in order
       b"hello"...5           prefix + at most 5 more bytes
       b"hello"...2:5b"world" 2-5 bytes between fragments
+
+    Parts may include Subst/Reference objects for deferred resolution.
+    The regex is compiled lazily — only when all parts are concrete.
     """
 
     def __init__(self, *parts, **kwargs):
@@ -393,10 +515,24 @@ class BytesGlob(base.Op):
         super().__init__(**kwargs)
         self.args = self.parts
 
+    def _has_unresolved(self):
+        """
+        True if any part is a Subst or Reference (not yet resolved).
+        """
+        for p in self.parts:
+            if hasattr(p, 'is_template') and p.is_template():
+                return True
+            if hasattr(p, 'is_reference') and p.is_reference():
+                return True
+        return False
+
     def _compile(self):
         """
         Build compiled bytes regex from parts.
+        Returns None if any parts are unresolved (Subst/Reference).
         """
+        if self._has_unresolved():
+            return None
         regex_parts = []
         for p in self.parts:
             if isinstance(p, bytes):
@@ -418,10 +554,46 @@ class BytesGlob(base.Op):
                     regex_parts.append(char_pat + b'{' + str(lo).encode() + b',' + str(hi).encode() + b'}')
         return re.compile(b'^' + b''.join(regex_parts) + b'$')
 
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in parts.  Resolved values must be bytes;
+        use $(var|bytes) to coerce non-bytes bindings.
+        """
+        new_parts = []
+        changed = False
+        for p in self.parts:
+            if not hasattr(p, 'resolve'):
+                new_parts.append(p)
+                continue
+            np = p.resolve(bindings, partial)
+            if np is not p:
+                changed = True
+            if hasattr(np, 'value') and not hasattr(np, 'is_template'):
+                if not isinstance(np.value, bytes):
+                    raise TypeError(
+                        f'BytesGlob requires bytes, got {type(np.value).__name__}'
+                        f' — use $(var|bytes) to coerce')
+                new_parts.append(np.value)
+                continue
+            if hasattr(np, 'is_template') and not np.is_template():
+                if not isinstance(np.value, bytes):
+                    raise TypeError(
+                        f'BytesGlob requires bytes, got {type(np.value).__name__}'
+                        f' — use $(var|bytes) to coerce')
+                new_parts.append(np.value)
+                continue
+            new_parts.append(np)
+        if not changed:
+            return self
+        return BytesGlob(*new_parts)
+
     def matches(self, vals):
         """
         Yield bytes vals matching the glob pattern.
+        Returns nothing if the pattern has unresolved parts.
         """
+        if self._pattern is None:
+            return
         for v in vals:
             if isinstance(v, bytes) and self._pattern.fullmatch(v):
                 yield v
@@ -468,6 +640,17 @@ class ValueGroup(base.Op):
                 if any(True for _ in alt.matches((v,))):
                     yield v
                     break
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in alternatives.
+        """
+        new_alts = tuple(
+            a.resolve(bindings, partial) if hasattr(a, 'resolve') else a
+            for a in self.alternatives)
+        if all(na is oa for na, oa in zip(new_alts, self.alternatives)):
+            return self
+        return ValueGroup(*new_alts)
 
     def matchable(self, op, specials=False):
         """

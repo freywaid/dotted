@@ -100,11 +100,11 @@ def _paren_subst_action(t):
 _paren_subst = pp.Regex(r'\$\([^)]+\)').set_parse_action(_paren_subst_action)
 _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
     lambda t: matchers.Subst(int(t[0][1:])))
-subst = _escaped_dollar | _reference | _paren_subst | _raw_subst
+var = _escaped_dollar | _reference | _paren_subst | _raw_subst
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
-_common_pats = wildcard_first | wildcard | subst | regex_first | regex
+_common_pats = wildcard_first | wildcard | var | regex_first | regex
 _commons = bytes_literal | string | _common_pats | numeric_quoted
 
 
@@ -119,7 +119,7 @@ _ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).s
 container_value = pp.Forward()
 
 # Scalar atoms usable inside containers (same as value atoms minus containers)
-_val_atoms = bytes_literal | string | wildcard | subst | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+_val_atoms = bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
@@ -175,13 +175,14 @@ container_glob = (
 # Must have at least one string/bytes AND one glob (otherwise it's a plain string or bare glob).
 # If any part is b"...", produces BytesGlob (naked strings encoded to bytes);
 # otherwise produces StringGlob.
-_strblob_atom = bytes_literal.copy() | quoted.copy()
+_strblob_atom = bytes_literal.copy() | quoted.copy() | var.copy()
 _strblob_part = _strblob_atom | container_glob
 _strblob_a = _strblob_atom + container_glob + ZM(_strblob_part)  # starts with str/bytes
 _strblob_b = container_glob + _strblob_atom + ZM(_strblob_part)  # starts with glob
 def _make_strblob(t):
     """
     Produce StringGlob or BytesGlob depending on whether any b"..." part is present.
+    Subst/Reference parts are kept as-is for later resolution.
     """
     has_bytes = any(isinstance(p, matchers.Bytes) for p in t)
     if has_bytes:
@@ -355,7 +356,7 @@ concrete_value <<= (
 value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
-value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | subst | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
 # ---------------------------------------------------------------------------
 # Concat: part+part for key construction using Python's native + operator.
 # Each part can carry per-part transforms: part|xform+part|xform
@@ -365,7 +366,7 @@ _key_atom = _commons | numeric_extended | non_integer | numeric_key | word
 _slot_atom = _commons | numeric_extended | numeric_slot
 
 # Transform: |name or |name:param — defined early so filters and guards can reference it
-targ = concrete_value | subst | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+targ = concrete_value | var | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = (transform_name.copy() + ZM(param)).set_parse_action(lambda s, loc, t: base.Transform(*t))
 transforms = ZM(pipe + transform)

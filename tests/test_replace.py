@@ -248,3 +248,235 @@ def test_replace_identity_no_substs():
     """resolve() returns self when no $N present"""
     parsed = parse('hello.world')
     assert parsed.resolve((), partial=True) is parsed
+
+
+# ---------------------------------------------------------------------------
+# resolve() — $N inside container definitions
+# ---------------------------------------------------------------------------
+
+def test_resolve_container_set():
+    """
+    $N in set container value: a[name={$0, $1}]
+    """
+    ops = parse('a[name={$0, $1}]')
+    resolved = ops.resolve(('x', 'y'))
+    assert assemble(resolved) == 'a[name={x, y}]'
+
+
+def test_resolve_container_list():
+    """
+    $N in list container value: a[*=[$0, 2, $1]]
+    """
+    ops = parse('a[*=[$0, 2, $1]]')
+    resolved = ops.resolve(('1', '3'))
+    assert assemble(resolved) == 'a[*=[1, 2, 3]]'
+
+
+def test_resolve_container_dict_value():
+    """
+    $N as dict container value: a[*={"name": $0}]
+    """
+    ops = parse('a[*={"name": $0}]')
+    resolved = ops.resolve(('alice',))
+    assert assemble(resolved) == "a[*={'name': alice}]"
+
+
+def test_resolve_container_dict_key():
+    """
+    $N as dict container key: a[*={$0: 1}]
+    """
+    ops = parse('a[*={$0: 1}]')
+    resolved = ops.resolve(('name',))
+    assert assemble(resolved) == 'a[*={name: 1}]'
+
+
+def test_resolve_value_group():
+    """
+    $N in value group: a[*=($0, $1)]
+    """
+    ops = parse('a[*=($0, $1)]')
+    resolved = ops.resolve(('x', 'y'))
+    assert assemble(resolved) == 'a[*=(x, y)]'
+
+
+def test_resolve_container_partial():
+    """
+    Partial resolution leaves unresolved $N intact.
+    """
+    ops = parse('a[name={$0, $1}]')
+    resolved = ops.resolve(('x',), partial=True)
+    assert assemble(resolved) == 'a[name={x, $1}]'
+
+
+def test_resolve_container_no_substs_returns_self():
+    """
+    Container with no $N returns self from resolve().
+    """
+    ops = parse('a[name={1, 2}]')
+    assert ops.resolve((), partial=True) is ops
+
+
+def test_resolve_container_set_get():
+    """
+    End-to-end: $N in value group resolves and matches at runtime.
+    """
+    data = {'a': [{'name': 'x'}, {'name': 'z'}]}
+    ops = parse('a[name=($0, $1)]')
+    resolved = ops.resolve(('x', 'y'))
+    assert dotted.get(data, resolved) == [{'name': 'x'}]
+
+
+def test_resolve_container_dict_get():
+    """
+    End-to-end: $N in dict container resolves and matches at runtime.
+    """
+    data = [{'x': 1, 'name': 'a'}, {'x': 2, 'name': 'b'}]
+    ops = parse('[*&name=($0, $1)]')
+    resolved = ops.resolve(('a', 'b'))
+    assert dotted.get(data, resolved) == ({'x': 1, 'name': 'a'}, {'x': 2, 'name': 'b'})
+
+
+# ---------------------------------------------------------------------------
+# resolve() — $N inside string/bytes globs
+# ---------------------------------------------------------------------------
+
+def test_resolve_string_glob_prefix():
+    """
+    $N as string glob prefix: *=$0..."suffix"
+    """
+    ops = parse('*=$0..."suffix"')
+    resolved = ops.resolve(('hello',))
+    assert assemble(resolved) == "*='hello'...'suffix'"
+
+
+def test_resolve_string_glob_suffix():
+    """
+    $N as string glob suffix: *="prefix"...$0
+    """
+    ops = parse('*="prefix"...$0')
+    resolved = ops.resolve(('end',))
+    assert assemble(resolved) == "*='prefix'...'end'"
+
+
+def test_resolve_string_glob_both():
+    """
+    $N as both ends: *=$0...$1
+    """
+    ops = parse('*=$0...$1')
+    resolved = ops.resolve(('hello', 'world'))
+    assert assemble(resolved) == "*='hello'...'world'"
+
+
+def test_resolve_string_glob_partial():
+    """
+    Partial resolution leaves unresolved $N in string glob.
+    """
+    ops = parse('*=$0...$1')
+    resolved = ops.resolve(('hello',), partial=True)
+    assert assemble(resolved) == "*='hello'...$1"
+
+
+def test_resolve_string_glob_no_vars_returns_self():
+    """
+    String glob without $N returns self from resolve().
+    """
+    ops = parse('*="hello"..."world"')
+    assert ops.resolve((), partial=True) is ops
+
+
+def test_resolve_string_glob_get():
+    """
+    End-to-end: $N in string glob resolves and matches at runtime.
+    """
+    data = {'a': 'hello_world', 'b': 'hello_there', 'c': 'goodbye'}
+    ops = parse('*=$0..."world"')
+    resolved = ops.resolve(('hello',))
+    assert dotted.get(data, resolved) == ('hello_world',)
+
+
+# ---------------------------------------------------------------------------
+# resolve() — $N failure modes in string/bytes globs
+# ---------------------------------------------------------------------------
+
+def test_resolve_string_glob_int_raises():
+    """
+    $N resolving to a non-str raises TypeError.
+    """
+    ops = parse('*=$0..."_end"')
+    with pytest.raises(TypeError, match='StringGlob requires str'):
+        ops.resolve((42,))
+
+
+def test_resolve_string_glob_none_raises():
+    """
+    $N resolving to None raises TypeError.
+    """
+    ops = parse('*=$0..."rest"')
+    with pytest.raises(TypeError, match='StringGlob requires str'):
+        ops.resolve((None,))
+
+
+def test_resolve_string_glob_int_with_str_transform():
+    """
+    $(0|str) coerces int to str, satisfying the type check.
+    """
+    ops = parse('*=$(0|str)..."_end"')
+    resolved = ops.resolve((42,))
+    assert assemble(resolved) == "*='42'...'_end'"
+
+
+def test_resolve_string_glob_regex_special_chars():
+    """
+    Resolved value with regex metacharacters is escaped in the compiled pattern.
+    """
+    data = {'a': 'a.b_end', 'b': 'axb_end'}
+    ops = parse('*=$0..."_end"')
+    resolved = ops.resolve(('a.b',))
+    # Should match literally "a.b_end", not "axb_end"
+    assert dotted.get(data, resolved) == ('a.b_end',)
+
+
+def test_resolve_string_glob_strict_out_of_range():
+    """
+    $N out of range in non-partial mode raises IndexError.
+    """
+    ops = parse('*=$5..."suffix"')
+    with pytest.raises(IndexError):
+        ops.resolve(('a',))
+
+
+def test_resolve_string_glob_partial_unresolved_no_match():
+    """
+    Partially resolved glob (still has $N) matches nothing at runtime.
+    """
+    data = {'a': 'hello_world'}
+    ops = parse('*=$0...$1')
+    resolved = ops.resolve(('hello',), partial=True)
+    assert dotted.get(data, resolved) == ()
+
+
+def test_resolve_bytes_glob_str_raises():
+    """
+    BytesGlob: $N resolving to a str (not bytes) raises TypeError.
+    """
+    ops = parse('*=b"x"...$0')
+    with pytest.raises(TypeError, match='BytesGlob requires bytes'):
+        ops.resolve(('hello',))
+
+
+def test_resolve_bytes_glob_int_raises():
+    """
+    BytesGlob: $N resolving to an int raises TypeError.
+    """
+    ops = parse('*=b"x"...$0')
+    with pytest.raises(TypeError, match='BytesGlob requires bytes'):
+        ops.resolve((42,))
+
+
+def test_resolve_bytes_glob_strict_out_of_range():
+    """
+    BytesGlob: $N out of range in non-partial mode raises IndexError.
+    """
+    ops = parse('*=b"pre"...$5')
+    with pytest.raises(IndexError):
+        ops.resolve(('a',))
