@@ -9,13 +9,15 @@ helps you do that.
 
 Since this package includes the [**`dq`** command-line tool](#cli-dq), several data formats are supported:
 
-| Format | Status   |
-|--------|----------|
-| JSON   | included |
-| JSONL  | included |
-| CSV    | included |
-| YAML   | optional |
-| TOML   | optional |
+| Format | `-i`/`-o` | Status   |
+|--------|-----------|----------|
+| JSON   | `json`    | included |
+| JSONL  | `jsonl`   | included |
+| Python | `py`      | included |
+| Python lines | `pyl` | included |
+| CSV    | `csv`     | included |
+| YAML   | `yaml`    | optional |
+| TOML   | `toml`    | optional |
 
 To install optional format support:
 
@@ -2800,10 +2802,11 @@ Use `-i` to override:
 <a id="format-conversion"></a>
 ### Format conversion
 
-Use `-i` and `-o` to specify input/output formats (`json`, `jsonl`, `yaml`, `toml`, `csv`):
+Use `-i` and `-o` to specify input/output formats (`json`, `jsonl`, `py`, `pyl`, `yaml`, `toml`, `csv`):
 
     cat data.yaml | dq -i yaml -o json -p name -p age
     printf '{"a":1}\n{"a":2}\n' | dq -i jsonl -o csv -p a
+    echo "{'a': None, 'b': True}" | dq -i py -o json
 
 Output format defaults to the input format. Without any paths, `dq` acts as
 a pure format converter:
