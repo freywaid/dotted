@@ -388,6 +388,13 @@ def test_pyl_read():
     assert lines == ['1', '2']
 
 
+def test_pyl_read_multiline():
+    inp = "{\n  'a': 1,\n  'b': 2,\n}\n{\n  'a': 3,\n  'b': 4,\n}\n"
+    out = dq('-i', 'pyl', '-o', 'jsonl', '-p', 'a', input_text=inp)
+    lines = [l for l in out.strip().split('\n') if l]
+    assert lines == ['1', '3']
+
+
 def test_pyl_write():
     inp = '{"a":1}\n{"a":2}\n'
     out = dq('-i', 'jsonl', '-o', 'pyl', input_text=inp)
@@ -401,6 +408,21 @@ def test_py_roundtrip():
     out = dq('-i', 'py', '-o', 'py', input_text=inp)
     import ast
     assert ast.literal_eval(out.strip()) == {'x': None, 'y': (1, 2), 'z': True}
+
+
+def test_py_multidoc():
+    inp = "{\n  'a': 1,\n}\n{\n  'a': 2,\n}\n"
+    out = dq('-i', 'py', '-o', 'jsonl', '-p', 'a', input_text=inp)
+    lines = [l for l in out.strip().split('\n') if l]
+    assert lines == ['1', '2']
+
+
+def test_py_multidoc_get():
+    inp = "{'a': 1, 'b': 2}\n{'a': 3, 'b': 4}\n"
+    out = dq('-i', 'py', '-o', 'pyl', input_text=inp)
+    import ast
+    lines = [ast.literal_eval(l) for l in out.strip().split('\n') if l]
+    assert lines == [{'a': 1, 'b': 2}, {'a': 3, 'b': 4}]
 
 
 # ---------------------------------------------------------------------------

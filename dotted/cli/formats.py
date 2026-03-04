@@ -55,23 +55,58 @@ def read_toml(stream):
 
 def read_python(stream):
     """
-    Read a single Python literal. If it's a list, yield elements individually.
+    Read Python literals from a stream. Supports single values, lists
+    (elements yielded individually), and multiple consecutive literals.
     """
-    data = ast.literal_eval(stream.read())
-    if isinstance(data, list):
-        yield from data
-    else:
-        yield data
+    data = stream.read()
+    # Try parsing as a single literal first
+    try:
+        result = ast.literal_eval(data)
+        if isinstance(result, list):
+            yield from result
+        else:
+            yield result
+        return
+    except (ValueError, SyntaxError):
+        pass
+    # Fall back to multi-doc: accumulate lines, yield each complete literal
+    buf = []
+    for line in data.splitlines(keepends=True):
+        if not line.strip() and not buf:
+            continue
+        buf.append(line)
+        try:
+            result = ast.literal_eval(''.join(buf))
+            yield result
+            buf = []
+        except (ValueError, SyntaxError):
+            continue
+    if buf:
+        text = ''.join(buf).strip()
+        if text:
+            yield ast.literal_eval(text)
 
 
 def read_pythonl(stream):
     """
-    Read one Python literal per line.
+    Read consecutive Python literals from a stream, one per document.
+    Handles both single-line and multi-line literals.
     """
+    buf = []
     for line in stream:
-        line = line.strip()
-        if line:
-            yield ast.literal_eval(line)
+        if not line.strip() and not buf:
+            continue
+        buf.append(line)
+        try:
+            result = ast.literal_eval(''.join(buf))
+            yield result
+            buf = []
+        except (ValueError, SyntaxError):
+            continue
+    if buf:
+        text = ''.join(buf).strip()
+        if text:
+            yield ast.literal_eval(text)
 
 
 def read_csv_format(stream):
