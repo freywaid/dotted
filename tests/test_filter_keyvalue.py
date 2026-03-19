@@ -836,3 +836,33 @@ def test_filter_primitives_mixed_with_dicts():
     # Value guard [*]=None - matches all items equal to None
     r = dotted.get(mixed, '[*]=None')
     assert None in r
+
+
+def test_default_generation_filterwrap_slot_group():
+    """
+    When a group's first branch is FilterWrap(Slot(...)), default() must
+    return [] (list), not {} (dict).  Regression: the unwrap loop only
+    handled NopWrap/ValueGuard, so FilterWrap was never peeled off and
+    the inner Slot was missed.
+    """
+    # No 'addresses' key at all — must auto-create as list and append
+    profile = {'name': 'Jane'}
+    r = dotted.update(profile, 'addresses[(*&tags[*]="billing"#,+)]', {'street': '1st'})
+    assert r == {'name': 'Jane', 'addresses': [{'street': '1st'}]}
+
+    # 'addresses' exists but empty — append via +
+    profile2 = {'addresses': []}
+    r2 = dotted.update(profile2, 'addresses[(*&tags[*]="billing"#,+)]', {'street': '2nd'})
+    assert r2 == {'addresses': [{'street': '2nd'}]}
+
+    # No match in filter — append via +
+    profile3 = {'addresses': [{'tags': ['shipping'], 'street': '3rd'}]}
+    r3 = dotted.update(profile3, 'addresses[(*&tags[*]="billing"#,+)]', {'street': '4th'})
+    assert len(r3['addresses']) == 2
+    assert r3['addresses'][1] == {'street': '4th'}
+
+    # Filter matches — update in place, do not append
+    profile4 = {'addresses': [{'tags': ['billing'], 'street': '5th'}]}
+    r4 = dotted.update(profile4, 'addresses[(*&tags[*]="billing"#,+)]', {'street': '6th'})
+    assert len(r4['addresses']) == 1
+    assert r4['addresses'][0] == {'street': '6th'}

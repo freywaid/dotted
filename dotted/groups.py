@@ -50,9 +50,9 @@ class OpGroup(base.TraversalOp):
         for branch in base.branches_only(self.branches):
             if branch:
                 first_op = branch[0]
-                # Unwrap NopWrap/ValueGuard to find the underlying op
+                # Unwrap any Wrap layer to find the underlying op
                 inner = first_op
-                while isinstance(inner, (wrappers.NopWrap, wrappers.ValueGuard)):
+                while isinstance(inner, wrappers.Wrap):
                     inner = inner.inner
                 # Slot groups operate on lists
                 if isinstance(inner, Slot):
