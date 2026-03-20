@@ -71,6 +71,51 @@ def test_unpack_mixed_depth():
     assert r['shallow'] == 1
 
 
+def test_unpack_mixed_depth_siblings():
+    """
+    Leaf and nested container as siblings under the same parent.
+    """
+    d = {'x': {'leaf': 'val1', 'nested': {'deep': 'val2'}}}
+    r = dotted.unpack(d)
+    assert r == {'x.leaf': 'val1', 'x.nested.deep': 'val2'}
+
+
+def test_unpack_mixed_depth_siblings_roundtrip():
+    """
+    Mixed-depth unpack roundtrips through pack.
+    """
+    d = {'x': {'leaf': 'val1', 'nested': {'deep': 'val2'}}}
+    assert dotted.pack(dotted.unpack(d)) == d
+
+
+def test_unpack_mixed_depth_multi_level():
+    """
+    Leaves at several different depths within the same tree.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2, 'e': {'f': 3}}}}
+    r = dotted.unpack(d)
+    assert r == {'a.b': 1, 'a.c.d': 2, 'a.c.e.f': 3}
+
+
+def test_unpack_mixed_depth_three_levels():
+    """
+    Siblings at three distinct nesting depths under the same parent.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    r = dotted.unpack(d)
+    assert r == {'a.shallow': 1, 'a.mid.x': 2, 'a.deep.y.z': 3}
+    assert dotted.pack(r) == d
+
+
+def test_unpack_mixed_depth_list_and_scalar_siblings():
+    """
+    A list value and a scalar value as siblings.
+    """
+    d = {'a': {'b': [1, 2, 3], 'c': 'str'}}
+    r = dotted.unpack(d)
+    assert r == {'a.b': [1, 2, 3], 'a.c': 'str'}
+
+
 # --- attrs tests ---
 
 def test_unpack_attrs():

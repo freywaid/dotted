@@ -531,6 +531,176 @@ def test_unpack_pattern():
     assert result == (('a.b', [1, 2, 3]), ('x.y.z', [4, 5]), ('hello.there', 'bye'))
 
 
+# -- Mixed-depth: negative depth selection on uneven trees --
+
+
+def test_penultimate_mixed_depth():
+    """
+    **:-2 on a tree where siblings sit at different depths.
+    'b' has no penultimate — it's a scalar with no container wrapping it
+    at the recursive level.  {'d': 2} is the penultimate for the deeper
+    branch.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2}}}
+    result = dotted.get(d, '**:-2')
+    assert {'b': 1, 'c': {'d': 2}} not in result  # parent is NOT penultimate
+    assert {'d': 2} in result                      # penultimate for deeper branch
+    assert 1 in result                             # terminal leaf (no penultimate exists)
+
+
+def test_leaves_mixed_depth():
+    """
+    **:-1 on a tree where leaves appear at different depths.
+    Every scalar leaf should be returned regardless of depth.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2, 'e': {'f': 3}}}}
+    result = dotted.get(d, '**:-1')
+    assert 1 in result
+    assert 2 in result
+    assert 3 in result
+    assert len(result) == 3
+
+
+def test_leaves_pluck_mixed_depth():
+    """
+    **:-1 pluck on a mixed-depth tree returns all leaf paths.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2}}}
+    result = dotted.pluck(d, '**:-1')
+    assert ('a.b', 1) in result
+    assert ('a.c.d', 2) in result
+    assert len(result) == 2
+
+
+def test_penultimate_pluck_mixed_depth():
+    """
+    **:-2 pluck on a mixed-depth tree.
+    'b' has no penultimate node; it appears as a terminal leaf.
+    {'d': 2} is the penultimate for the deeper branch.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2}}}
+    result = dotted.pluck(d, '**:-2')
+    assert ('a.c', {'d': 2}) in result
+    assert ('a.b', 1) in result
+
+
+def test_unpack_pattern_mixed_depth():
+    """
+    **:-2(.*, []) on a mixed-depth tree.  Penultimate containers have
+    their children extracted; terminal leaves with no penultimate appear
+    directly.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2}}}
+    result = dotted.pluck(d, '**:-2(.*, [])')
+    assert ('a.b', 1) in result
+    assert ('a.c.d', 2) in result
+
+
+def test_unpack_pattern_three_levels():
+    """
+    **:-2(.*, []) on a tree with leaves at three distinct depths.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.pluck(d, '**:-2(.*, [])')
+    assert ('a.shallow', 1) in result
+    assert ('a.mid.x', 2) in result
+    assert ('a.deep.y.z', 3) in result
+
+
+def test_penultimate_three_levels():
+    """
+    **:-2 on a tree with leaves at three distinct depths.
+    'shallow' has no penultimate — it's a scalar, so :-2 has nothing to
+    select.  'mid' and 'deep' each have a penultimate container.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.get(d, '**:-2')
+    assert 1 in result                 # terminal leaf (no penultimate exists)
+    assert {'x': 2} in result          # penultimate for mid branch
+    assert {'z': 3} in result          # penultimate for deep branch
+
+
+def test_penultimate_pluck_three_levels():
+    """
+    **:-2 pluck on a tree with leaves at three distinct depths.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.pluck(d, '**:-2')
+    assert ('a.shallow', 1) in result
+    assert ('a.mid', {'x': 2}) in result
+    assert ('a.deep.y', {'z': 3}) in result
+
+
+def test_leaves_three_levels():
+    """
+    **:-1 on a tree with leaves at three distinct depths.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.get(d, '**:-1')
+    assert result == (1, 2, 3)
+
+
+def test_leaves_pluck_three_levels():
+    """
+    **:-1 pluck on a tree with leaves at three distinct depths.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.pluck(d, '**:-1')
+    assert ('a.shallow', 1) in result
+    assert ('a.mid.x', 2) in result
+    assert ('a.deep.y.z', 3) in result
+    assert len(result) == 3
+
+
+def test_penultimate_top_level_mixed():
+    """
+    **:-2 when the root itself has mixed-depth children.
+    'shallow' is a scalar — no penultimate exists for it.  At the top
+    level of recursion (depth 0) there is no enclosing container to
+    serve as a penultimate, so it is not returned.
+    """
+    d = {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}
+    result = dotted.get(d, '**:-2')
+    assert {'x': 2} in result
+    assert {'z': 3} in result
+    assert 1 not in result
+
+
+def test_negative_stop_mixed_depth():
+    """
+    **::-2 on a mixed-depth tree returns all non-leaf depths.
+    """
+    d = {'a': {'b': 1, 'c': {'d': 2}}}
+    result = dotted.get(d, '**::-2')
+    # depth 0: {'b': 1, 'c': {'d': 2}} — has children, non-leaf
+    assert {'b': 1, 'c': {'d': 2}} in result
+    # depth 1: {'d': 2} — penultimate, non-leaf
+    assert {'d': 2} in result
+
+
+def test_negative_stop_three_levels():
+    """
+    **::-2 on a three-level mixed-depth tree.
+    """
+    d = {'a': {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}}}
+    result = dotted.get(d, '**::-2')
+    assert {'shallow': 1, 'mid': {'x': 2}, 'deep': {'y': {'z': 3}}} in result
+    assert {'x': 2} in result
+    assert {'y': {'z': 3}} in result
+    assert {'z': 3} in result
+
+
+def test_depth_step_mixed_depth():
+    """
+    **:::2 (every other depth) on a mixed-depth tree.
+    """
+    d = {'a': {'b': {'c': {'d': 1}}, 'x': 2}}
+    result = dotted.get(d, '**:::2')
+    # depth 0 and 2 (even depths)
+    assert {'b': {'c': {'d': 1}}, 'x': 2} in result  # depth 0
+    assert {'d': 1} in result                          # depth 2
+
+
 # -- Cycle detection --
 
 def test_cycle_self_referencing_dict_dstar():

@@ -213,13 +213,23 @@ class Recursive(BaseOp):
         child_depths = [self._max_depth_to_leaf(v, seen, **kwargs) for _, _, v in items]
         return max(child_depths) + 1 if child_depths else 0
 
-    def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset(), **kwargs):
+    def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset(),
+                         _below_match=False, **kwargs):
         """
-        Yield (prefix, value) for all nodes matching the recursive pattern.
+        Yield (prefix, value, terminal) for all nodes matching the recursive
+        pattern.
 
         Traverses the tree depth-first, yielding matches at each level
         before recursing into children (parent-before-children ordering).
-        Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
+        Uses seen (frozenset of ids) to prevent infinite recursion on
+        self-similar values.
+
+        The terminal flag is True for leaf nodes that don't satisfy the depth
+        range but have no children to recurse into.  These are yielded to
+        prevent silent data loss, and push_children skips continuation ops
+        for them.  Terminal yields are suppressed below already-matched nodes
+        (via _below_match) since those descendants are handled by the
+        continuation ops.
         """
         node_id = id(node)
         if node_id in seen:
@@ -232,19 +242,26 @@ class Recursive(BaseOp):
         for acc, k, v in items:
             cp = prefix + (acc.concrete(k),) if paths else prefix
             if not any(True for _ in self.filtered((v,))):
-                yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
+                yield from self._collect_matches(v, paths, depth + 1, cp, seen,
+                                                 _below_match=_below_match, **kwargs)
                 continue
             max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), **kwargs) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
-                yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
+                if self._has_negative_depth() and max_dtl == 0 and not _below_match and depth > 0:
+                    yield (cp, v, True)
+                else:
+                    yield from self._collect_matches(v, paths, depth + 1, cp, seen,
+                                                     _below_match=_below_match, **kwargs)
                 continue
-            yield (cp, v)
-            yield from self._collect_matches(v, paths, depth + 1, cp, seen, **kwargs)
+            yield (cp, v, False)
+            yield from self._collect_matches(v, paths, depth + 1, cp, seen,
+                                             _below_match=True, **kwargs)
 
     def push_children(self, stack, frame, paths):
         matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})))
-        for cp, v in reversed(matches):
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+        for cp, v, terminal in reversed(matches):
+            ops = () if terminal else frame.ops
+            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
         return ()
 
     def _assign(self, acc, node, k, v):
@@ -337,7 +354,8 @@ class RecursiveFirst(Recursive):
         return s + '?'
 
     def push_children(self, stack, frame, paths):
-        for cp, v in self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})):
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+        for cp, v, terminal in self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})):
+            ops = () if terminal else frame.ops
+            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
             return ()
         return ()

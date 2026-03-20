@@ -265,10 +265,11 @@ class ValueGuard(Wrap):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
                 stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
             return ()
-        matches = [(cp, v) for cp, v in self.inner._collect_matches(
+        matches = [(cp, v, terminal) for cp, v, terminal in self.inner._collect_matches(
             frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})) if self._guard_matches(v)]
-        for cp, v in reversed(matches):
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+        for cp, v, terminal in reversed(matches):
+            ops = () if terminal else frame.ops
+            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
         return ()
 
     def resolve(self, bindings, partial=False):
