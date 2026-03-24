@@ -4,7 +4,7 @@ Base classes, sentinels, and infrastructure for the dotted element system.
 import collections
 import pyparsing as pp
 
-from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT  # noqa: F401
+from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT, resolve_types  # noqa: F401
 
 
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming
@@ -185,7 +185,42 @@ class MatchOp(Op):
     Base for ops that match values/keys (Const, Pattern, Special, Filter).
     These are used by TraversalOps for pattern matching but never appear
     directly in the ops list processed by the engine.
+
+    Subclasses declare their matchability via _match_from:
+
+    _match_from: tuple of types this op accepts as match targets, or None
+        to use (type(self),) as default (meaning "accept my own kind").
+        Use (ANY,) to accept everything.  Entries may be strings
+        (forward references) which are resolved lazily against the
+        declaring module's namespace on first access.
+        Non-Const targets are only accepted when specials=True.
     """
+    _match_from = None
+
+    def matchable(self, op, specials=False):
+        """
+        Can this op match against *op*?
+
+        Checks isinstance(op, t) for each type t in _match_from.
+        When _match_from is None, accepts own type unconditionally
+        ("same-kind" matching, no specials gate).
+        When _match_from is explicit, Const targets are always accepted
+        and non-Const targets require specials=True.
+        """
+        if self._match_from is None:
+            return isinstance(op, type(self))
+        accept = self._match_from
+        if any(isinstance(t, str) for t in accept):
+            from . import matchers
+            accept = resolve_types(vars(matchers), accept)
+            type(self)._match_from = accept
+        if any(isinstance(op, t) for t in accept):
+            from .matchers import Const
+            if isinstance(op, Const):
+                return True
+            return specials
+        return False
+
     def is_pattern(self):
         """
         True if this op is a pattern (wildcard, regex, etc.).

@@ -10,14 +10,15 @@ import pyparsing as pp
 
 from . import base
 from .base import MatchOp
+from .utypes import ANY
 
 
 class Const(MatchOp):
+    _match_from = ('Const',)
+
     @property
     def value(self):
         return self.args[0]
-    def matchable(self, op, specials=False):
-        return isinstance(op, Const)
     def matches(self, vals):
         return (v for v in vals if self.value == v)
 
@@ -144,8 +145,6 @@ class Pattern(MatchOp):
         True — patterns (wildcards, regexes, etc.) are patterns.
         """
         return True
-    def matchable(self, op, specials=False):
-        raise NotImplementedError
 
 
 class Subst(Pattern):
@@ -169,8 +168,7 @@ class Subst(Pattern):
         """
         return True
 
-    def matchable(self, op, specials=False):
-        return False
+    _match_from = ()
 
     def _apply_transforms(self, val):
         """
@@ -256,8 +254,7 @@ class Reference(MatchOp):
         path = self.inner_path
         return is_pattern(path) if path else False
 
-    def matchable(self, op, specials=False):
-        return False
+    _match_from = ()
 
     def resolve_ref(self, root, node=None, parents=()):
         """
@@ -295,28 +292,29 @@ class Reference(MatchOp):
 
 
 class Wildcard(Pattern):
+    _match_from = (ANY,)
+
     @property
     def value(self):
         return '*'
     def matches(self, vals):
         return iter(v for v in vals if v is not base.NOP)
-    def matchable(self, op, specials=False):
-        return isinstance(op, Const) or specials
 
 
 class WildcardFirst(Wildcard):
+    _match_from = ('Const', 'Special', 'WildcardFirst', 'RegexFirst')
+
     @property
     def value(self):
         return '*?'
     def matches(self, vals):
         v = next(super().matches(vals), base.marker)
         return iter(() if v is base.marker else (v,))
-    def matchable(self, op, specials=False):
-        return isinstance(op, Const) or \
-            (specials and isinstance(op, (Special, WildcardFirst, RegexFirst)))
 
 
 class Regex(Pattern):
+    _match_from = ('Const', 'Special', 'Regex')
+
     @property
     def value(self):
         return f'/{self.args[0]}/'
@@ -336,11 +334,11 @@ class Regex(Pattern):
                 yield m[0]
             else:
                 yield vals[m.string]
-    def matchable(self, op, specials=False):
-        return isinstance(op, Const) or (specials and isinstance(op, (Special, Regex)))
 
 
 class RegexFirst(Regex):
+    _match_from = ('Const', 'Special', 'RegexFirst')
+
     @property
     def value(self):
         return f'/{self.args[0]}/?'
@@ -348,8 +346,6 @@ class RegexFirst(Regex):
         iterable = super().matches(vals)
         v = next(iterable, base.marker)
         return iter(() if v is base.marker else (v,))
-    def matchable(self, op, specials=False):
-        return isinstance(op, Const) or (specials and isinstance(op, (Special, RegexFirst)))
 
 
 class Special(MatchOp):
@@ -361,8 +357,6 @@ class Special(MatchOp):
         Return the dotted notation form of this special op.
         """
         return self.value
-    def matchable(self, op, specials=False):
-        return isinstance(op, Special)
     def matches(self, vals):
         return (v for v in vals if v == self.value)
 
@@ -371,8 +365,6 @@ class Appender(Special):
     @property
     def value(self):
         return '+'
-    def matchable(self, op, specials=False):
-        return isinstance(op, Appender)
     def matches(self, vals):
         return (v for v in vals if self.value in v)
 
@@ -404,6 +396,8 @@ class Concat(MatchOp):
 
     str + str = concat, int + int = add, mixed = TypeError.
     """
+    _match_from = ('Const',)
+
     def __init__(self, *parts):
         self._parts = tuple(parts)
         # MatchOp.__init__ expects args; store parts as args
@@ -449,12 +443,6 @@ class Concat(MatchOp):
         """
         target = self.value
         return (v for v in vals if v == target)
-
-    def matchable(self, op, specials=False):
-        """
-        Concat can match against concrete keys.
-        """
-        return isinstance(op, Const)
 
     def is_template(self):
         """

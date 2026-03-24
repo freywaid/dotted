@@ -4,7 +4,25 @@ Type specification, sentinels, and registry for the dotted element system.
 
 # Sentinel used as a "missing" marker and as the ANY constant for remove.
 marker = object()
-ANY = marker
+
+
+class _ANYMeta(type):
+    """Metaclass for ANY: isinstance(x, ANY) is always True."""
+    def __instancecheck__(cls, instance):
+        return True
+
+class ANY(metaclass=_ANYMeta):
+    """
+    Universal match type.  isinstance(x, ANY) is always True.
+    Also used as a sentinel for remove(obj, key) to mean "any value".
+    """
+    pass
+
+
+def resolve_types(ns, types):
+    """Resolve any string forward refs in a type tuple to actual classes."""
+    return tuple(ns[t] if isinstance(t, str) else t for t in types)
+
 
 # When a branch with cut (#) matches, we yield this after its results; consumer stops.
 CUT_SENTINEL = object()
