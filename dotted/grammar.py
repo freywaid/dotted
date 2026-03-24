@@ -16,6 +16,35 @@ from . import utypes
 from . import wrappers
 from . import containers as ct
 
+def _classify_tokens(tokens):
+    """
+    Classify a list of parse-result tokens into (typespec, filters, transforms, nop, args).
+
+    Returns a tuple of:
+        typespec: a single TypeSpec or None
+        filters: list of FilterOp instances
+        transforms: list of Transform instances
+        nop: bool, True if '~' was present
+        args: everything else
+    """
+    typespec = None
+    filters = []
+    transforms = []
+    nop = False
+    args = []
+    for item in tokens:
+        if isinstance(item, utypes.TypeSpec):
+            typespec = item
+        elif isinstance(item, flt.FilterOp):
+            filters.append(item)
+        elif isinstance(item, base.Transform):
+            transforms.append(item)
+        elif item == '~':
+            nop = True
+        else:
+            args.append(item)
+    return typespec, filters, transforms, nop, args
+
 S = pp.Suppress
 L = pp.Literal
 Opt = pp.Optional
@@ -483,20 +512,7 @@ def _keycmd_guarded_action(pred_op):
     def action(t):
         t = list(t)
         guard = t[-1]
-        rest = t[:-1]
-        tr = None
-        xforms = []
-        args = []
-        filters = []
-        for item in rest:
-            if isinstance(item, utypes.TypeSpec):
-                tr = item
-            elif isinstance(item, flt.FilterOp):
-                filters.append(item)
-            elif isinstance(item, base.Transform):
-                xforms.append(item)
-            else:
-                args.append(item)
+        tr, filters, xforms, _, args = _classify_tokens(t[:-1])
         inner = access.Key(*args)
         if tr:
             inner = tr.wrap(inner)
@@ -520,17 +536,7 @@ def _keycmd_action(t):
     """
     Parse action for key with optional type restriction.
     """
-    t = list(t)
-    tr = None
-    args = []
-    filters = []
-    for item in t:
-        if isinstance(item, utypes.TypeSpec):
-            tr = item
-        elif isinstance(item, flt.FilterOp):
-            filters.append(item)
-        else:
-            args.append(item)
+    tr, filters, _, _, args = _classify_tokens(list(t))
     result = access.Key(*args)
     if tr:
         result = tr.wrap(result)
@@ -549,23 +555,7 @@ def _slotcmd_guarded_action(pred_op):
     def action(t):
         t = list(t)
         guard = t[-1]
-        rest = t[:-1]
-        tr = None
-        nop = False
-        xforms = []
-        args = []
-        filters = []
-        for item in rest:
-            if isinstance(item, utypes.TypeSpec):
-                tr = item
-            elif item == '~':
-                nop = True
-            elif isinstance(item, flt.FilterOp):
-                filters.append(item)
-            elif isinstance(item, base.Transform):
-                xforms.append(item)
-            else:
-                args.append(item)
+        tr, filters, xforms, nop, args = _classify_tokens(t[:-1])
         inner = access.Slot(*args)
         if filters:
             inner = wrappers.FilterWrap(inner, filters)
@@ -591,20 +581,7 @@ def _slotcmd_action(t):
     """
     Parse action for slot with optional type restriction.
     """
-    t = list(t)
-    tr = None
-    nop = False
-    args = []
-    filters = []
-    for item in t:
-        if isinstance(item, utypes.TypeSpec):
-            tr = item
-        elif item == '~':
-            nop = True
-        elif isinstance(item, flt.FilterOp):
-            filters.append(item)
-        else:
-            args.append(item)
+    tr, filters, _, nop, args = _classify_tokens(list(t))
     result = access.Slot(*args)
     if filters:
         result = wrappers.FilterWrap(result, filters)
@@ -621,19 +598,7 @@ def _attr_action(t, nop=False):
     """
     Parse action for attr with optional type restriction.
     """
-    t = list(t)
-    tr = None
-    args = []
-    filters = []
-    for item in t:
-        if isinstance(item, utypes.TypeSpec):
-            tr = item
-        elif item == '~':
-            pass  # consumed by grammar, marks nop
-        elif isinstance(item, flt.FilterOp):
-            filters.append(item)
-        else:
-            args.append(item)
+    tr, filters, _, _, args = _classify_tokens(list(t))
     result = access.Attr(*args)
     if tr:
         result = tr.wrap(result)
@@ -660,13 +625,7 @@ cut_marker = softcut_marker | L('#')
 
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
 def _slot_item_action(t):
-    args = []
-    filters = []
-    for item in t:
-        if isinstance(item, flt.FilterOp):
-            filters.append(item)
-        else:
-            args.append(item)
+    _, filters, _, _, args = _classify_tokens(list(t))
     result = access.Slot(*args)
     if filters:
         result = wrappers.FilterWrap(result, filters)
@@ -929,11 +888,11 @@ _dot_plain_grouped = (dot + (_inner_grouped_bare_first | _inner_grouped_bare)).s
 _dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
 # @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
 _at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
-    lambda t: groups.attr_transform_opgroup(t[0])
+    lambda t: groups.as_attrs_opgroup(t[0])
 )
 _at_nop_grouped = ((at + tilde) | (tilde + at)) + (_inner_grouped_bare_first | _inner_grouped_bare)
 _at_nop_grouped = _at_nop_grouped.set_parse_action(
-    lambda t: wrappers.NopWrap(groups.attr_transform_opgroup(t[-1]))
+    lambda t: wrappers.NopWrap(groups.as_attrs_opgroup(t[-1]))
 )
 
 # NOP (~): match but don't update

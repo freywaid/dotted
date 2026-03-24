@@ -345,6 +345,12 @@ class AccessOp(SimpleOp):
 
 
 class Key(AccessOp):
+    """
+    Also serves as an unresolved bare identifier in grouped expressions
+    like (a, b).  The prefix outside the group determines the final access
+    mode: .() keeps them as Keys, @() promotes them to Attrs via
+    as_attrs_opgroup.
+    """
     @classmethod
     def concrete(cls, val):
         """

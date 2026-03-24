@@ -96,6 +96,13 @@ class OpGroup(base.TraversalOp):
         """
         return repr(self)
 
+    def as_attrs(self):
+        """
+        Promote unresolved bare identifiers (parsed as Keys) to Attrs in all
+        branches.  Subclasses override to handle cut/softcut markers.
+        """
+        return type(self)(*[_attr_branch(b) for b in self.branches])
+
 
 class OpGroupOr(OpGroup):
     """
@@ -109,6 +116,15 @@ class OpGroupOr(OpGroup):
     base.BRANCH_CUT in the sequence means: after yielding from the previous branch, yield base.CUT_SENTINEL and stop.
     base.BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
     """
+    def as_attrs(self):
+        new_branches = []
+        for b in self.branches:
+            if isinstance(b, tuple):
+                new_branches.append(_attr_branch(b))
+            else:
+                new_branches.append(b)  # cut markers pass through
+        return OpGroupOr(*new_branches)
+
     def leaf_op(self):
         """
         Recurse into the first non-cut branch.
@@ -267,6 +283,15 @@ class OpGroupFirst(OpGroup):
     """
     First-match operation group - returns only first matching value across all branches.
     """
+    def as_attrs(self):
+        new_branches = []
+        for b in self.branches:
+            if isinstance(b, tuple):
+                new_branches.append(_attr_branch(b))
+            else:
+                new_branches.append(b)
+        return OpGroupFirst(*new_branches)
+
     def leaf_op(self):
         """
         Recurse into the first non-cut branch.
@@ -645,31 +670,14 @@ def _attr_branch(branch):
     return branch
 
 
-def attr_transform_opgroup(group):
+def as_attrs_opgroup(group):
     """
-    Transform an OpGroup, converting leading Keys to Attrs in all branches.
-    Used by @(group) syntax to infer attribute access for bare keys.
+    Promote unresolved bare identifiers (parsed as Keys) to Attrs.
+    Used by @(group) syntax — the inner group grammar doesn't know the
+    access mode, so it produces Keys; this resolves them as Attrs.
     """
-    if isinstance(group, OpGroupOr):
-        new_branches = []
-        for b in group.branches:
-            if isinstance(b, tuple):
-                new_branches.append(_attr_branch(b))
-            else:
-                new_branches.append(b)  # cut markers pass through
-        return OpGroupOr(*new_branches)
-    if isinstance(group, OpGroupFirst):
-        new_branches = []
-        for b in group.branches:
-            if isinstance(b, tuple):
-                new_branches.append(_attr_branch(b))
-            else:
-                new_branches.append(b)
-        return OpGroupFirst(*new_branches)
-    if isinstance(group, OpGroupAnd):
-        return OpGroupAnd(*[_attr_branch(b) for b in group.branches])
-    if isinstance(group, OpGroupNot):
-        return OpGroupNot(*[_attr_branch(b) for b in group.branches])
+    if hasattr(group, 'as_attrs'):
+        return group.as_attrs()
     # Single Key not wrapped in OpGroup (e.g. @(a) with single item)
     if type(group) is Key:
         return Attr(*group.args)

@@ -225,6 +225,19 @@ def test_key_type_with_filter():
     assert result == [('a.x', 1), ('a.y', 2)]
 
 
+def test_slot_type_with_filter():
+    """
+    [*&filter]:type combines filter and type restriction on slots.
+    """
+    d = {'items': [{'name': 'a', 'val': 1}, {'name': 'b', 'val': 2}]}
+    # Filter by name, restrict to list type (container is a list)
+    result = dotted.get(d, 'items[*&name="b"]:list')
+    assert result == ({'name': 'b', 'val': 2},)
+    # Same filter but wrong type restriction — container is a list, not a dict
+    result2 = dotted.get(d, 'items[*&name="b"]:dict')
+    assert result2 == ()
+
+
 # -- Recursive backward compatibility --
 
 def test_dstar_still_skips_str():

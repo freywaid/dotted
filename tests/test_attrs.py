@@ -180,6 +180,28 @@ def test_format_path_attr_segment():
 
 
 # =============================================================================
+# Attr with filters
+# =============================================================================
+
+def test_attr_with_filter():
+    """
+    @*&filter filters attribute access by child values.
+    """
+    ns = types.SimpleNamespace(a={'x': 1}, b={'x': 2}, c={'x': 3})
+    assert dotted.get(ns, '@*&x>1') == ({'x': 2}, {'x': 3})
+
+
+def test_attr_with_filter_nested():
+    """
+    @name followed by slot filter.
+    """
+    data = {'items': [{'x': 1}, {'x': 2}]}
+    ns = types.SimpleNamespace(**data)
+    result = dotted.get(ns, '@items[*&x>1]')
+    assert result == ({'x': 2},)
+
+
+# =============================================================================
 # Attribute group access: @(a,b)
 # =============================================================================
 
@@ -244,3 +266,27 @@ def test_attr_group_assemble():
     assembled = dotted.assemble(parsed)
     # Round-trip stability: parse(assembled) produces same assembled form
     assert dotted.assemble(dotted.parse(assembled)) == assembled
+
+
+def test_attr_group_cut():
+    """
+    @(a#, b) with cut marker: if a matches, don't try b.
+    """
+    ns = types.SimpleNamespace(a=1, b=2)
+    # a matches, so cut stops before b
+    result = dotted.get(ns, '@(a#, b)')
+    assert result == (1,)
+
+    # a missing, so falls through to b
+    ns2 = types.SimpleNamespace(b=2)
+    result2 = dotted.get(ns2, '@(a#, b)')
+    assert result2 == (2,)
+
+
+def test_attr_group_softcut():
+    """
+    @(a##, b) with soft cut.
+    """
+    ns = types.SimpleNamespace(a=1, b=2)
+    result = dotted.get(ns, '@(a##, b)')
+    assert result == (1, 2)
