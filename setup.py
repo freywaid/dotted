@@ -15,7 +15,7 @@ setuptools.setup(
     url="https://github.com/freywaid/dotted",
     packages=setuptools.find_packages(),
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
     ],
