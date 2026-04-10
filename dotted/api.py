@@ -5,6 +5,7 @@ import copy
 import enum
 import functools
 import itertools
+import threading
 import pyparsing as pp
 from . import grammar
 from . import engine
@@ -66,12 +67,16 @@ class ParseError(Exception):
     pass
 
 
+_parse_lock = threading.Lock()
+
+
 @functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
-    try:
-        parsed = grammar.template.parse_string(ops, parse_all=True)
-    except pp.ParseException as e:
-        raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
+    with _parse_lock:
+        try:
+            parsed = grammar.template.parse_string(ops, parse_all=True)
+        except pp.ParseException as e:
+            raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
     return results.Dotted(parsed)
 
 
