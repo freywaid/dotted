@@ -290,3 +290,198 @@ def test_attr_group_softcut():
     ns = types.SimpleNamespace(a=1, b=2)
     result = dotted.get(ns, '@(a##, b)')
     assert result == (1, 2)
+
+
+# =============================================================================
+# Concrete attr fallback (__getattr__-based objects)
+# =============================================================================
+
+class _DynAttrs:
+    """
+    Mimics Stripe-like objects: data in _data dict, exposed via __getattr__.
+    """
+    def __init__(self, **kw):
+        self._data = dict(kw)
+
+    def __getattr__(self, k):
+        if k.startswith('_'):
+            raise AttributeError(k)
+        try:
+            return self._data[k]
+        except KeyError as e:
+            raise AttributeError(*e.args) from e
+
+    def __getitem__(self, k):
+        return self._data[k]
+
+    def __contains__(self, k):
+        return k in self._data
+
+
+def test_attr_concrete_getattr_fallback():
+    """
+    Concrete @attr access works on __getattr__-based objects.
+    """
+    obj = _DynAttrs(name='Alice', email='a@b.com')
+    assert dotted.get(obj, '@name') == 'Alice'
+    assert dotted.get(obj, '@email') == 'a@b.com'
+
+
+def test_attr_concrete_getattr_missing():
+    """
+    Missing concrete @attr on __getattr__ object returns None (safe access).
+    """
+    obj = _DynAttrs(name='Alice')
+    assert dotted.get(obj, '@missing') is None
+
+
+def test_attr_concrete_getattr_nested():
+    """
+    Nested access through __getattr__ objects.
+    """
+    inner = _DynAttrs(value=42)
+    outer = {'obj': inner}
+    assert dotted.get(outer, 'obj@value') == 42
+
+
+def test_key_concrete_getitem_no_keys():
+    """
+    Concrete .key access works on objects with __getitem__+__contains__ but no keys().
+    """
+    obj = _DynAttrs(name='Alice', email='a@b.com')
+    assert dotted.get(obj, '.name') == 'Alice'
+    assert dotted.get(obj, '.email') == 'a@b.com'
+
+
+def test_key_concrete_getitem_missing():
+    """
+    Missing concrete .key on __getitem__ object returns None.
+    """
+    obj = _DynAttrs(name='Alice')
+    assert dotted.get(obj, '.missing') is None
+
+
+# =============================================================================
+# __slots__ support
+# =============================================================================
+
+class _Slotted:
+    __slots__ = ('x', 'y')
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
+class _SlottedChild(_Slotted):
+    __slots__ = ('z',)
+
+    def __init__(self, x, y, z):
+        super().__init__(x, y)
+        self.z = z
+
+
+def test_attr_slots_concrete():
+    """
+    Concrete @attr access works on __slots__ classes.
+    """
+    obj = _Slotted(1, 2)
+    assert dotted.get(obj, '@x') == 1
+    assert dotted.get(obj, '@y') == 2
+
+
+def test_attr_slots_pattern():
+    """
+    @* pattern enumerates __slots__ attributes.
+    """
+    obj = _Slotted(1, 2)
+    assert set(dotted.get(obj, '@*')) == {1, 2}
+
+
+def test_attr_slots_inherited():
+    """
+    @* pattern includes slots from parent classes.
+    """
+    obj = _SlottedChild(1, 2, 3)
+    assert set(dotted.get(obj, '@*')) == {1, 2, 3}
+
+
+def test_attr_slots_update():
+    """
+    @attr update works on __slots__ classes.
+    """
+    obj = _Slotted(1, 2)
+    dotted.update(obj, '@x', 10)
+    assert obj.x == 10
+
+
+def test_attr_slots_expand():
+    """
+    expand() discovers __slots__ attributes.
+    """
+    obj = _Slotted(1, 2)
+    result = dotted.expand(obj, '@*')
+    assert set(result) == {'@x', '@y'}
+
+
+def test_attr_slots_remove():
+    """
+    @attr remove works on __slots__ classes.
+    """
+    obj = _Slotted(1, 2)
+    dotted.remove(obj, '@x')
+    assert not hasattr(obj, 'x')
+    assert obj.y == 2
+
+
+class _MixedSlots:
+    __slots__ = ('x', '__dict__')
+
+    def __init__(self, x, **kw):
+        self.x = x
+        self.__dict__.update(kw)
+
+
+def test_attr_mixed_slots_and_dict():
+    """
+    @* enumerates both __slots__ and __dict__ attributes.
+    """
+    obj = _MixedSlots(1, y=2, z=3)
+    assert set(dotted.get(obj, '@*')) == {1, 2, 3}
+
+
+def test_dynattrs_pattern_returns_internals():
+    """
+    @* on __getattr__ objects enumerates __dict__ (internal attrs),
+    not the dynamic keys.  This is the expected limitation.
+    """
+    obj = _DynAttrs(name='Alice', email='a@b.com')
+    result = dotted.get(obj, '@*')
+    # Gets the internal _data dict, not the user-facing keys
+    assert result == ({'name': 'Alice', 'email': 'a@b.com'},)
+
+
+def test_attr_concrete_fallback_with_filter():
+    """
+    Concrete @attr fallback respects filters.
+    """
+    obj = _DynAttrs(x={'v': 5}, y={'v': 10})
+    # Filter should pass
+    result = dotted.get({'obj': obj}, 'obj@x&v>3')
+    assert result == {'v': 5}
+    # Filter should reject
+    result = dotted.get({'obj': obj}, 'obj@x&v>10')
+    assert result is None
+
+
+def test_namedtuple_attr_access():
+    """
+    Namedtuple attr access still works after isinstance(tuple) guard.
+    """
+    from collections import namedtuple
+    Pt = namedtuple('Pt', ['x', 'y'])
+    p = Pt(3, 4)
+    assert dotted.get(p, '@x') == 3
+    assert dotted.get(p, '@y') == 4
+    assert set(dotted.get(p, '@*')) == {3, 4}
+    assert set(dotted.expand(p, '@*')) == {'@x', '@y'}

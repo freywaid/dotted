@@ -411,6 +411,13 @@ class Key(AccessOp):
             return ()
         key = self.op.value
         if not isinstance(key, int):
+            # Concrete non-int key on object with __getitem__ but no keys():
+            # try direct access (e.g. Stripe-like objects)
+            if hasattr(node, '__contains__') and key in node:
+                try:
+                    return iter([(key, node[key])])
+                except (KeyError, TypeError):
+                    pass
             return ()
         if not filtered:
             return self._items(node, range(len(node)), filtered=False)
@@ -515,18 +522,65 @@ class Attr(Key):
 
         return _items()
 
+    @staticmethod
+    def _all_keys(node):
+        """
+        Collect all known attribute names from an object:
+        __dict__, _fields (namedtuple), and __slots__ (MRO walk).
+        Preserves insertion order.
+        """
+        seen = set()
+        keys = []
+        try:
+            for k in node.__dict__.keys():
+                if k not in seen:
+                    seen.add(k)
+                    keys.append(k)
+        except AttributeError:
+            pass
+        if isinstance(node, tuple):
+            for k in getattr(node, '_fields', ()):
+                if k not in seen:
+                    seen.add(k)
+                    keys.append(k)
+        for cls in type(node).__mro__:
+            for s in getattr(cls, '__slots__', ()):
+                if s not in ('__dict__', '__weakref__') and s not in seen:
+                    seen.add(s)
+                    keys.append(s)
+        return keys
+
+    def _concrete_fallback(self, node, inner, filtered):
+        """
+        Wrap an items iterator: yield from inner, and if nothing
+        was yielded, try getattr directly for concrete (non-pattern) ops.
+        """
+        found = False
+        for pair in inner:
+            found = True
+            yield pair
+        if found:
+            return
+        key = self.op.value
+        try:
+            v = getattr(node, key)
+        except AttributeError:
+            return
+        if filtered and not tuple(self.filtered(iter((v,)))):
+            return
+        yield (key, v)
+
     def items(self, node, filtered=True, **kwargs):
         if self.is_reference():
             return itertools.chain.from_iterable(
                 r.items(node, filtered=filtered, **kwargs)
                 for r in self._resolved(node=node, **kwargs))
-        # Try __dict__ first (normal objects), then _fields (namedtuple)
-        try:
-            all_keys = node.__dict__.keys()
-        except AttributeError:
-            all_keys = getattr(node, '_fields', ())
+        all_keys = self._all_keys(node)
         keys = self.op.matches(all_keys) if filtered else all_keys
-        return self._items(node, keys, filtered)
+        result = self._items(node, keys, filtered)
+        if not self.is_pattern():
+            result = self._concrete_fallback(node, result, filtered)
+        return result
 
     def default(self):
         o = types.SimpleNamespace()
@@ -555,10 +609,7 @@ class Attr(Key):
             return self.update(node, self.op.value, val)
         keys = tuple(self.keys(node))
         # Try mutable update first
-        try:
-            node_keys = node.__dict__.keys()
-        except AttributeError:
-            node_keys = getattr(node, '_fields', ())
+        node_keys = self._all_keys(node)
         iterable = ((k, getattr(node, k)) for k in node_keys if k not in keys)
         items = list(itertools.chain(iterable, ((k, val) for k in keys)))
         try:

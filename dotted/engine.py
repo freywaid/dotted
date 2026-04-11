@@ -106,7 +106,8 @@ def _is_container(obj):
         return False
     # Dict-like, sequence-like, or has attributes
     return (hasattr(obj, 'keys') or hasattr(obj, '__len__') or
-            hasattr(obj, '__iter__') or hasattr(obj, '__dict__'))
+            hasattr(obj, '__iter__') or hasattr(obj, '__dict__') or
+            hasattr(type(obj), '__slots__'))
 
 
 def _format_path(segments):

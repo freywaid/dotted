@@ -856,8 +856,10 @@ _attr_ `@` field uses `getattr/setattr/delattr`.
 
 A key field is expressed as `a` or part of a dotted expression, such as `a.b`.  The
 grammar parser is permissive for what can be in a key field.  Pretty much any non-reserved
-char will match.  Note that key fields will only work on objects that have a `keys`
-method.  Basically, they work with dictionary or dictionary-like objects.
+char will match.  Key fields work best with objects that have a `keys` method
+(dictionaries and dictionary-like objects).  For concrete access like `.name`, objects
+with `__getitem__` and `__contains__` but no `keys` method are also supported via direct
+lookup (though pattern access like `.*` requires `keys`).
 
     >>> import dotted
     >>> dotted.get({'a': {'b': 'hello'}}, 'a.b')
@@ -892,6 +894,27 @@ Two important reasons: nested expressions and patterns.
     >>> ns.hello = {'me': 'goodbye'}
     >>> dotted.get(ns, '@hello.me')
     'goodbye'
+
+**Concrete access** (`@name`) works on any object — dotted tries enumeration first,
+then falls back to `getattr` directly.  This means objects that provide attributes
+via `__getattr__` (such as Stripe API objects and other dynamic-attribute wrappers)
+work out of the box.
+
+**Pattern access** (`@*`, `@/regex/`) requires enumerable attributes.  Dotted discovers
+attribute names from `__dict__` (standard instance attributes), `__slots__` (slot-based
+classes), and `_fields` (namedtuples, which store data in the tuple itself and don't
+expose field names through either `__dict__` or `__slots__`):
+
+    >>> class Point:
+    ...     __slots__ = ('x', 'y')
+    ...     def __init__(self, x, y):
+    ...         self.x = x
+    ...         self.y = y
+    >>> dotted.get(Point(3, 4), '@*')
+    (3, 4)
+
+Objects that rely solely on `__getattr__` without exposing their keys through any of
+these mechanisms will support concrete attr access but not [pattern matching](#patterns).
 
 <a id="slicing"></a>
 ### Slicing
@@ -1077,7 +1100,9 @@ expressions.  You'll note that patterns always return a tuple of matches.
     >>> dotted.get(d, '/h.*/.*')
     ([1, 2, 3],)
 
-Dotted will return all values that match the pattern(s).
+Dotted will return all values that match the pattern(s).  Patterns can only discover
+what is advertised — they work by enumerating keys or attributes, so the object must
+expose them via `keys()` (dicts), `__dict__`, `__slots__`, or `_fields` (namedtuples).
 
 <a id="wildcards"></a>
 ### Wildcards
@@ -2906,3 +2931,15 @@ Prefer a concrete path when it expresses what you want; use pattern + `?` when y
 A slice filter like `[id=1]` returns the **filtered sublist** as a single value — it operates on the list itself, not on individual items. Updating that sublist in place is ambiguous: the matching items may be at non-contiguous indices, so there's no clean way to splice a replacement back into the original.
 
 But you probably don't want to update a slice filter anyway — instead, use a pattern like `[*&id=1]` which walks the items individually and updates each match in place.
+
+<a id="why-cant-i-use-patterns-on-stripe-objects"></a>
+### Why can't I use patterns to discover keys/attrs on my Stripe object?
+
+Pattern access (`@*`, `.*`) works by enumerating an object's known keys or attributes. Dotted checks `__dict__`, `__slots__`, `_fields` (namedtuples), and `keys()` (for key fields). Stripe objects don't use any of these — they store data in an internal `_data` dict and expose it through a custom `__getattr__`. Since Python has no standard protocol for asking "what keys does your `__getattr__` accept?", there's nothing for dotted to enumerate.
+
+**Concrete access works fine.** `@name`, `@email`, `.id` — anything where you specify the exact key will work, because dotted falls back to trying `getattr`/`__getitem__` directly.
+
+**Pattern access can't discover what you don't advertise.** This is a limitation of the object, not dotted. If you need pattern access, convert to a dict first:
+
+    obj_dict = obj.to_dict()        # Stripe objects support this
+    dotted.get(obj_dict, '*')       # now enumerable
