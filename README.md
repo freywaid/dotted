@@ -139,6 +139,7 @@ Or pick only what you need:
   - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
   - [How do I craft an efficient path?](#how-do-i-craft-an-efficient-path)
   - [Why do I get a RuntimeError when updating with a slice filter?](#why-do-i-get-a-runtimeerror-when-updating-with-a-slice-filter)
+  - [Why can't I use patterns to discover keys/attrs on my Stripe object?](#why-cant-i-use-patterns-on-stripe-objects)
 
 <a id="safe-traversal-optional-chaining"></a>
 ## Safe Traversal (Optional Chaining)
