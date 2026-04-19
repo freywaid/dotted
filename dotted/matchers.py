@@ -122,7 +122,7 @@ class Boolean(Const):
     """
     @property
     def value(self):
-        return self.args[0] == 'True'
+        return self.args[0].lower() == 'true'
     def __repr__(self):
         return str(self.value)
 

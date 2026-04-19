@@ -69,9 +69,9 @@ transform_name = pp.Word(pp.alphas + '_', pp.alphanums + '_.')
 quoted = pp.QuotedString('"', esc_char='\\') | pp.QuotedString("'", esc_char='\\')
 plus = pp.Literal('+')
 integer = ppc.signed_integer
-none = pp.Literal('None').set_parse_action(matchers.NoneValue)
-true = pp.Literal('True').set_parse_action(matchers.Boolean)
-false = pp.Literal('False').set_parse_action(matchers.Boolean)
+none = (pp.Literal('None') | pp.Literal('null')).set_parse_action(matchers.NoneValue)
+true = (pp.Literal('True') | pp.Literal('true')).set_parse_action(matchers.Boolean)
+false = (pp.Literal('False') | pp.Literal('false')).set_parse_action(matchers.Boolean)
 
 reserved = '.[]*:|+?/=,@&()!~#{}$<>' # {} for container syntax, $ for substitution, <> for comparisons
 breserved = ''.join('\\' + i for i in reserved)
