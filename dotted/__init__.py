@@ -68,6 +68,7 @@ from .api import \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
+from .sqlize import sqlize, TranslationError
 
 __all__ = [
     # Core
@@ -82,6 +83,8 @@ __all__ = [
     'apply', 'apply_multi', 'register', 'transform',
     # Utility
     'parse', 'assemble', 'assemble_multi', 'quote', 'is_pattern', 'is_template', 'is_inverted', 'mutable',
+    # SQL
+    'sqlize', 'TranslationError',
     # Constants
     'ANY', 'AUTO', 'Attrs', 'GroupMode',
 ]

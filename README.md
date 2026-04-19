@@ -127,6 +127,7 @@ Or pick only what you need:
   - [Built-in Transforms](#built-in-transforms)
   - [Container transform arguments](#container-transform-arguments)
   - [Custom Transforms](#custom-transforms)
+- [SQL Translation (`sqlize`)](#sqlize) — *under development*
 - [Constants and Exceptions](#constants-and-exceptions)
 - [CLI (`dq`)](#cli-dq)
   - [File input](#file-input)
@@ -2750,6 +2751,141 @@ Register custom transforms using `register` or the `@transform` decorator:
     10
 
 View all registered transforms with `dotted.registry()`.
+
+<a id="sqlize"></a>
+## SQL Translation (`sqlize`)
+
+> **Under development.** The API shape, output format, and supported subset
+> of dotted features may still change. Postgres-only, SQLAlchemy-style named
+> placeholders, scalar paths plus absolute-root references. Patterns (`*`,
+> `**`, `[*]`, filter-on-array) are not supported yet.
+
+`dotted.sqlize` translates a dotted path into SQL clause components — a
+`select` expression, a `where` predicate, and a `params` dict with hoisted
+values. Literals are hoisted for injection safety; substitutions are
+preserved as named placeholders so callers can late-bind them.
+
+The first segment of the dotted path is the SQL column. Any further segments
+are JSON navigation inside that column (JSONB). This means scalar columns
+and JSONB columns share one surface:
+
+    >>> import dotted
+    >>> dotted.sqlize("status = 'active'")
+    {'select': 'status', 'where': 'status = :_p1', 'params': {'_p1': 'active'}}
+
+    >>> dotted.sqlize("data.user.age >= 30")
+    {'select': "data #>> '{user,age}'", 'where': "(data #>> '{user,age}')::numeric >= :_p1", 'params': {'_p1': 30}}
+
+    >>> dotted.sqlize("data.user.name")   # pure traversal, no predicate
+    {'select': "data #>> '{user,name}'", 'params': {}}
+
+Guards encode the predicate:
+
+    >>> dotted.sqlize("age >= 30")
+    {'select': 'age', 'where': 'age >= :_p1', 'params': {'_p1': 30}}
+
+    >>> dotted.sqlize("deleted_at = None")
+    {'select': 'deleted_at', 'where': 'deleted_at IS NULL', 'params': {}}
+
+    >>> dotted.sqlize("name = /^alice/")
+    {'select': 'name', 'where': 'name ~ :_p1', 'params': {'_p1': '^alice'}}
+
+Boolean grouping maps directly onto `AND` / `OR` / `NOT`:
+
+    >>> dotted.sqlize('(age >= 18 & status = "active")')
+    {'where': '(age >= :_p1) AND (status = :_p2)', 'params': {'_p1': 18, '_p2': 'active'}}
+
+    >>> dotted.sqlize('data.(user.age >= 30 & status = "active")')['where']
+    "((data #>> '{user,age}')::numeric >= :_p1) AND ((data #>> '{status}') = :_p2)"
+
+Guard transforms become SQL casts (`int`, `float`, `str`, `bool`):
+
+    >>> dotted.sqlize("data.user.age|int >= 30")['where']
+    "(data #>> '{user,age}')::int >= :_p1"
+
+### Hoisted params
+
+Every RHS value becomes an entry in the `params` dict, keyed by name. This
+is the mechanism that makes the output safe — user input can't end up as
+SQL text, only as a parameter value.
+
+    >>> r = dotted.sqlize(f"name = {repr(user_input)}")   # user input literal
+    >>> r['where']
+    'name = :_p1'
+    >>> r['params']
+    {'_p1': "'; DROP TABLE users;--"}     # stays a value, never parsed as SQL
+
+Literal values get generated names (`_p1`, `_p2`, …). Substitutions keep
+their declared names — see below.
+
+### Substitutions (late binding)
+
+A substitution is preserved in the SQL output as a named placeholder,
+letting the caller supply the value at execute time rather than sqlize
+time:
+
+    >>> r = dotted.sqlize("age >= $(min_age)")
+    >>> r
+    {'select': 'age', 'where': 'age >= :min_age', 'params': {}, 'missing': ['min_age']}
+
+`missing` lists names that still need a value. Fill them in before passing
+`params` to a driver:
+
+    >>> r['params']['min_age'] = 30
+    >>> # hand (r['where'], r['params']) to cursor.execute / session.execute / etc.
+
+Repeated uses of the same name share one placeholder automatically:
+
+    >>> dotted.sqlize('(age >= $(x) & weight = $(x))')
+    {'where': '(age >= :x) AND (weight = :x)', 'params': {}, 'missing': ['x']}
+
+If you pass `bindings=`, substitutions are resolved at sqlize time and hoisted
+like any other literal:
+
+    >>> dotted.sqlize("age >= $(min_age)", bindings={'min_age': 30})
+    {'select': 'age', 'where': 'age >= :_p1', 'params': {'_p1': 30}}
+
+### References
+
+Absolute-root references (`$$(path)`) map to dynamic JSON key lookups —
+Postgres's `->` / `#>` accept runtime-computed keys:
+
+    >>> dotted.sqlize('data.$$(data.config.field) = "Alice"')
+    {'select': "data ->> (data #>> '{config,field}')", 'where': "(data ->> (data #>> '{config,field}')) = :_p1", 'params': {'_p1': 'Alice'}}
+
+Relative references (`^`) and parent references (`^^+`) are not supported
+yet.
+
+### Output keys
+
+Returned dict may contain any subset of:
+
+| Key       | Type        | Meaning                                             |
+|-----------|-------------|-----------------------------------------------------|
+| `select`  | `str`       | Expression yielding the value dotted would return   |
+| `where`   | `str`       | Predicate from guards / filters / boolean groups    |
+| `params`  | `dict`      | Hoisted values keyed by name                        |
+| `missing` | `list[str]` | Substitution names still awaiting a value           |
+
+`select` is omitted when combining predicates across different columns
+(e.g. top-level groups), since there's no single meaningful expression.
+`where` is omitted when the path is pure traversal. Usage pattern:
+
+    >>> r = dotted.sqlize("data.user.age >= 30")
+    >>> sql = f"SELECT {r['select']} FROM users WHERE {r['where']}"
+    >>> # sql, r['params'] go to your driver
+
+### Keyword arguments
+
+`dotted.sqlize(path, *, bindings=None, flavor='postgres', format='sqlalchemy')`
+
+- `bindings` — resolve substitutions at sqlize time.
+- `flavor` — SQL flavor for JSONB operators; only `'postgres'` is
+  implemented.
+- `format` — placeholder style; only `'sqlalchemy'` (`:name`) is supported
+  in v1.
+
+Unsupported features and pattern paths raise `dotted.TranslationError`.
 
 <a id="constants-and-exceptions"></a>
 ## Constants and Exceptions
