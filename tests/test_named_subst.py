@@ -62,6 +62,40 @@ def test_replace_named_missing_raises():
         replace('$(name)', {})
 
 
+# ---- dotted-path lookup in named subst ----
+
+def test_replace_dotted_subst():
+    # $(a.b) resolves via nested lookup in bindings
+    assert replace('prefix.$(a.b)', {'a': {'b': 'val'}}) == 'prefix.val'
+
+
+def test_replace_dotted_subst_deep():
+    assert replace('$(x.y.z)', {'x': {'y': {'z': 42}}}) == '42'
+
+
+def test_replace_dotted_subst_falls_back_to_literal():
+    # When nested lookup finds nothing, a literal dotted key still works
+    assert replace('$(a.b)', {'a.b': 'literal'}) == 'literal'
+
+
+def test_replace_dotted_subst_nested_wins_over_literal():
+    # Nested match is preferred over literal key
+    assert replace('$(a.b)', {'a.b': 'literal', 'a': {'b': 'nested'}}) == 'nested'
+
+
+def test_replace_dotted_subst_missing_raises():
+    with pytest.raises(KeyError):
+        replace('$(a.b)', {'a': {}})
+
+
+def test_replace_dotted_subst_partial():
+    assert replace('$(a.b)', {}, partial=True) == '$(a.b)'
+
+
+def test_replace_dotted_subst_with_transform():
+    assert replace('$(a.b|int)', {'a': {'b': '42'}}) == '42'
+
+
 # ---- is_template ----
 
 def test_is_template_named():

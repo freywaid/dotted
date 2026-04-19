@@ -46,6 +46,46 @@ def _quote_ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
+# Subst names may themselves be dotted paths. To survive as SQL bind
+# parameter names (which must be plain identifiers), the access operators
+# are encoded with mnemonic tokens. This preserves the distinction
+# between `a.b`, `a@b`, and `a[0]` in the placeholder name.
+_OP_ENCODE = {
+    '.': '_dot_',
+    '@': '_at_',
+    '[': '_br_',
+    ']': '',
+}
+
+
+def _encode_subst_name(name):
+    """
+    Encode a subst name (a dotted path) into a plain SQL identifier.
+    Recognised access ops become mnemonic tokens; unsupported characters
+    raise TranslationError.
+    """
+    if _IDENT_RE.fullmatch(name):
+        return name
+    out = []
+    for c in name:
+        if c in _OP_ENCODE:
+            out.append(_OP_ENCODE[c])
+        elif c.isalnum() or c == '_':
+            out.append(c)
+        else:
+            raise TranslationError(
+                f'cannot encode character {c!r} in substitution name {name!r}; '
+                'resolve via bindings= at sqlize time'
+            )
+    encoded = ''.join(out)
+    if not _IDENT_RE.fullmatch(encoded):
+        raise TranslationError(
+            f'substitution name {name!r} does not encode to a valid '
+            'SQL identifier'
+        )
+    return encoded
+
+
 def _pg_path_segment(seg):
     """
     Escape a segment for a Postgres text[] path literal like '{a,b,c}'.
@@ -93,12 +133,17 @@ class _ParamState:
     def hoist_named(self, name):
         """
         Hoist a named substitution. If a value is supplied later it lands
-        under `name`; until then the name is recorded in `missing`.
+        under the encoded name; until then it's recorded in `missing`.
+
+        Names that already are plain identifiers are used as-is. Dotted
+        paths (`$(user.age)`, `$(users[0].name)`, `$(obj@attr)`) are
+        encoded into plain identifiers using mnemonic tokens for access
+        ops so they can serve as SQL bind-parameter names.
         """
-        name = str(name)
-        if name not in self.params and name not in self.missing:
-            self.missing.append(name)
-        return name
+        encoded = _encode_subst_name(str(name))
+        if encoded not in self.params and encoded not in self.missing:
+            self.missing.append(encoded)
+        return encoded
 
 
 class _Translator:

@@ -326,8 +326,61 @@ def test_mixed_subst_and_literal():
     }
 
 
+def test_value_sub_dotted_name_with_bindings():
+    # Dotted subst name resolves via nested lookup in bindings
+    result = sqlize('age>=$(user.min_age)',
+                    bindings={'user': {'min_age': 30}})
+    assert result == {
+        'select': 'age',
+        'where': 'age >= :_p1',
+        'params': {'_p1': 30},
+    }
+
+
+def test_value_sub_dotted_name_encoded():
+    # Dotted subst name is encoded into a plain SQL identifier.
+    result = sqlize('age>=$(user.min_age)')
+    assert result == {
+        'select': 'age',
+        'where': 'age >= :user_dot_min_age',
+        'params': {},
+        'missing': ['user_dot_min_age'],
+    }
+
+
+def test_value_sub_attr_name_encoded():
+    result = sqlize('age>=$(obj@attr)')
+    assert result['where'] == 'age >= :obj_at_attr'
+    assert result['missing'] == ['obj_at_attr']
+
+
+def test_value_sub_slot_name_encoded():
+    result = sqlize('age>=$(arr[0])')
+    assert result['where'] == 'age >= :arr_br_0'
+    assert result['missing'] == ['arr_br_0']
+
+
+def test_value_sub_mixed_path_name_encoded():
+    result = sqlize('age>=$(users[0].name)')
+    assert result['where'] == 'age >= :users_br_0_dot_name'
+    assert result['missing'] == ['users_br_0_dot_name']
+
+
+def test_value_sub_unencodable_char_errors():
+    # Characters outside the supported op set raise
+    with pytest.raises(TranslationError):
+        sqlize('age>=$(user age)')
+
+
 def test_path_sub_with_binding():
     result = sqlize('data.$(field)', bindings={'field': 'name'})
+    assert result == {'select': "data #>> '{name}'", 'params': {}}
+
+
+def test_path_sub_dotted_name_with_bindings():
+    # Dotted subst name in path position resolves via nested lookup
+    result = sqlize('data.$(cfg.field)',
+                    bindings={'cfg': {'field': 'name'}})
     assert result == {'select': "data #>> '{name}'", 'params': {}}
 
 

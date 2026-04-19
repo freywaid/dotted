@@ -13,6 +13,9 @@ from .base import MatchOp
 from .utypes import ANY
 
 
+_MISSING = object()
+
+
 class Const(MatchOp):
     _match_from = ('Const',)
 
@@ -190,14 +193,26 @@ class Subst(Pattern):
     def resolve(self, bindings, partial=False):
         """
         Resolve this substitution against bindings.
+
+        For string names, honor dotted notation for nested lookup: `$(a.b)`
+        resolves to `bindings['a']['b']` when present. Falls back to a
+        literal `bindings[name]` lookup (preserves the rare case of a key
+        that actually contains a dot). Integer names always use positional
+        lookup via __getitem__.
         """
-        try:
-            val = self._apply_transforms(bindings[self.value])
-            return ResolvedValue(val)
-        except (KeyError, IndexError, TypeError):
-            if partial:
-                return self
-            raise
+        name = self.value
+        val = _MISSING
+        if isinstance(name, str):
+            from .api import get
+            val = get(bindings, name, default=_MISSING)
+        if val is _MISSING:
+            try:
+                val = bindings[name]
+            except (KeyError, IndexError, TypeError):
+                if partial:
+                    return self
+                raise
+        return ResolvedValue(self._apply_transforms(val))
 
     def __repr__(self):
         suffix = self._transform_suffix()
