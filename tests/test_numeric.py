@@ -101,3 +101,99 @@ def test_numeric_extended_negative_slot():
     assert dotted.get(lst, '[-1e1]') is None  # -10, out of range for len 6
     d = {-100000: 'neg_sci'}
     assert dotted.get(d, '[-1e5]') == 'neg_sci'
+
+
+# --- Floats in RHS (value) positions ---
+
+def test_rhs_float_guard():
+    """
+    a=0.9 parses as a float guard, not (a=0, .9).
+    """
+    p = dotted.parse('a=0.9')
+    assert dotted.assemble(p) == 'a=0.9'
+    assert dotted.get({'a': 0.9}, 'a=0.9') == 0.9
+    assert dotted.get({'a': 1}, 'a=0.9') is None
+
+def test_rhs_float_dotted_keycmd_guard():
+    """
+    a.b=7.1 must parse as (a, b=7.1), not (a, b=7, 1).
+    """
+    p = dotted.parse('a.b=7.1')
+    assert dotted.assemble(p) == 'a.b=7.1'
+    assert dotted.get({'a': {'b': 7.1}}, 'a.b=7.1') == 7.1
+
+def test_rhs_float_negative():
+    assert dotted.get({'a': -0.9}, 'a=-0.9') == -0.9
+
+def test_rhs_float_scientific():
+    assert dotted.get({'a': 150.0}, 'a=1.5e2') == 150.0
+
+def test_rhs_float_in_filter():
+    data = [{'x': 0.9}, {'x': 1.1}]
+    assert dotted.get(data, '[x=0.9]') == [{'x': 0.9}]
+
+def test_rhs_float_in_slot_guard():
+    assert dotted.get([0.1, 0.9, 0.5], '[*]=0.9') == (0.9,)
+
+def test_rhs_float_in_container():
+    p = dotted.parse('a=[0.1, 0.2]')
+    assert dotted.assemble(p) == 'a=[0.1, 0.2]'
+    assert dotted.get({'a': [0.1, 0.2]}, 'a=[0.1, 0.2]') == [0.1, 0.2]
+
+def test_rhs_float_in_transform_arg():
+    """
+    Transform arguments accept floats.
+    """
+    assert dotted.get({'a': 0.5}, 'a|round:0') == 0
+
+
+# --- Guarded ops are terminal within op_seq ---
+
+def test_guard_terminal_keycmd():
+    """
+    a=1.b: guard `a=1` cannot have a continuation `.b` after it.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('a=1.b')
+    with pytest.raises(ParseError):
+        dotted.parse('a=1.0b')
+
+def test_guard_terminal_dotted_keycmd():
+    """
+    a.b=7.c: guard `b=7` is already terminal; adding `.c` after must fail.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('a.b=7.c')
+
+def test_guard_terminal_slot():
+    """
+    a[0]=7.b: slot guard `[0]=7` must be terminal.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('a[0]=7.b')
+    with pytest.raises(ParseError):
+        dotted.parse('[0]=7.a')
+
+def test_guard_terminal_recursive_dstar():
+    """
+    **=7.a: recursive wildcard guard must be terminal.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('**=7.a')
+
+def test_guard_terminal_recursive_pattern():
+    """
+    *x=7.a: recursive pattern guard must be terminal.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('*x=7.a')

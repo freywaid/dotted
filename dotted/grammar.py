@@ -147,8 +147,9 @@ _ccomma = pp.Optional(pp.White()).suppress() + comma + pp.Optional(pp.White()).s
 # Forward for recursive container values
 container_value = pp.Forward()
 
-# Scalar atoms usable inside containers (same as value atoms minus containers)
-_val_atoms = bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+# Scalar atoms usable inside containers (same as value atoms minus containers).
+# Uses numeric_slot (ppc.number) so floats parse in value position.
+_val_atoms = bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_slot
 
 # Glob inside containers: ... with optional /regex/ then optional count
 # Regex pattern for glob (unsuppressed slashes handled inline)
@@ -385,7 +386,7 @@ concrete_value <<= (
 value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
-value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_key
+value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_slot
 # ---------------------------------------------------------------------------
 # Concat: part+part for key construction using Python's native + operator.
 # Each part can carry per-part transforms: part|xform+part|xform
@@ -859,9 +860,11 @@ rec_dstar = _dstar_body().set_parse_action(
 rec_pat = _pat_body().set_parse_action(
     lambda t: _make_recursive(t))
 
-recursive_op = (
-    _rec_dstar_guarded_all | _rec_pat_guarded_all |
+recursive_op_nonguarded = (
     rec_dstar_first | rec_dstar | rec_pat_first | rec_pat)
+recursive_op_guarded = (
+    _rec_dstar_guarded_all | _rec_pat_guarded_all)
+recursive_op = recursive_op_guarded | recursive_op_nonguarded
 
 empty = pp.Empty().set_parse_action(access.Empty)
 
@@ -877,15 +880,23 @@ _dot_keycmd = (dot + keycmd).set_parse_action(lambda t: t[0])
 # op_seq_item uses _nop_wrap (defined later); Forward for circular ref
 op_seq_item = pp.Forward()     # first item: allows bare (a,b)
 _op_seq_cont = pp.Forward()    # continuation: requires explicit ops
-op_seq = pp.Group(op_seq_item + ZM(_op_seq_cont))
+_op_seq_guarded = pp.Forward() # guarded terminator (resolved below)
+# op_seq: guarded op is always terminal — either the sole op (alt 1), or
+# optionally trailing a non-guarded path (alt 2).
+op_seq = pp.Group(
+    _op_seq_guarded
+    | (op_seq_item + ZM(_op_seq_cont) + Opt(_op_seq_guarded))
+)
 
 # Continuation items (absorbed from former multi grammar):
 # .~ and ~. with grouped expressions — prefix shorthand requires bare keys inside
 _dot_nop_grouped = ((dot + tilde) | (tilde + dot)) + (_inner_grouped_bare_first | _inner_grouped_bare)
 _dot_nop_grouped = _dot_nop_grouped.set_parse_action(lambda t: wrappers.NopWrap(t[-1]))
 _dot_plain_grouped = (dot + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(lambda t: t[0])
-# .recursive
-_dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
+# .recursive (split into guarded / non-guarded)
+_dot_recursive_nonguarded = (dot + recursive_op_nonguarded).set_parse_action(lambda t: t[0])
+_dot_recursive_guarded = (dot + recursive_op_guarded).set_parse_action(lambda t: t[0])
+_dot_recursive = _dot_recursive_guarded | _dot_recursive_nonguarded
 # @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
 _at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
     lambda t: groups.as_attrs_opgroup(t[0])
@@ -916,28 +927,63 @@ _explicit_nop_inner = (
 )
 _explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
-# Resolve forward: op_seq_item is the atom of op_seq, used in the precedence tower
-# Continuation items: everything that can appear after the first item in an op_seq.
-# Bare (a,b) is NOT allowed here — only explicit-op groups like (.a,.b).
+# Guarded variants — terminal within op_seq. After a `=value`, no more ops
+# may follow (guards have no right-side delimiter, so continuations are
+# ambiguous/meaningless — `a=1.b` is not a legal path).
+_op_seq_guarded << (
+    _keycmd_guarded_all |
+    _dot_keycmd_guarded_nop | _dot_keycmd_guarded_plain |
+    _slotcmd_guarded_all |
+    recursive_op_guarded |
+    _dot_recursive_guarded
+)
+
+# Lookahead: a non-guarded continuation must NOT be followed by a guarded
+# suffix (`|transform* + pred_op`). If it is, the whole thing belongs to
+# the trailing `_op_seq_guarded` terminator, not to this continuation.
+# A bare `|transform` (without pred_op) is fine — that's a template-level
+# transform applied after the path resolves.
+_guard_la = pp.NotAny(ZM(pipe + transform) + _pred_op_re)
+
+# Continuation items for the ZM middle of op_seq — guarded variants excluded.
+# Items that could be the LHS of a guard get a `_guard_la` lookahead so
+# they don't greedily eat what belongs to the trailing guarded terminator.
 _op_seq_cont_items = (
     _nop_wrap |
     _inner_grouped_explicit_first | _inner_grouped_explicit |
-    recursive_op |
-    _keycmd_guarded_all | keycmd |
-    _dot_keycmd_guarded_nop | _dot_keycmd_guarded_plain |
-    _dot_recursive |
+    (recursive_op_nonguarded + _guard_la) |
+    (keycmd + _guard_la) |
+    _dot_recursive_nonguarded |
+    ((_dot_keycmd_nop | _dot_keycmd) + _guard_la) |
+    _dot_nop_grouped | _dot_plain_grouped |
+    _at_nop_grouped | _at_plain_grouped |
+    attrcmd |
+    slotgroup_first | slotgroup |
+    (slotcmd + _guard_la) |
+    slotspecial | slicefilter | slicecmd
+)
+_op_seq_cont << _op_seq_cont_items
+
+# First-item items — same set but WITHOUT the lookahead: the first position
+# doesn't need it because alt 1 (_op_seq_guarded) handles sole-guard cases
+# like `first=7` before we fall into this branch.
+_op_seq_first_items = (
+    _nop_wrap |
+    _inner_grouped_explicit_first | _inner_grouped_explicit |
+    recursive_op_nonguarded |
+    keycmd |
+    _dot_recursive_nonguarded |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
-    _slotcmd_guarded_all | slotcmd |
+    slotcmd |
     slotspecial | slicefilter | slicecmd
 )
-_op_seq_cont << _op_seq_cont_items
 # First item also allows bare grouped expressions — (a,b) with bare keys.
 # This is valid at the start of a path (top-level inference).
-op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_cont_items)
+op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_first_items)
 
 # Precedence tower (atoms are op_seqs)
 inner_atom = op_seq
