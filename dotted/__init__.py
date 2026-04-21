@@ -56,7 +56,8 @@ For full documentation including all options and flags:
     or see README.md
 """
 from .api import \
-    parse, is_pattern, is_template, is_inverted, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
+    parse, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
+    is_inverted, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -82,7 +83,10 @@ __all__ = [
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility
-    'parse', 'assemble', 'assemble_multi', 'quote', 'is_pattern', 'is_template', 'is_inverted', 'mutable',
+    'parse', 'assemble', 'assemble_multi', 'quote',
+    'is_pattern', 'is_template', 'is_reference',
+    'is_indeterminate', 'is_simple',
+    'is_inverted', 'mutable',
     # SQL
     'sqlize', 'TranslationError',
     # Constants

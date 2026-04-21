@@ -216,6 +216,20 @@ class ValueGuard(Wrap):
                 return True
         return False
 
+    def is_reference(self):
+        """
+        True if the inner op, the guard value, or any transform contains
+        an internal reference.
+        """
+        if self.inner.is_reference():
+            return True
+        if hasattr(self.guard, 'is_reference') and self.guard.is_reference():
+            return True
+        for t in self.transforms:
+            if hasattr(t, 'is_reference') and t.is_reference():
+                return True
+        return False
+
     def is_recursive(self):
         return self.inner.is_recursive()
 
@@ -442,6 +456,17 @@ class FilterWrap(Wrap):
             return True
         return any(
             hasattr(f, 'is_template') and f.is_template()
+            for f in self.filters)
+
+    def is_reference(self):
+        """
+        True if the inner op or any attached filter contains an internal
+        reference.
+        """
+        if self.inner.is_reference():
+            return True
+        return any(
+            hasattr(f, 'is_reference') and f.is_reference()
             for f in self.filters)
 
     def default(self):

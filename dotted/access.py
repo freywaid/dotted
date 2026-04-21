@@ -870,6 +870,14 @@ class SliceFilter(BaseOp):
             hasattr(f, 'is_template') and f.is_template()
             for f in self.filters)
 
+    def is_reference(self):
+        """
+        True if any attached filter contains an internal reference.
+        """
+        return any(
+            hasattr(f, 'is_reference') and f.is_reference()
+            for f in self.filters)
+
     def is_empty(self, node):
         return not node
 

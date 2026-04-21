@@ -42,6 +42,16 @@ class OpGroup(base.TraversalOp):
                     return True
         return False
 
+    def is_reference(self):
+        """
+        True if any branch contains an internal reference.
+        """
+        for branch in base.branches_only(self.branches):
+            for op in branch:
+                if hasattr(op, 'is_reference') and op.is_reference():
+                    return True
+        return False
+
     def default(self):
         """
         Derive default from the first branch's first op, so auto-creation works

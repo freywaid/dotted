@@ -188,6 +188,94 @@ def is_template(key):
     return _is_template(parse(key))
 
 
+@functools.lru_cache(CACHE_SIZE)
+def _is_reference(ops):
+    if not ops:
+        return False
+    if ops[0].is_reference():
+        return True
+    return _is_reference(ops[1:])
+
+
+def is_reference(key):
+    """
+    True if dotted path contains internal references ($$(...)).
+    Walks into wraps, filters, and group branches.
+
+    >>> is_reference('a.$$(b)')
+    True
+    >>> is_reference('a.b')
+    False
+    >>> is_reference('a.$(x)')
+    False
+    """
+    if isinstance(key, results.Dotted):
+        return _is_reference(key)
+    return _is_reference(parse(key))
+
+
+def is_indeterminate(key):
+    """
+    True if the path contains substitutions or references — anything
+    whose access target isn't pinned down by the source alone and
+    requires bindings or data to resolve. Patterns are not indeterminate:
+    they describe a set inherent to the query.
+
+    >>> is_indeterminate('a.$(x)')
+    True
+    >>> is_indeterminate('a.$$(b)')
+    True
+    >>> is_indeterminate('a.b')
+    False
+    >>> is_indeterminate('a.*.b')
+    False
+    """
+    parsed = key if isinstance(key, results.Dotted) else parse(key)
+    return _is_template(parsed) or _is_reference(parsed)
+
+
+@functools.lru_cache(CACHE_SIZE)
+def _is_simple(ops):
+    for op in ops:
+        if not isinstance(op, (access.Key, access.Attr, access.Slot)):
+            return False
+        if not isinstance(op.op, matchers.Const):
+            return False
+    return True
+
+
+def is_simple(key):
+    """
+    True if the path is a plain chain of access ops (Key, Attr, Slot)
+    with literal matchers — no patterns, substitutions, references,
+    guards, transforms, filters, groups, or other decorations.
+
+    This is the strictest classification: paths that spell out one
+    specific access target character-for-character.
+
+    >>> is_simple('a.b.c')
+    True
+    >>> is_simple('a[0].b')
+    True
+    >>> is_simple('a@attr')
+    True
+    >>> is_simple('a.*.b')
+    False
+    >>> is_simple('a=30')
+    False
+    >>> is_simple('a|int')
+    False
+    >>> is_simple('a.$(x)')
+    False
+    >>> is_simple('a.$$(b)')
+    False
+    """
+    parsed = key if isinstance(key, results.Dotted) else parse(key)
+    if parsed.transforms:
+        return False
+    return _is_simple(parsed)
+
+
 def is_inverted(key):
     """
     True if an inverted style pattern

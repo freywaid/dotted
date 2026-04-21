@@ -179,6 +179,12 @@ class TraversalOp(Op):
         """
         return False
 
+    def is_reference(self):
+        """
+        True if this op contains an internal reference.
+        """
+        return False
+
 
 class MatchOp(Op):
     """

@@ -13,6 +13,13 @@ def _any_template(items):
     return any(hasattr(x, 'is_template') and x.is_template() for x in items)
 
 
+def _any_reference(items):
+    """
+    True if any item in an iterable has is_reference() returning True.
+    """
+    return any(hasattr(x, 'is_reference') and x.is_reference() for x in items)
+
+
 class FilterOp(base.MatchOp):
     def is_pattern(self):
         return False
@@ -62,6 +69,12 @@ class FilterKey(base.MatchOp):
         True if any part of the filter key contains a substitution reference.
         """
         return _any_template(self.parts)
+
+    def is_reference(self):
+        """
+        True if any part of the filter key contains an internal reference.
+        """
+        return _any_reference(self.parts)
 
     def get_values(self, node):
         """
@@ -210,6 +223,17 @@ class FilterKeyValue(FilterOp):
         if hasattr(self.val, 'is_template') and self.val.is_template():
             return True
         return _any_template(self.transforms)
+
+    def is_reference(self):
+        """
+        True if the key, value, or any transform contains an internal
+        reference.
+        """
+        if hasattr(self.key, 'is_reference') and self.key.is_reference():
+            return True
+        if hasattr(self.val, 'is_reference') and self.val.is_reference():
+            return True
+        return _any_reference(self.transforms)
 
     def _eq_match(self, node):
         """
@@ -379,6 +403,11 @@ class FilterGroup(FilterOp):
                 and hasattr(self.inner, 'is_template')
                 and self.inner.is_template())
 
+    def is_reference(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_reference')
+                and self.inner.is_reference())
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in inner filter.
@@ -434,6 +463,9 @@ class FilterAnd(FilterOp):
     def is_template(self):
         return _any_template(self.filters)
 
+    def is_reference(self):
+        return _any_reference(self.filters)
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in each filter.
@@ -476,6 +508,9 @@ class FilterOr(FilterOp):
 
     def is_template(self):
         return _any_template(self.filters)
+
+    def is_reference(self):
+        return _any_reference(self.filters)
 
     def resolve(self, bindings, partial=False):
         """
@@ -526,6 +561,11 @@ class FilterKeyValueFirst(FilterOp):
         return (self.inner is not None
                 and hasattr(self.inner, 'is_template')
                 and self.inner.is_template())
+
+    def is_reference(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_reference')
+                and self.inner.is_reference())
 
     def resolve(self, bindings, partial=False):
         """
@@ -584,6 +624,11 @@ class FilterNot(FilterOp):
         return (self.inner is not None
                 and hasattr(self.inner, 'is_template')
                 and self.inner.is_template())
+
+    def is_reference(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_reference')
+                and self.inner.is_reference())
 
     def resolve(self, bindings, partial=False):
         """

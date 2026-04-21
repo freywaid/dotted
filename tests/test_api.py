@@ -65,6 +65,115 @@ def test_is_inverted_false():
     assert dotted.is_inverted('*') is False
 
 
+# ---- is_reference ----
+
+def test_is_reference_top_level():
+    assert dotted.is_reference('a.$$(b)') is True
+    assert dotted.is_reference('$$(x.y)') is True
+
+
+def test_is_reference_in_guard():
+    # Ref in guard position (previously missed)
+    assert dotted.is_reference('a=$$(b)') is True
+    assert dotted.is_reference('a>=$$(b)') is True
+
+
+def test_is_reference_in_filter():
+    assert dotted.is_reference('a[*&x=$$(b)]') is True
+    assert dotted.is_reference('a[$$(k)=1]') is True
+    assert dotted.is_reference('a[!x=$$(b)]') is True
+
+
+def test_is_reference_in_group():
+    assert dotted.is_reference('(a=$$(b) & c=1)') is True
+
+
+def test_is_reference_false_for_plain():
+    assert dotted.is_reference('a.b') is False
+    assert dotted.is_reference('a.*.b') is False
+
+
+def test_is_reference_false_for_template():
+    # Substitutions are not references
+    assert dotted.is_reference('a.$(x)') is False
+    assert dotted.is_reference('a=$(x)') is False
+
+
+# ---- is_indeterminate ----
+
+def test_is_indeterminate_templates():
+    assert dotted.is_indeterminate('a.$(x)') is True
+    assert dotted.is_indeterminate('a=$(x)') is True
+
+
+def test_is_indeterminate_references():
+    assert dotted.is_indeterminate('a.$$(b)') is True
+    assert dotted.is_indeterminate('a=$$(b)') is True
+
+
+def test_is_indeterminate_false_for_plain():
+    assert dotted.is_indeterminate('a.b.c') is False
+    assert dotted.is_indeterminate('a[0]') is False
+    assert dotted.is_indeterminate('a=30') is False
+
+
+def test_is_indeterminate_false_for_patterns():
+    # Patterns are not indeterminate — they describe a set inherent to
+    # the query, not a placeholder awaiting info.
+    assert dotted.is_indeterminate('a.*.b') is False
+    assert dotted.is_indeterminate('a.**') is False
+
+
+# ---- is_simple ----
+
+def test_is_simple_true_for_plain_paths():
+    assert dotted.is_simple('a') is True
+    assert dotted.is_simple('a.b.c') is True
+    assert dotted.is_simple('a[0].b') is True
+    assert dotted.is_simple('a@attr') is True
+    assert dotted.is_simple('a.b[0].c') is True
+
+
+def test_is_simple_false_for_patterns():
+    assert dotted.is_simple('a.*.b') is False
+    assert dotted.is_simple('a[*]') is False
+    assert dotted.is_simple('a.**') is False
+    assert dotted.is_simple('a=/re/') is False
+
+
+def test_is_simple_false_for_templates():
+    assert dotted.is_simple('a.$(x)') is False
+    assert dotted.is_simple('a.$0') is False
+
+
+def test_is_simple_false_for_references():
+    assert dotted.is_simple('a.$$(b)') is False
+
+
+def test_is_simple_false_for_guards():
+    assert dotted.is_simple('a=30') is False
+    assert dotted.is_simple('a.b=1') is False
+
+
+def test_is_simple_false_for_transforms():
+    assert dotted.is_simple('a|int') is False
+    assert dotted.is_simple('a.b|str') is False
+
+
+def test_is_simple_false_for_filters():
+    assert dotted.is_simple('a[*&x=1]') is False
+    assert dotted.is_simple('a[x=1]') is False
+
+
+def test_is_simple_false_for_groups():
+    assert dotted.is_simple('(a, b)') is False
+    assert dotted.is_simple('a.(b, c)') is False
+
+
+def test_is_simple_false_for_inverted():
+    assert dotted.is_simple('!a') is False
+
+
 # build / build_multi
 
 def test_build_simple():
