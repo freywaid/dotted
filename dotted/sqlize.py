@@ -1,25 +1,26 @@
 """
 Translate a dotted path into SQL clause components.
 
-Returns a dict with keys select, where, from, params, unbound. Only keys that
-apply to the given path are included. Callers stitch the fragments into a
-full statement, e.g.:
+`sqlize(path)` returns a `Resolver` with format-string SQL fragments
+(`.select`, `.where`, `.from_`) and the binding recipe. Fragments are
+`SQLFragment` objects that concatenate naturally via `+`. Call
+`Resolver.build(sql, paramstyle=..., **bindings)` to render into final
+driver-ready SQL plus a params dict or args list.
 
-    parts = sqlize("data.user.age >= 30")
-    sql = f"SELECT {parts['select']} FROM t WHERE {parts['where']}"
+    r = sqlize("data.user.age >= $(min_age)")
+    sql, args = Resolver.build(r.where, paramstyle='dollar-numeric',
+                               min_age=30)
 
-First segment of the path is the SQL column. Further segments are JSON
-navigation inside it.
-
-Placeholders are emitted in SQLAlchemy named style (`:name`). Literals on the
-RHS of guards are hoisted into `params` under generated names (`_p1`, `_p2`,
-…). Unresolved substitutions appear in `unbound` as a dict mapping
-`bind_param_name → original_name`; callers fill the params dict by the bind
-name before executing.
+ParamStyle is decided at build time, not at sqlize time. Fragments
+carry `{name}` placeholder markers; `build` substitutes them with
+`:name` (for `paramstyle='named'`) or `$N` positional (for
+`paramstyle='dollar-numeric'`).
 """
 import decimal
+import enum
 import hashlib
 import re
+import string as _string
 
 from . import access
 from . import filters as _filters
@@ -36,6 +37,33 @@ class TranslationError(Exception):
     Raised when a dotted path cannot be translated to SQL.
     """
     pass
+
+
+# Bind-parameter markers in SQL fragments use Python format-string
+# syntax: `{name}` is a placeholder, `{{` / `}}` are literal braces.
+# `str.format()` does the substitution at build time.
+
+_FORMATTER = _string.Formatter()
+
+
+def _marker(name):
+    """
+    Render a bind-name marker for embedding in an SQL fragment's text.
+    """
+    return '{' + name + '}'
+
+
+def _escape_braces(s):
+    """
+    Escape literal `{` and `}` in a string for inclusion in an SQL
+    fragment's text. Needed wherever emitted SQL contains Postgres
+    constructs like JSONB path arrays (`'{a,b,c}'`) that would
+    otherwise be mistaken for format placeholders.
+    """
+    return s.replace('{', '{{').replace('}', '}}')
+
+
+_MISSING = object()   # sentinel for "value not yet supplied"
 
 
 _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
@@ -86,9 +114,11 @@ def _pg_path_segment(seg):
 
 def _pg_path_array(segments):
     """
-    Render literal segments as a Postgres text[] path literal.
+    Render literal segments as a Postgres text[] path literal. Braces
+    are doubled so the result is safe to embed in a format-string
+    SQL fragment (Python format literal escaping: `{{` → `{`).
     """
-    return "'{" + ",".join(_pg_path_segment(s) for s in segments) + "}'"
+    return "'{{" + ",".join(_pg_path_segment(s) for s in segments) + "}}'"
 
 
 def _pg_string_literal(s):
@@ -160,44 +190,286 @@ def _op_is_pattern_like(op):
     return False
 
 
+class ParamStyle(enum.StrEnum):
+    """
+    SQL placeholder styles supported by `Resolver.build`. Values follow
+    PEP 249 naming where applicable; `dollar-numeric` covers Postgres's
+    native `$N` placeholders (used by asyncpg and similar drivers).
+
+    `StrEnum` — members compare equal to their string values, so callers
+    can pass either `ParamStyle.named` or `'named'`.
+    """
+    named = 'named'                    # :name     (SQLAlchemy, sqlite3, etc.)
+    dollar_numeric = 'dollar-numeric'  # $1, $2    (asyncpg, native PG)
+
+
+_PARAMSTYLES = tuple(ps.value for ps in ParamStyle)
+
+
+class SQLFragment:
+    """
+    A format-string SQL fragment with placeholder markers and their
+    metadata.
+
+    - `text` is a string with `{name}` markers where a bind value
+      goes.
+    - `params` maps marker name → pre-hoisted value (literals resolved
+      at sqlize time, including bindings supplied then).
+    - `unbound` maps marker name → original substitution name (values
+      still to be provided at build time).
+
+    Fragments compose via `+` / `__radd__`, merging metadata:
+
+        combined = "SELECT " + r.select + " FROM t WHERE " + r.where
+
+    `str(sql)` returns the marker-form text — inspectable but not
+    directly executable. Use `Resolver.build(sql, ...)` to render into
+    driver-ready SQL.
+    """
+
+    __slots__ = ('text', 'params', 'unbound')
+
+    def __init__(self, text='', params=None, unbound=None):
+        self.text = text
+        self.params = dict(params or {})
+        self.unbound = dict(unbound or {})
+
+    def __str__(self):
+        return self.text
+
+    def __repr__(self):
+        return f'SQLFragment({self.text!r})'
+
+    def __eq__(self, other):
+        if isinstance(other, SQLFragment):
+            return (self.text == other.text
+                    and self.params == other.params
+                    and self.unbound == other.unbound)
+        return NotImplemented
+
+    def __hash__(self):
+        return hash((self.text,
+                     tuple(sorted(self.params.items())),
+                     tuple(sorted(self.unbound.items()))))
+
+    def __bool__(self):
+        return bool(self.text)
+
+    def __add__(self, other):
+        if isinstance(other, SQLFragment):
+            return SQLFragment(self.text + other.text,
+                       {**self.params, **other.params},
+                       {**self.unbound, **other.unbound})
+        if isinstance(other, str):
+            return SQLFragment(self.text + other, self.params, self.unbound)
+        return NotImplemented
+
+    def __radd__(self, other):
+        if isinstance(other, str):
+            return SQLFragment(other + self.text, self.params, self.unbound)
+        return NotImplemented
+
+    def markers(self):
+        """
+        Yield marker names in occurrence order (duplicates included).
+        """
+        return [name for _, name, _, _ in _FORMATTER.parse(self.text)
+                if name is not None]
+
+    def substitute(self, replacer):
+        """
+        Return self.text with every `{marker}` replaced by the return
+        value of `replacer(marker_name)`. Text-level operation: the
+        caller decides what placeholder form to emit (`:name`, `$N`, or
+        anything else) and is responsible for tracking per-marker values
+        externally. Literal braces in the fragment (doubled as `{{`/
+        `}}`) are unescaped to single braces in the output, as per
+        Python `str.format` rules.
+
+        `replacer(name)` is called at most once per unique marker; the
+        result is reused for subsequent occurrences.
+        """
+        mapping = {}
+        for _, name, _, _ in _FORMATTER.parse(self.text):
+            if name is not None and name not in mapping:
+                mapping[name] = replacer(name)
+        return self.text.format(**mapping)
+
+
+class Resolver:
+    """
+    Result of `sqlize(...)`. Carries paramstyle-neutral SQL fragments as
+    `SQLFragment` objects plus the union of their unbound bindings.
+
+    Attributes
+    ----------
+    select : SQL | None
+        Extraction expression (e.g. `data #>> '{user,name}'`).
+    where : SQL | None
+        Predicate.
+    from_ : SQL | None
+        LATERAL / join fragment (future — None in v1).
+    unbound : dict
+        Union of all fragments' unbound mappings: bind name → original
+        substitution name. Convenient for listing required bindings
+        before calling `build`.
+
+    Call `Resolver.build(sql, paramstyle=..., **bindings)` with any
+    `SQLFragment` (usually composed from this Resolver's fragments) to
+    render final SQL.
+    """
+
+    __slots__ = ('select', 'where', 'from_', 'unbound')
+
+    def __init__(self, select=None, where=None, from_=None, unbound=None):
+        self.select = select
+        self.where = where
+        self.from_ = from_
+        self.unbound = dict(unbound or {})
+
+    def __repr__(self):
+        bits = []
+        for attr in ('select', 'where', 'from_'):
+            v = getattr(self, attr)
+            if v is not None:
+                bits.append(f'{attr}={v.text!r}')
+        if self.unbound:
+            bits.append(f'unbound={list(self.unbound.values())}')
+        return f'Resolver({", ".join(bits)})'
+
+    @classmethod
+    def build(cls, sql, paramstyle='named', **bindings):
+        """
+        Render a composed `SQLFragment` into driver-ready SQL text plus
+        a params structure.
+
+        Returns `(text, params_or_args)`:
+          - `paramstyle='named'` → `(sql_text_with_colon_names, dict)`
+          - `paramstyle='dollar-numeric'` → `(sql_text_with_$N, list)`
+
+        Raises `TranslationError` on:
+          - unsupported paramstyle
+          - unknown binding (kwarg not corresponding to any unbound
+            substitution in the fragment)
+          - missing binding for an unbound marker present in the text
+        """
+        if not isinstance(sql, SQLFragment):
+            raise TranslationError(
+                f'build requires an SQLFragment, got {type(sql).__name__}'
+            )
+        if paramstyle not in _PARAMSTYLES:
+            raise TranslationError(
+                f'unsupported paramstyle: {paramstyle!r}'
+            )
+        # Validate bindings: every kwarg must correspond to an unbound
+        # orig name in this fragment.
+        expected_origs = set(sql.unbound.values())
+        extra = set(bindings) - expected_origs
+        if extra:
+            raise TranslationError(
+                f'unknown binding(s) for this fragment: {sorted(extra)}'
+            )
+
+        # Build a per-paramstyle replacer that both collects output
+        # params/args and returns the placeholder text for each marker.
+        missing = []
+        if paramstyle == 'named':
+            out_params = {}
+
+            def replacer(marker):
+                value = cls._lookup_value(sql, marker, bindings, missing)
+                if value is _MISSING:
+                    return ''   # errored below
+                out_params[marker] = value
+                return f':{marker}'
+        else:  # dollar-numeric
+            out_args = []
+            pos_by_marker = {}
+
+            def replacer(marker):
+                if marker in pos_by_marker:
+                    return pos_by_marker[marker]
+                value = cls._lookup_value(sql, marker, bindings, missing)
+                if value is _MISSING:
+                    return ''
+                out_args.append(value)
+                ph = f'${len(out_args)}'
+                pos_by_marker[marker] = ph
+                return ph
+
+        final = sql.substitute(replacer)
+
+        if missing:
+            raise TranslationError(
+                f'missing binding(s) for substitution(s): '
+                f'{sorted(set(missing))}'
+            )
+        if paramstyle == 'named':
+            return final, out_params
+        return final, out_args
+
+    @staticmethod
+    def _lookup_value(sql, marker, bindings, missing):
+        """
+        Resolve a marker to its value using the fragment's own
+        metadata, supplemented by caller-provided bindings. Records
+        marker-side misses in `missing` and returns `_MISSING` so the
+        caller can continue scanning (build raises after the full pass).
+        """
+        if marker in sql.params:
+            return sql.params[marker]
+        if marker in sql.unbound:
+            orig = sql.unbound[marker]
+            if orig not in bindings:
+                missing.append(orig)
+                return _MISSING
+            return bindings[orig]
+        raise TranslationError(
+            f'unknown marker {{{marker}}} in SQL fragment'
+        )
+
+
 class _ParamState:
     """
     Shared state for hoisted params across a translate call and its
-    sub-translators. Generated literal names use `_p{N}`; deferred
-    substitutions use their name when it's already a valid identifier,
-    or a `_s_<hex>` hash otherwise.
+    sub-translators. ParamStyle-neutral — fragments emit `{name}`
+    markers; final paramstyle is chosen at build time.
+
+    Fields:
+      params  — marker name → pre-hoisted value (literals + resolved
+                substitutions)
+      unbound — marker name → original substitution name (to be bound
+                later)
     """
 
     def __init__(self):
-        self.params = {}   # bind name → resolved value
-        self.unbound = {}  # bind name → original subst name
+        self.params = {}    # marker name → resolved value
+        self.unbound = {}   # marker name → original subst name
         self._gen_counter = 0
-        self._by_orig = {}  # original subst name → bind name (dedup)
+        self._by_orig = {}  # original subst name → marker name (dedup)
 
     def hoist_literal(self, value):
         """
-        Hoist a concrete literal into a generated-name slot.
+        Hoist a concrete literal. Returns the marker form `{name}`
+        ready to embed in SQL text.
         """
         self._gen_counter += 1
         name = f'{_GEN_PREFIX}{self._gen_counter}'
         self.params[name] = value
-        return name
+        return _marker(name)
 
     def hoist_named(self, name):
         """
-        Hoist a named substitution. If the name is already a valid SQL
-        identifier it's used directly as the bind parameter; otherwise a
-        deterministic `_s_<hash>` name is generated. The bind parameter
-        name keys the mapping in `unbound`, with the original source
-        name as the value. Repeated uses share one entry.
+        Hoist a named substitution. Returns the marker form `{name}`.
+        Repeated uses of the same original name share one marker.
         """
         name = str(name)
         if name in self._by_orig:
-            return self._by_orig[name]
-        param = _param_name_for_subst(name)
-        self._by_orig[name] = param
-        self.unbound[param] = name
-        return param
+            return _marker(self._by_orig[name])
+        marker = _param_name_for_subst(name)
+        self._by_orig[name] = marker
+        self.unbound[marker] = name
+        return _marker(marker)
 
 
 class _Translator:
@@ -209,17 +481,11 @@ class _Translator:
     def __init__(self, state=None):
         self.state = state if state is not None else _ParamState()
 
-    def _ph(self, name):
-        """
-        Render a named placeholder in the current format (SQLAlchemy `:name`).
-        """
-        return f':{name}'
-
     def _hoist_value(self, value):
-        return self._ph(self.state.hoist_literal(value))
+        return self.state.hoist_literal(value)
 
     def _hoist_subst(self, name):
-        return self._ph(self.state.hoist_named(name))
+        return self.state.hoist_named(name)
 
     def translate(self, ops):
         if not ops:
@@ -248,11 +514,13 @@ class _Translator:
         return self._result(**result)
 
     def _result(self, **kw):
-        d = {k: v for k, v in kw.items() if v is not None}
-        d['params'] = dict(self.state.params)
-        if self.state.unbound:
-            d['unbound'] = dict(self.state.unbound)
-        return d
+        """
+        Carry intermediate translation output. Keys are fragment names
+        (`select`, `where`, `from_`), values are marker-form SQL text
+        strings. State (params, unbound) is read from self.state at
+        the top level.
+        """
+        return {k: v for k, v in kw.items() if v is not None}
 
     def _column_name(self, op):
         if not isinstance(op, access.Key):
@@ -491,11 +759,16 @@ class _Translator:
 
     def _jvar_for_placeholder(self, placeholder, jvars):
         """
-        Map a SQL placeholder expression (`:name`) into a JSONPath variable
-        name, registering it in the vars dict. The JSONPath var name is the
-        same as the SQL bind name.
+        Map a SQL placeholder marker (`{name}`) into a JSONPath variable
+        name, registering it in the vars dict. The JSONPath var name
+        mirrors the bind marker name — safe under any paramstyle since
+        marker names are always plain identifiers.
         """
-        name = placeholder[1:] if placeholder.startswith(':') else placeholder
+        if not (placeholder.startswith('{') and placeholder.endswith('}')):
+            raise TranslationError(
+                f'unexpected placeholder form: {placeholder!r}'
+            )
+        name = placeholder[1:-1]
         jvars[name] = placeholder
         return name
 
@@ -834,39 +1107,58 @@ class _Translator:
         return {'select': select, 'where': joined}
 
 
-_SUPPORTED_FORMATS = ('sqlalchemy',)
-
-
-def sqlize(path, *, bindings=None, flavor='postgres', format='sqlalchemy'):
+def sqlize(path, *, bindings=None, flavor='postgres'):
     """
-    Translate a dotted path into SQL clause components.
-
-    Returns a dict with some subset of keys select, where, from, params,
-    unbound.
+    Translate a dotted path into a `Resolver` carrying paramstyle-neutral
+    SQL fragments.
 
     path — dotted path string or pre-parsed Dotted result.
-    bindings — optional mapping/list used to resolve substitutions before
-        translation. Path-position substitutions must be resolved or a
-        TranslationError is raised. Unresolved value-position substitutions
-        appear in 'unbound'.
-    flavor — SQL flavor for JSONB operators; only 'postgres' is implemented.
-    format — placeholder style. Only 'sqlalchemy' (`:name`) is supported in v1.
+    bindings — optional mapping/list used to resolve substitutions at
+        sqlize time. Path-position substitutions must be resolved here
+        or a TranslationError is raised. Unresolved value-position
+        substitutions appear in `unbound`.
+    flavor — SQL flavor for JSONB operators; only `'postgres'` is
+        implemented.
 
-    Literals on the RHS of guards are hoisted into params under generated
-    names (`_p1`, `_p2`, …). Substitutions are hoisted under their own
-    name when it's a valid SQL identifier; otherwise a deterministic
-    `_s_<hash>` bind name is generated. Unresolved substitutions appear
-    in 'unbound' as a dict mapping bind_param_name → original_name so
-    callers can fill params by bind name and recover the source name
-    when needed.
+    Literals on the RHS of guards are hoisted for injection safety.
+    Substitutions that are valid SQL identifiers bind by that name; any
+    other form (dotted, quoted, punctuation) gets a deterministic
+    `_s_<hash>` marker.
 
-    >>> sqlize("status = 'active'")
-    {'select': 'status', 'where': 'status = :_p1', 'params': {'_p1': 'active'}}
+    Use `Resolver.build(sql, paramstyle=..., **bindings)` on any SQL
+    fragment (or composition like `r.select + r.where`) to render final
+    driver-ready SQL.
+
+    >>> r = sqlize("status = 'active'")
+    >>> Resolver.build(r.where)
+    ('status = :_p1', {'_p1': 'active'})
+    >>> Resolver.build(r.where, paramstyle='dollar-numeric')
+    ('status = $1', ['active'])
     """
     if flavor != 'postgres':
         raise TranslationError(f'unsupported flavor: {flavor!r}')
-    if format not in _SUPPORTED_FORMATS:
-        raise TranslationError(f'unsupported format: {format!r}')
     parsed = parse(path, bindings=bindings, partial=True)
     tr = _Translator()
-    return tr.translate(parsed.ops)
+    raw = tr.translate(parsed.ops)
+    # Build SQLFragment objects per fragment sharing the translator state.
+    state = tr.state
+    params = dict(state.params)
+    unbound = dict(state.unbound)
+
+    def _mkfrag(text):
+        if text is None:
+            return None
+        # Limit params/unbound to markers that actually appear in this
+        # fragment's text.
+        used = {name for _, name, _, _ in _FORMATTER.parse(text)
+                if name is not None}
+        f_params = {k: v for k, v in params.items() if k in used}
+        f_unbound = {k: v for k, v in unbound.items() if k in used}
+        return SQLFragment(text, f_params, f_unbound)
+
+    return Resolver(
+        select=_mkfrag(raw.get('select')),
+        where=_mkfrag(raw.get('where')),
+        from_=_mkfrag(raw.get('from')),
+        unbound=unbound,
+    )

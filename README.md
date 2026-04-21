@@ -2763,190 +2763,239 @@ View all registered transforms with `dotted.registry()`.
 <a id="sqlize"></a>
 ## SQL Translation (`sqlize`)
 
-> **Under development.** The API shape, output format, and supported subset
-> of dotted features may still change. Postgres-only, SQLAlchemy-style
-> named placeholders. Pattern paths (`*`, `[*]`, `**`, filter brackets)
-> are supported only as WHERE-side existence checks via
-> `jsonb_path_exists`; pattern paths that yield sets as SELECT (needing
-> `LATERAL jsonb_path_query`) are not supported yet.
+> **Under development.** The API shape and supported subset of dotted
+> features may still change. Postgres-only. Pattern paths (`*`, `[*]`,
+> `**`, filter brackets) are supported only as WHERE-side existence
+> checks via `jsonb_path_exists`; pattern paths that yield sets as
+> SELECT (needing `LATERAL jsonb_path_query`) are not supported yet.
 
-`dotted.sqlize` translates a dotted path into SQL clause components — a
-`select` expression, a `where` predicate, and a `params` dict with hoisted
-values. Literals are hoisted for injection safety; substitutions are
-preserved as named placeholders so callers can late-bind them.
+`dotted.sqlize(path)` translates a dotted path into a `Resolver`
+carrying paramstyle-neutral SQL fragments. `Resolver.build(sql,
+paramstyle=..., **bindings)` renders a fragment (or any composition of
+fragments) into final SQL + a params dict / args list ready for a
+driver.
 
-The first segment of the dotted path is the SQL column. Any further segments
-are JSON navigation inside that column (JSONB). This means scalar columns
-and JSONB columns share one surface:
+The first segment of the dotted path is the SQL column; further
+segments are JSON navigation inside it (JSONB). Scalar columns and
+JSONB columns share one surface:
 
     >>> import dotted
-    >>> dotted.sqlize("status = 'active'")
-    {'select': 'status', 'where': 'status = :_p1', 'params': {'_p1': 'active'}}
+    >>> r = dotted.sqlize("status = 'active'")
+    >>> r.where
+    SQLFragment('status = {_p1}')
+    >>> dotted.Resolver.build(r.where)
+    ('status = :_p1', {'_p1': 'active'})
 
-    >>> dotted.sqlize("data.user.age >= 30")
-    {'select': "data #>> '{user,age}'", 'where': "(data #>> '{user,age}')::numeric >= :_p1", 'params': {'_p1': 30}}
+    >>> r = dotted.sqlize("data.user.age >= 30")
+    >>> dotted.Resolver.build(r.where)
+    ("(data #>> '{user,age}')::numeric >= :_p1", {'_p1': 30})
 
-    >>> dotted.sqlize("data.user.name")   # pure traversal, no predicate
-    {'select': "data #>> '{user,name}'", 'params': {}}
+    >>> r = dotted.sqlize("data.user.name")   # pure traversal, no predicate
+    >>> dotted.Resolver.build(r.select)
+    ("data #>> '{user,name}'", {})
 
 Guards encode the predicate:
 
-    >>> dotted.sqlize("age >= 30")
-    {'select': 'age', 'where': 'age >= :_p1', 'params': {'_p1': 30}}
+    >>> dotted.Resolver.build(dotted.sqlize("age >= 30").where)
+    ('age >= :_p1', {'_p1': 30})
 
-    >>> dotted.sqlize("deleted_at = None")
-    {'select': 'deleted_at', 'where': 'deleted_at IS NULL', 'params': {}}
+    >>> dotted.Resolver.build(dotted.sqlize("deleted_at = None").where)
+    ('deleted_at IS NULL', {})
 
-    >>> dotted.sqlize("name = /^alice/")
-    {'select': 'name', 'where': 'name ~ :_p1', 'params': {'_p1': '^alice'}}
+    >>> dotted.Resolver.build(dotted.sqlize("name = /^alice/").where)
+    ('name ~ :_p1', {'_p1': '^alice'})
 
 Boolean grouping maps directly onto `AND` / `OR` / `NOT`:
 
-    >>> dotted.sqlize('(age >= 18 & status = "active")')
-    {'where': '(age >= :_p1) AND (status = :_p2)', 'params': {'_p1': 18, '_p2': 'active'}}
-
-    >>> dotted.sqlize('data.(user.age >= 30 & status = "active")')['where']
-    "((data #>> '{user,age}')::numeric >= :_p1) AND ((data #>> '{status}') = :_p2)"
+    >>> r = dotted.sqlize('(age >= 18 & status = "active")')
+    >>> dotted.Resolver.build(r.where)
+    ('(age >= :_p1) AND (status = :_p2)', {'_p1': 18, '_p2': 'active'})
 
 Guard transforms become SQL casts (`int`, `float`, `str`, `bool`):
 
-    >>> dotted.sqlize("data.user.age|int >= 30")['where']
-    "(data #>> '{user,age}')::int >= :_p1"
+    >>> r = dotted.sqlize("data.user.age|int >= 30")
+    >>> dotted.Resolver.build(r.where)
+    ("(data #>> '{user,age}')::int >= :_p1", {'_p1': 30})
+
+### SQLFragment and composition
+
+`Resolver.select`, `Resolver.where`, `Resolver.from_` are `SQLFragment`
+objects. The underlying text uses Python format-string syntax with
+`{name}` markers — each marker is resolved to a driver placeholder
+(`:name` or `$N`) at build time. Literal braces in the SQL (e.g.
+JSONB path arrays) are doubled as `{{`…`}}`.
+
+Fragments concatenate naturally via `+` / `__radd__`; metadata merges:
+
+    >>> r = dotted.sqlize("age >= $(min_age)")
+    >>> combined = "WHERE " + r.where
+    >>> dotted.Resolver.build(combined, min_age=30)
+    ('WHERE age >= :min_age', {'min_age': 30})
 
 ### Hoisted params
 
-Every RHS value becomes an entry in the `params` dict, keyed by name. This
-is the mechanism that makes the output safe — user input can't end up as
-SQL text, only as a parameter value.
+Every RHS value is hoisted into a params entry keyed by a generated
+name (`_p1`, `_p2`, …). This keeps values out of the SQL string:
 
-    >>> r = dotted.sqlize(f"name = {repr(user_input)}")   # user input literal
-    >>> r['where']
-    'name = :_p1'
-    >>> r['params']
-    {'_p1': "'; DROP TABLE users;--"}     # stays a value, never parsed as SQL
+    >>> user_input = "'; DROP TABLE users;--"
+    >>> r = dotted.sqlize(f"name = {user_input!r}")
+    >>> str(r.where)
+    'name = {_p1}'
+    >>> dotted.Resolver.build(r.where)
+    ("name = :_p1", {'_p1': "'; DROP TABLE users;--"})
 
-Literal values get generated names (`_p1`, `_p2`, …). Substitutions keep
-their declared names — see below.
+The user input stays a value — never parsed as SQL.
 
 ### Substitutions (late binding)
 
-A substitution is preserved in the SQL output as a named placeholder,
-letting the caller supply the value at execute time rather than sqlize
-time:
+A substitution is preserved as a deferred bind; supply the value at
+build time:
 
     >>> r = dotted.sqlize("age >= $(min_age)")
-    >>> r
-    {'select': 'age', 'where': 'age >= :min_age', 'params': {},
-     'unbound': {'min_age': 'min_age'}}
+    >>> r.where.unbound        # bind_name → original_name
+    {'min_age': 'min_age'}
+    >>> dotted.Resolver.build(r.where, min_age=30)
+    ('age >= :min_age', {'min_age': 30})
 
-`unbound` is a dict keyed by the **SQL bind parameter name** — the name
-that appears in the SQL `:placeholder` and as a key in `params`. Each
-value is the **original substitution name** (what was inside `$(...)`),
-kept as provenance so callers can trace a bind back to its source.
-
-`unbound.keys()` is the list of bind slots the caller needs to fill.
-Most often you just fill `params` by bind name directly:
-
-    >>> r['params']['min_age'] = 30
-    >>> # hand (r['where'], r['params']) to cursor.execute / session.execute / etc.
-
-Non-identifier names (dotted paths, quoted keys, spaces, etc.) hash to a
-deterministic `_s_<hex>` bind name — the bind-side name is different
-from what appeared in source, but the original is preserved in the
-`unbound` value:
+`unbound` is keyed by the **bind marker name** (what ends up as
+`:name` / `$N`); each value is the **original substitution name**
+(what was inside `$(...)`), kept as provenance. Plain identifiers bind
+by that same name; non-identifier names (dotted paths, quoted keys,
+spaces) hash to a deterministic `_s_<hex>` marker:
 
     >>> r = dotted.sqlize('age >= $(user.min_age)')
-    >>> r['where']    # doctest: +ELLIPSIS
-    'age >= :_s_...'
-    >>> list(r['unbound'].values())
+    >>> list(r.where.unbound.values())
     ['user.min_age']
 
-Repeated uses of the same name share one entry automatically:
+Repeated uses of the same name share one entry:
 
-    >>> dotted.sqlize('(age >= $(x) & weight = $(x))')
-    {'where': '(age >= :x) AND (weight = :x)', 'params': {},
-     'unbound': {'x': 'x'}}
+    >>> r = dotted.sqlize('(age >= $(x) & weight = $(x))')
+    >>> dotted.Resolver.build(r.where, x=42)
+    ('(age >= :x) AND (weight = :x)', {'x': 42})
 
-If you pass `bindings=`, substitutions are resolved at sqlize time and hoisted
-like any other literal:
+If you pass `bindings=` at sqlize time, substitutions are resolved
+immediately and hoisted like any other literal — no longer appearing
+in `unbound`:
 
-    >>> dotted.sqlize("age >= $(min_age)", bindings={'min_age': 30})
-    {'select': 'age', 'where': 'age >= :_p1', 'params': {'_p1': 30}}
+    >>> r = dotted.sqlize("age >= $(min_age)", bindings={'min_age': 30})
+    >>> dotted.Resolver.build(r.where)
+    ('age >= :_p1', {'_p1': 30})
 
 ### References
 
-Absolute-root references (`$$(path)`) map to dynamic JSON key lookups —
-Postgres's `->` / `#>` accept runtime-computed keys:
+Absolute-root references (`$$(path)`) map to dynamic JSON key lookups
+— Postgres's `->` / `#>` accept runtime-computed keys:
 
-    >>> dotted.sqlize('data.$$(data.config.field) = "Alice"')
-    {'select': "data ->> (data #>> '{config,field}')", 'where': "(data ->> (data #>> '{config,field}')) = :_p1", 'params': {'_p1': 'Alice'}}
+    >>> r = dotted.sqlize('data.$$(data.config.field) = "Alice"')
+    >>> dotted.Resolver.build(r.where)
+    ("(data ->> (data #>> '{config,field}')) = :_p1", {'_p1': 'Alice'})
 
-Relative references (`^`) and parent references (`^^+`) are not supported
-yet.
+Relative references (`^`) and parent references (`^^+`) are not
+supported yet.
 
 ### Pattern paths
 
-Paths that contain wildcards (`*`, `[*]`), recursive descent (`**`), or
-bracket filters (`[pred]`, `[*&pred]`) translate to a Postgres
-`jsonb_path_exists(…)` WHERE predicate. The dotted path becomes a JSONPath
-expression; guard values embed inline when safely literal (numbers,
-booleans, null) or flow through a `jsonb_build_object` vars argument
-(strings, substitutions).
+Paths that contain wildcards (`*`, `[*]`), recursive descent (`**`),
+or bracket filters (`[pred]`, `[*&pred]`) translate to a Postgres
+`jsonb_path_exists(…)` WHERE predicate. The dotted path becomes a
+JSONPath expression; guard values embed inline when safely literal
+(numbers, booleans, null) or flow through a `jsonb_build_object` vars
+argument (strings, substitutions).
 
-    >>> dotted.sqlize("data.users[*].age >= 30")['where']
-    "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+    >>> r = dotted.sqlize("data.users[*].age >= 30")
+    >>> dotted.Resolver.build(r.where)
+    ("jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')", {})
 
-    >>> dotted.sqlize("data.**.active = True")['where']
-    "jsonb_path_exists(data, '$.**.active ? (@ == true)')"
+    >>> r = dotted.sqlize("data.**.active = True")
+    >>> dotted.Resolver.build(r.where)
+    ("jsonb_path_exists(data, '$.**.active ? (@ == true)')", {})
 
-    >>> dotted.sqlize("data.users[age>=30]")['where']
-    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')"
+    >>> r = dotted.sqlize("data.users[age>=30]")
+    >>> dotted.Resolver.build(r.where)
+    ("jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')", {})
 
-    >>> dotted.sqlize('data.users[*&age>=30].name = "alice"')['where']
-    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30).name ? (@ == :_p1)', jsonb_build_object('_p1', :_p1))"
+    >>> r = dotted.sqlize('data.users[*&age>=30].name = "alice"')
+    >>> sql, params = dotted.Resolver.build(r.where)
+    >>> sql
+    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30).name ? (@ == $_p1)', jsonb_build_object('_p1', :_p1))"
+    >>> params
+    {'_p1': 'alice'}
 
-Pattern predicates compose with scalar ones via dotted's `&` / `,` / `!`:
+Pattern predicates compose with scalar ones via dotted's `&` / `,` /
+`!`:
 
-    >>> dotted.sqlize('(data.users[*].age >= 30 & status = "active")')['where']
+    >>> r = dotted.sqlize('(data.users[*].age >= 30 & status = "active")')
+    >>> sql, params = dotted.Resolver.build(r.where)
+    >>> sql
     "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) AND (status = :_p1)"
 
-`select` is set to the column itself — pattern paths don't have a single
-extractable value. Use the WHERE predicate to filter rows; write your
-own SELECT for the columns you want.
+`select` for a pattern path is set to the column itself — pattern
+paths don't have a single extractable value. Use the WHERE predicate
+to filter rows; write your own SELECT for the columns you want.
 
 Not yet supported:
 - Pattern paths as SELECT (needing `LATERAL jsonb_path_query`)
 - Regex-in-access like `data./prefix_\d+/.field`
 - Pattern refs
 
-### Output keys
+### Paramstyles
 
-Returned dict may contain any subset of:
+`Resolver.build(sql, paramstyle='named', **bindings)` defaults to
+PEP 249 named style (`:name`). For Postgres-native `$N` (what asyncpg
+and other raw PG drivers accept), pass `paramstyle='dollar-numeric'`
+— the output changes to positional:
 
-| Key       | Type        | Meaning                                             |
-|-----------|-------------|-----------------------------------------------------|
-| `select`  | `str`       | Expression yielding the value dotted would return   |
-| `where`   | `str`       | Predicate from guards / filters / boolean groups    |
-| `params`  | `dict`      | Hoisted values keyed by name                        |
-| `unbound` | `dict`      | Deferred substitutions: `{bind_param_name: original_name}` |
+    >>> r = dotted.sqlize('(age >= 18 & status = "active")')
+    >>> dotted.Resolver.build(r.where, paramstyle='dollar-numeric')
+    ('(age >= $1) AND (status = $2)', [18, 'active'])
 
-`select` is omitted when combining predicates across different columns
-(e.g. top-level groups), since there's no single meaningful expression.
-`where` is omitted when the path is pure traversal. Usage pattern:
+    >>> r = dotted.sqlize("age >= $(min_age)")
+    >>> dotted.Resolver.build(r.where, paramstyle='dollar-numeric', min_age=30)
+    ('age >= $1', [30])
 
-    >>> r = dotted.sqlize("data.user.age >= 30")
-    >>> sql = f"SELECT {r['select']} FROM users WHERE {r['where']}"
-    >>> # sql, r['params'] go to your driver
+Under `'dollar-numeric'`, the second element is a list of positional
+args ready for `await conn.execute(sql, *args)` asyncpg style.
+
+A `ParamStyle` `StrEnum` is also available for autocomplete and type
+checking:
+
+    >>> dotted.ParamStyle.named, dotted.ParamStyle.dollar_numeric
+    (<ParamStyle.named: 'named'>, <ParamStyle.dollar_numeric: 'dollar-numeric'>)
+
+### Resolver attributes
+
+| Attribute       | Type                         | Meaning                                                            |
+|-----------------|------------------------------|--------------------------------------------------------------------|
+| `.select`       | `SQLFragment` \| `None`      | Extraction expression (None when path is a predicate-only group)   |
+| `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                               |
+| `.from_`        | `SQLFragment` \| `None`      | LATERAL / join (future — None in v1)                               |
+| `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}` |
+
+A `SQLFragment` carries:
+
+| Attribute   | Type   | Meaning                                                            |
+|-------------|--------|--------------------------------------------------------------------|
+| `.text`     | `str`  | Format-string SQL with `{name}` markers                            |
+| `.params`   | `dict` | Pre-hoisted values: `{marker_name: value}`                         |
+| `.unbound`  | `dict` | Deferred bindings: `{marker_name: original_substitution_name}`     |
 
 ### Keyword arguments
 
-`dotted.sqlize(path, *, bindings=None, flavor='postgres', format='sqlalchemy')`
+`dotted.sqlize(path, *, bindings=None, flavor='postgres')`
 
-- `bindings` — resolve substitutions at sqlize time.
+- `bindings` — resolve substitutions at sqlize time. Path-position
+  substitutions must be resolved here.
 - `flavor` — SQL flavor for JSONB operators; only `'postgres'` is
   implemented.
-- `format` — placeholder style; only `'sqlalchemy'` (`:name`) is supported
-  in v1.
+
+`Resolver.build(sql, paramstyle='named', **bindings)`
+
+- `sql` — a `SQLFragment` (usually `r.where`, `r.select`, or a
+  composition like `r.select + " FROM t WHERE " + r.where`).
+- `paramstyle` — `'named'` or `'dollar-numeric'`, or a `ParamStyle`
+  enum member.
+- `**bindings` — values for substitutions, keyed by original
+  substitution name.
 
 Unsupported features and pattern paths raise `dotted.TranslationError`.
 
