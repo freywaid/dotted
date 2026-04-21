@@ -1,0 +1,5 @@
+# Dependencies for running integration tests against a live Postgres.
+# Installed into the dev venv by the `make venv` target. Not needed to
+# use dotted at runtime.
+
+asyncpg>=0.27

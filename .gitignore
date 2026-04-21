@@ -12,6 +12,7 @@ dist/
 # Testing
 .coverage
 .pytest_cache/
+venv/
 
 # IDE
 .idea/
