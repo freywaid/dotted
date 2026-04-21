@@ -283,6 +283,96 @@ def test_ref_parent_errors():
         sqlize('data.$$(^^field)')
 
 
+# ---------------- pattern paths (jsonb_path_exists) ----------------
+
+def test_pattern_slot_wildcard_guard_numeric():
+    assert sqlize('data.users[*].age >= 30') == {
+        'select': 'data',
+        'where': "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')",
+        'params': {},
+    }
+
+
+def test_pattern_slot_wildcard_guard_boolean():
+    assert sqlize('data.users[*].active = True') == {
+        'select': 'data',
+        'where': "jsonb_path_exists(data, '$.users[*].active ? (@ == true)')",
+        'params': {},
+    }
+
+
+def test_pattern_key_wildcard_guard_string():
+    result = sqlize('data.*.status = "on"')
+    assert result['where'] == (
+        "jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
+        "jsonb_build_object('_p1', :_p1))"
+    )
+    assert result['params'] == {'_p1': 'on'}
+
+
+def test_pattern_recursive_guard():
+    assert sqlize('data.**.flag = True') == {
+        'select': 'data',
+        'where': "jsonb_path_exists(data, '$.**.flag ? (@ == true)')",
+        'params': {},
+    }
+
+
+def test_pattern_slice_filter():
+    # [pred] as terminal expands to [*] ? (pred)
+    assert sqlize('data.users[age>=30]') == {
+        'select': 'data',
+        'where': "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')",
+        'params': {},
+    }
+
+
+def test_pattern_filter_wrap():
+    # [*&pred] behaves the same as [pred] for existence
+    assert sqlize('data.users[*&age>=30]') == {
+        'select': 'data',
+        'where': "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')",
+        'params': {},
+    }
+
+
+def test_pattern_filter_and_trailing_guard():
+    result = sqlize('data.users[*&age>=30].name = "alice"')
+    assert result['where'] == (
+        "jsonb_path_exists(data, "
+        "'$.users[*] ? (@.age >= 30).name ? (@ == $_p1)', "
+        "jsonb_build_object('_p1', :_p1))"
+    )
+    assert result['params'] == {'_p1': 'alice'}
+
+
+def test_pattern_with_substitution():
+    result = sqlize('data.users[*].age >= $(min_age)')
+    assert result['where'] == (
+        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
+        "jsonb_build_object('min_age', :min_age))"
+    )
+    assert result['unbound'] == {'min_age': 'min_age'}
+
+
+def test_pattern_mixed_in_group():
+    # Pattern branch + scalar branch AND-joined
+    result = sqlize('(data.users[*].age >= 30 & status = "active")')
+    assert result['where'] == (
+        "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) "
+        "AND (status = :_p1)"
+    )
+    assert result['params'] == {'_p1': 'active'}
+
+
+def test_pattern_inside_column_group():
+    # data.(p1 & p2) where one branch has a pattern
+    result = sqlize('data.(users[*].age>=30 & flag=True)')
+    assert result['select'] == 'data'
+    assert 'jsonb_path_exists' in result['where']
+    assert 'AND' in result['where']
+
+
 # ---------------- substitutions ----------------
 
 def test_value_sub_with_binding():
@@ -408,14 +498,10 @@ def test_wildcard_first_segment_errors():
         sqlize('*.age=30')
 
 
-def test_wildcard_mid_segment_errors():
+def test_wildcard_first_segment_still_errors():
+    # Pattern in column position has no "all columns" meaning in SQL
     with pytest.raises(TranslationError):
-        sqlize('data.*.age=30')
-
-
-def test_slot_wildcard_errors():
-    with pytest.raises(TranslationError):
-        sqlize('data.users[*].age=30')
+        sqlize('*.age=30')
 
 
 def test_unsupported_flavor_errors():

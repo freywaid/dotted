@@ -2764,9 +2764,11 @@ View all registered transforms with `dotted.registry()`.
 ## SQL Translation (`sqlize`)
 
 > **Under development.** The API shape, output format, and supported subset
-> of dotted features may still change. Postgres-only, SQLAlchemy-style named
-> placeholders, scalar paths plus absolute-root references. Patterns (`*`,
-> `**`, `[*]`, filter-on-array) are not supported yet.
+> of dotted features may still change. Postgres-only, SQLAlchemy-style
+> named placeholders. Pattern paths (`*`, `[*]`, `**`, filter brackets)
+> are supported only as WHERE-side existence checks via
+> `jsonb_path_exists`; pattern paths that yield sets as SELECT (needing
+> `LATERAL jsonb_path_query`) are not supported yet.
 
 `dotted.sqlize` translates a dotted path into SQL clause components — a
 `select` expression, a `where` predicate, and a `params` dict with hoisted
@@ -2881,6 +2883,41 @@ Postgres's `->` / `#>` accept runtime-computed keys:
 
 Relative references (`^`) and parent references (`^^+`) are not supported
 yet.
+
+### Pattern paths
+
+Paths that contain wildcards (`*`, `[*]`), recursive descent (`**`), or
+bracket filters (`[pred]`, `[*&pred]`) translate to a Postgres
+`jsonb_path_exists(…)` WHERE predicate. The dotted path becomes a JSONPath
+expression; guard values embed inline when safely literal (numbers,
+booleans, null) or flow through a `jsonb_build_object` vars argument
+(strings, substitutions).
+
+    >>> dotted.sqlize("data.users[*].age >= 30")['where']
+    "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+
+    >>> dotted.sqlize("data.**.active = True")['where']
+    "jsonb_path_exists(data, '$.**.active ? (@ == true)')"
+
+    >>> dotted.sqlize("data.users[age>=30]")['where']
+    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')"
+
+    >>> dotted.sqlize('data.users[*&age>=30].name = "alice"')['where']
+    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30).name ? (@ == :_p1)', jsonb_build_object('_p1', :_p1))"
+
+Pattern predicates compose with scalar ones via dotted's `&` / `,` / `!`:
+
+    >>> dotted.sqlize('(data.users[*].age >= 30 & status = "active")')['where']
+    "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) AND (status = :_p1)"
+
+`select` is set to the column itself — pattern paths don't have a single
+extractable value. Use the WHERE predicate to filter rows; write your
+own SELECT for the columns you want.
+
+Not yet supported:
+- Pattern paths as SELECT (needing `LATERAL jsonb_path_query`)
+- Regex-in-access like `data./prefix_\d+/.field`
+- Pattern refs
 
 ### Output keys
 

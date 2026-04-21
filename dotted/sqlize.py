@@ -22,9 +22,11 @@ import hashlib
 import re
 
 from . import access
+from . import filters as _filters
 from . import groups as _groups
 from . import matchers
 from . import predicates
+from . import recursive as _recursive
 from . import wrappers
 from .api import parse
 
@@ -94,6 +96,68 @@ def _pg_string_literal(s):
     Render a Python string as a Postgres text literal.
     """
     return "'" + s.replace("'", "''") + "'"
+
+
+# ---- JSONPath fragments ----
+
+_JP_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+def _jsonpath_key(name):
+    """
+    Format a key name for a JSONPath accessor. JSONPath uses double-quoted
+    strings for names that aren't plain identifiers.
+    """
+    if _JP_IDENT_RE.fullmatch(name):
+        return name
+    escaped = name.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _jsonpath_string_literal(s):
+    """
+    Format a Python string as a JSONPath string literal. JSONPath strings
+    are double-quoted; escape backslashes and embedded double quotes.
+    """
+    escaped = s.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _jsonpath_value_literal(value):
+    """
+    Inline a literal value in a JSONPath expression. Returns None if the
+    value cannot be safely inlined (caller should hoist to a JSONPath
+    variable instead).
+    """
+    if value is None:
+        return 'null'
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (int, float, decimal.Decimal)):
+        return str(value)
+    return None
+
+
+_PRED_JSONPATH = {
+    predicates.EQ: '==',
+    predicates.NE: '!=',
+    predicates.LT: '<',
+    predicates.GT: '>',
+    predicates.LE: '<=',
+    predicates.GE: '>=',
+}
+
+
+def _op_is_pattern_like(op):
+    """
+    True if the op introduces a set-returning or recursive element that
+    can't be expressed as a literal JSON path — requires JSONPath.
+    """
+    if isinstance(op, access.SliceFilter):
+        return True
+    if hasattr(op, 'is_pattern') and op.is_pattern():
+        return True
+    return False
 
 
 class _ParamState:
@@ -218,6 +282,18 @@ class _Translator:
             return {'select': self._path_expr(col_ident, prefix, text=bool(prefix))}
         op = ops[0]
         rest = ops[1:]
+        # Groups: each branch is walked independently, so dispatch first
+        # (OpGroup has is_pattern=True but shouldn't take the pattern-mode
+        # path wholesale).
+        if isinstance(op, _groups.OpGroup):
+            if rest:
+                raise TranslationError('path continues after group')
+            return self._translate_group(op, col_ident, prefix)
+        # If any remaining op introduces a pattern-like segment (wildcard,
+        # recursive, filter bracket), switch to JSONPath mode.
+        if any(_op_is_pattern_like(o) for o in ops):
+            where = self._pattern_predicate(col_ident, prefix, ops)
+            return {'select': col_ident, 'where': where}
         if isinstance(op, wrappers.ValueGuard):
             if rest:
                 raise TranslationError('path continues after value guard')
@@ -229,11 +305,297 @@ class _Translator:
         if isinstance(op, access.Key):
             segment = self._segment_from_key(op)
             return self._walk(col_ident, prefix + (segment,), rest)
-        if isinstance(op, _groups.OpGroup):
-            if rest:
-                raise TranslationError('path continues after group')
-            return self._translate_group(op, col_ident, prefix)
         raise TranslationError(f'unsupported op: {type(op).__name__}')
+
+    # ---- Pattern paths via jsonb_path_exists ----
+
+    def _pattern_predicate(self, col_ident, prefix, ops):
+        """
+        Build a `jsonb_path_exists(col, 'path', vars_jsonb?)` predicate for
+        a path containing patterns. `prefix` is the tuple of literal
+        segments already accumulated (before the pattern section); `ops`
+        is the remaining path from the first pattern-like op onward.
+        """
+        jvars = {}   # jsonpath var name → SQL placeholder expression
+        parts = ['$']
+        # Literal prefix becomes plain `.key` accessors.
+        for kind, value in prefix:
+            if kind != 'lit':
+                raise TranslationError(
+                    'dynamic path segments (references) combined with '
+                    'patterns are not supported yet'
+                )
+            parts.append('.' + _jsonpath_key(value))
+        # Walk remaining ops.
+        for i, op in enumerate(ops):
+            frag, trailing_filter = self._op_to_jsonpath(op, jvars)
+            parts.append(frag)
+            if trailing_filter:
+                parts.append(f' ? ({trailing_filter})')
+            # If this op was a terminal ValueGuard, it consumed the guard;
+            # anything after is a bug.
+            if isinstance(op, wrappers.ValueGuard) and i != len(ops) - 1:
+                raise TranslationError('path continues after value guard')
+        jsonpath_str = ''.join(parts)
+        jsonpath_sql = _pg_string_literal(jsonpath_str)
+        if not jvars:
+            return f'jsonb_path_exists({col_ident}, {jsonpath_sql})'
+        kv_pairs = ', '.join(
+            f"'{name}', {placeholder}"
+            for name, placeholder in jvars.items())
+        return (f'jsonb_path_exists({col_ident}, {jsonpath_sql}, '
+                f'jsonb_build_object({kv_pairs}))')
+
+    def _op_to_jsonpath(self, op, jvars):
+        """
+        Translate one op into a JSONPath fragment. Returns
+        (fragment, trailing_filter_or_None).  trailing_filter is an
+        expression placed inside `? (...)` after the fragment — used for
+        guards and bracket filters.
+        """
+        # NB: Slot is a subclass of Key, so check Slot first.
+        if isinstance(op, access.Slot):
+            return self._key_slot_to_jsonpath(op, is_key=False), None
+        if isinstance(op, access.Attr):
+            # Attrs have no JSONPath equivalent; treat as a key access.
+            return self._key_slot_to_jsonpath(op, is_key=True), None
+        if isinstance(op, access.Key):
+            return self._key_slot_to_jsonpath(op, is_key=True), None
+        if isinstance(op, _recursive.Recursive):
+            return self._recursive_to_jsonpath(op), None
+        if isinstance(op, access.SliceFilter):
+            # [pred] → [*] ? (pred)
+            filter_expr = self._filters_to_jsonpath(op.filters, jvars)
+            return '[*]', filter_expr
+        if isinstance(op, wrappers.FilterWrap):
+            inner_frag, inner_filter = self._op_to_jsonpath(op.inner, jvars)
+            filter_expr = self._filters_to_jsonpath(op.filters, jvars)
+            if inner_filter:
+                filter_expr = f'{inner_filter} && {filter_expr}'
+            return inner_frag, filter_expr
+        if isinstance(op, wrappers.ValueGuard):
+            inner_frag, inner_filter = self._op_to_jsonpath(op.inner, jvars)
+            pred_expr = self._guard_to_jsonpath(op, jvars)
+            combined = (f'{inner_filter} && {pred_expr}'
+                        if inner_filter else pred_expr)
+            return inner_frag, combined
+        raise TranslationError(
+            f'op not supported in pattern paths: {type(op).__name__}'
+        )
+
+    def _key_slot_to_jsonpath(self, op, is_key):
+        """
+        Translate a Key/Slot op with any concrete or wildcard matcher.
+        is_key=True uses `.name`/`.*`; is_key=False uses `[N]`/`[*]`.
+        """
+        matcher = op.op
+        if isinstance(matcher, matchers.Wildcard):
+            return '.*' if is_key else '[*]'
+        if isinstance(matcher, matchers.Subst):
+            raise TranslationError(
+                f'unresolved substitution in pattern path: {matcher}'
+            )
+        if isinstance(matcher, matchers.Reference):
+            raise TranslationError(
+                'references inside pattern paths not supported yet'
+            )
+        if isinstance(matcher, matchers.Pattern):
+            raise TranslationError(
+                f'unsupported matcher in pattern path: {type(matcher).__name__}'
+            )
+        if not hasattr(matcher, 'value'):
+            raise TranslationError(
+                f'unsupported matcher: {type(matcher).__name__}'
+            )
+        value = matcher.value
+        if is_key:
+            return '.' + _jsonpath_key(str(value))
+        # Slot: integer index
+        return f'[{value}]'
+
+    def _recursive_to_jsonpath(self, op):
+        """
+        Translate a Recursive op (** or *key etc).
+        """
+        inner = op.inner
+        if isinstance(inner, matchers.Wildcard):
+            return '.**'
+        raise TranslationError(
+            f'recursive op with {type(inner).__name__} inner not supported yet'
+        )
+
+    def _guard_to_jsonpath(self, guard_op, jvars):
+        """
+        Translate a ValueGuard's predicate to a JSONPath filter expression
+        (without the surrounding `? (...)`).
+        """
+        if guard_op.transforms:
+            raise TranslationError(
+                'guard transforms inside pattern paths not supported yet'
+            )
+        pred = guard_op.pred_op
+        value = guard_op.guard
+        op_str = _PRED_JSONPATH.get(pred)
+        if op_str is None:
+            raise TranslationError(f'unsupported predicate: {pred!r}')
+        rhs = self._value_to_jsonpath(value, jvars)
+        return f'@ {op_str} {rhs}'
+
+    def _value_to_jsonpath(self, val, jvars):
+        """
+        Render a guard / filter value as a JSONPath expression — either an
+        inline literal or a $var referencing a SQL placeholder.
+        """
+        if isinstance(val, matchers.NoneValue):
+            return 'null'
+        if isinstance(val, matchers.Boolean):
+            return 'true' if val.value else 'false'
+        if isinstance(val, (matchers.Numeric, matchers.NumericQuoted,
+                            matchers.NumericExtended)):
+            py_val = val.value
+            inlined = _jsonpath_value_literal(py_val)
+            if inlined is not None:
+                return inlined
+            # Fallback — hoist
+            placeholder = self._hoist_value(py_val)
+            jvar = self._jvar_for_placeholder(placeholder, jvars)
+            return f'${jvar}'
+        if isinstance(val, matchers.Regex):
+            # Only valid inside a filter; caller must place it correctly
+            return f'like_regex {_jsonpath_string_literal(val.args[0])}'
+        if isinstance(val, matchers.Subst):
+            placeholder = self._hoist_subst(val.value)
+            jvar = self._jvar_for_placeholder(placeholder, jvars)
+            return f'${jvar}'
+        if isinstance(val, matchers.ResolvedValue):
+            py_val = val.value
+            inlined = _jsonpath_value_literal(py_val)
+            if inlined is not None:
+                return inlined
+            # Strings and other types: hoist
+            placeholder = self._hoist_value(py_val)
+            jvar = self._jvar_for_placeholder(placeholder, jvars)
+            return f'${jvar}'
+        if isinstance(val, (matchers.String, matchers.Word, matchers.Bytes)):
+            # Hoist strings via a JSONPath variable.
+            placeholder = self._hoist_value(val.value)
+            jvar = self._jvar_for_placeholder(placeholder, jvars)
+            return f'${jvar}'
+        if hasattr(val, 'value'):
+            placeholder = self._hoist_value(val.value)
+            jvar = self._jvar_for_placeholder(placeholder, jvars)
+            return f'${jvar}'
+        raise TranslationError(
+            f'unsupported value in pattern predicate: {type(val).__name__}'
+        )
+
+    def _jvar_for_placeholder(self, placeholder, jvars):
+        """
+        Map a SQL placeholder expression (`:name`) into a JSONPath variable
+        name, registering it in the vars dict. The JSONPath var name is the
+        same as the SQL bind name.
+        """
+        name = placeholder[1:] if placeholder.startswith(':') else placeholder
+        jvars[name] = placeholder
+        return name
+
+    def _filters_to_jsonpath(self, filters, jvars):
+        """
+        Translate a sequence of FilterOp predicates to a JSONPath filter
+        expression (no surrounding `? (...)`).
+        """
+        parts = []
+        for f in filters:
+            parts.append(self._filter_to_jsonpath(f, jvars))
+        return ' && '.join(parts)
+
+    def _filter_to_jsonpath(self, f, jvars):
+        """
+        Translate one FilterOp to a JSONPath filter expression.
+        """
+        if isinstance(f, _filters.FilterKeyValue):
+            # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
+            if f.transforms:
+                raise TranslationError(
+                    'filter transforms inside pattern paths not supported yet'
+                )
+            op_str = {
+                '=':  '==',
+                '!=': '!=',
+                '<':  '<',
+                '>':  '>',
+                '<=': '<=',
+                '>=': '>=',
+            }.get(f._eq_str)
+            if op_str is None:
+                raise TranslationError(
+                    f'unsupported filter operator: {f._eq_str}'
+                )
+            key_expr = self._filter_key_to_jsonpath(f.key)
+            rhs = self._value_to_jsonpath(f.val, jvars)
+            return f'{key_expr} {op_str} {rhs}'
+        if isinstance(f, _filters.FilterAnd):
+            parts = [self._filter_to_jsonpath(sub, jvars)
+                     for sub in f.filters]
+            return ' && '.join(f'({p})' for p in parts)
+        if isinstance(f, _filters.FilterOr):
+            parts = [self._filter_to_jsonpath(sub, jvars)
+                     for sub in f.filters]
+            return ' || '.join(f'({p})' for p in parts)
+        if isinstance(f, _filters.FilterNot):
+            inner = self._filter_to_jsonpath(f.inner, jvars)
+            return f'!({inner})'
+        if isinstance(f, _filters.FilterGroup):
+            inner = self._filter_to_jsonpath(f.inner, jvars)
+            return f'({inner})'
+        raise TranslationError(
+            f'filter type not supported: {type(f).__name__}'
+        )
+
+    def _filter_key_to_jsonpath(self, key):
+        """
+        Translate a FilterKey to the LHS of a JSONPath filter predicate,
+        relative to `@` (current node). FilterKey.parts contains raw
+        matchers (Word, Wildcard, Numeric, etc.) plus access ops for
+        slots/slices — handle both forms.
+        """
+        if isinstance(key, _filters.FilterKey):
+            parts = ['@']
+            for p in key.parts:
+                if isinstance(p, access.Slot):
+                    m = p.op
+                    if isinstance(m, matchers.Wildcard):
+                        parts.append('[*]')
+                    elif hasattr(m, 'value'):
+                        parts.append(f'[{m.value}]')
+                    else:
+                        raise TranslationError(
+                            f'unsupported slot matcher in filter key: '
+                            f'{type(m).__name__}'
+                        )
+                    continue
+                if isinstance(p, access.Slice):
+                    raise TranslationError(
+                        'slice in filter key not supported yet'
+                    )
+                # Otherwise p is a raw matcher (Word, Wildcard, Numeric, …).
+                if isinstance(p, matchers.Wildcard):
+                    parts.append('.*')
+                elif hasattr(p, 'value'):
+                    parts.append('.' + _jsonpath_key(str(p.value)))
+                else:
+                    raise TranslationError(
+                        f'unsupported filter key part: {type(p).__name__}'
+                    )
+            return ''.join(parts)
+        # Raw matcher fallback.
+        if hasattr(key, 'value'):
+            return '@.' + _jsonpath_key(str(key.value))
+        raise TranslationError(
+            f'unsupported filter key: {type(key).__name__}'
+        )
+
+    # ---- scalar (non-pattern) path helpers ----
 
     def _segment_from_key(self, key_op):
         if not isinstance(key_op, access.Key):
