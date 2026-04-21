@@ -198,9 +198,22 @@ class ParamStyle(enum.StrEnum):
 
     `StrEnum` — members compare equal to their string values, so callers
     can pass either `ParamStyle.named` or `'named'`.
+
+    Output shape:
+      - `named` / `pyformat`: `(sql, params_dict)`. Repeated markers
+        share one binding entry (back-reference by name).
+      - `dollar-numeric` / `numeric`: `(sql, args_list)`. Repeated
+        markers share one position (back-reference by number).
+      - `qmark` / `format`: `(sql, args_list)`. Each marker occurrence
+        produces a separate arg — these styles have no back-reference
+        so a repeated substitution's value is emitted multiple times.
     """
-    named = 'named'                    # :name     (SQLAlchemy, sqlite3, etc.)
-    dollar_numeric = 'dollar-numeric'  # $1, $2    (asyncpg, native PG)
+    named = 'named'                    # :name         (SQLAlchemy, sqlite3)
+    pyformat = 'pyformat'              # %(name)s      (psycopg)
+    qmark = 'qmark'                    # ?             (sqlite3 positional)
+    format = 'format'                  # %s            (psycopg positional)
+    numeric = 'numeric'                # :1, :2        (Oracle-style)
+    dollar_numeric = 'dollar-numeric'  # $1, $2        (asyncpg, native PG)
 
 
 _PARAMSTYLES = tuple(ps.value for ps in ParamStyle)
@@ -280,20 +293,23 @@ class SQLFragment:
         """
         Return self.text with every `{marker}` replaced by the return
         value of `replacer(marker_name)`. Text-level operation: the
-        caller decides what placeholder form to emit (`:name`, `$N`, or
-        anything else) and is responsible for tracking per-marker values
+        caller decides what placeholder form to emit (`:name`, `$N`,
+        `?`, etc.) and is responsible for tracking per-marker values
         externally. Literal braces in the fragment (doubled as `{{`/
-        `}}`) are unescaped to single braces in the output, as per
-        Python `str.format` rules.
+        `}}`) are unescaped to single braces in the output, per Python
+        format-string rules.
 
-        `replacer(name)` is called at most once per unique marker; the
-        result is reused for subsequent occurrences.
+        `replacer(name)` is called **once per occurrence**, in source
+        order. Callers that want back-referencing semantics (e.g.
+        `:name` or `$N` sharing one slot across multiple occurrences)
+        must cache results themselves.
         """
-        mapping = {}
-        for _, name, _, _ in _FORMATTER.parse(self.text):
-            if name is not None and name not in mapping:
-                mapping[name] = replacer(name)
-        return self.text.format(**mapping)
+        parts = []
+        for literal, name, _, _ in _FORMATTER.parse(self.text):
+            parts.append(literal)
+            if name is not None:
+                parts.append(replacer(name))
+        return ''.join(parts)
 
 
 class Resolver:
@@ -370,19 +386,26 @@ class Resolver:
                 f'unknown binding(s) for this fragment: {sorted(extra)}'
             )
 
-        # Build a per-paramstyle replacer that both collects output
-        # params/args and returns the placeholder text for each marker.
+        # Build a per-paramstyle replacer. Replacers are called once
+        # per marker occurrence — name-keyed styles cache results so
+        # repeated markers share a single param; positional back-ref
+        # styles (numeric, dollar-numeric) cache by position; qmark /
+        # format emit a fresh arg for every occurrence.
         missing = []
-        if paramstyle == 'named':
+        if paramstyle in ('named', 'pyformat'):
             out_params = {}
+            fmt = ':{name}' if paramstyle == 'named' else '%({name})s'
 
             def replacer(marker):
                 value = cls._lookup_value(sql, marker, bindings, missing)
                 if value is _MISSING:
-                    return ''   # errored below
+                    return ''
                 out_params[marker] = value
-                return f':{marker}'
-        else:  # dollar-numeric
+                return fmt.format(name=marker)
+
+            out_values = out_params
+        elif paramstyle in ('numeric', 'dollar-numeric'):
+            prefix = '$' if paramstyle == 'dollar-numeric' else ':'
             out_args = []
             pos_by_marker = {}
 
@@ -393,9 +416,23 @@ class Resolver:
                 if value is _MISSING:
                     return ''
                 out_args.append(value)
-                ph = f'${len(out_args)}'
+                ph = f'{prefix}{len(out_args)}'
                 pos_by_marker[marker] = ph
                 return ph
+
+            out_values = out_args
+        else:  # qmark, format — no back-reference
+            placeholder = '?' if paramstyle == 'qmark' else '%s'
+            out_args = []
+
+            def replacer(marker):
+                value = cls._lookup_value(sql, marker, bindings, missing)
+                if value is _MISSING:
+                    return ''
+                out_args.append(value)
+                return placeholder
+
+            out_values = out_args
 
         final = sql.substitute(replacer)
 
@@ -404,9 +441,7 @@ class Resolver:
                 f'missing binding(s) for substitution(s): '
                 f'{sorted(set(missing))}'
             )
-        if paramstyle == 'named':
-            return final, out_params
-        return final, out_args
+        return final, out_values
 
     @staticmethod
     def _lookup_value(sql, marker, bindings, missing):

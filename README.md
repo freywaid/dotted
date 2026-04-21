@@ -2940,10 +2940,26 @@ Not yet supported:
 
 ### Paramstyles
 
-`Resolver.build(sql, paramstyle='named', **bindings)` defaults to
-PEP 249 named style (`:name`). For Postgres-native `$N` (what asyncpg
-and other raw PG drivers accept), pass `paramstyle='dollar-numeric'`
-— the output changes to positional:
+`Resolver.build(sql, paramstyle='named', **bindings)` renders the
+fragment in the chosen PEP 249 paramstyle. Supported:
+
+| paramstyle        | placeholder    | output shape | typical driver            |
+|-------------------|----------------|--------------|---------------------------|
+| `named`           | `:name`        | dict         | SQLAlchemy `text`, sqlite3 |
+| `pyformat`        | `%(name)s`     | dict         | psycopg (v2/v3) named     |
+| `qmark`           | `?`            | list         | sqlite3, ODBC             |
+| `format`          | `%s`           | list         | psycopg positional        |
+| `numeric`         | `:1, :2`       | list         | Oracle-style              |
+| `dollar-numeric`  | `$1, $2`       | list         | asyncpg, native Postgres  |
+
+The dict styles (`named`, `pyformat`) and the numbered positional
+styles (`numeric`, `dollar-numeric`) have **back-reference**: a
+substitution used in multiple places in the SQL shares a single bind
+entry. `qmark` and `format` have no back-reference — each occurrence
+consumes its own arg, so a repeated substitution emits its value
+multiple times.
+
+Examples:
 
     >>> r = dotted.sqlize('(age >= 18 & status = "active")')
     >>> dotted.Resolver.build(r.where, paramstyle='dollar-numeric')
@@ -2953,8 +2969,16 @@ and other raw PG drivers accept), pass `paramstyle='dollar-numeric'`
     >>> dotted.Resolver.build(r.where, paramstyle='dollar-numeric', min_age=30)
     ('age >= $1', [30])
 
-Under `'dollar-numeric'`, the second element is a list of positional
-args ready for `await conn.execute(sql, *args)` asyncpg style.
+    >>> dotted.Resolver.build(r.where, paramstyle='pyformat', min_age=30)
+    ('age >= %(min_age)s', {'min_age': 30})
+
+Back-reference vs no-backref on repeated substitutions:
+
+    >>> r = dotted.sqlize('(age >= $(x) & weight = $(x))')
+    >>> dotted.Resolver.build(r.where, paramstyle='numeric', x=42)
+    ('(age >= :1) AND (weight = :1)', [42])
+    >>> dotted.Resolver.build(r.where, paramstyle='qmark', x=42)
+    ('(age >= ?) AND (weight = ?)', [42, 42])
 
 A `ParamStyle` `StrEnum` is also available for autocomplete and type
 checking:

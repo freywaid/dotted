@@ -12,7 +12,14 @@ from dotted.sqlize import (
 
 # All supported paramstyles as fixture values. Used to parametrize
 # scenario tests so each runs under every paramstyle.
-PARAMSTYLES = ['named', 'dollar-numeric']
+PARAMSTYLES = ['named', 'pyformat', 'qmark', 'format', 'numeric', 'dollar-numeric']
+
+# Styles that share bindings by back-reference (repeated markers collapse
+# to one entry). qmark/format have no back-reference and repeat values.
+BACKREF_STYLES = ['named', 'pyformat', 'numeric', 'dollar-numeric']
+
+# Styles that return a dict vs a list.
+DICT_STYLES = ['named', 'pyformat']
 
 
 # ---------------- scalar columns ----------------
@@ -522,7 +529,7 @@ def test_unsupported_flavor_errors():
 def test_unsupported_paramstyle_errors():
     r = sqlize('age=30')
     with pytest.raises(TranslationError, match='unsupported paramstyle'):
-        Resolver.build(r.where, paramstyle='qmark')
+        Resolver.build(r.where, paramstyle='bogus')
 
 
 # ---------------- identifier quoting ----------------
@@ -567,20 +574,32 @@ def test_dollar_numeric_with_subst():
 def _placeholder(paramstyle, name, position):
     """
     Return the expected placeholder string for a given paramstyle.
-    name: the bind name (for named) — ignored for positional.
+    name: the bind name (for name-keyed styles) — ignored for positional.
     position: 1-based position in the final SQL.
     """
     if paramstyle == 'named':
         return f':{name}'
-    return f'${position}'
+    if paramstyle == 'pyformat':
+        return f'%({name})s'
+    if paramstyle == 'numeric':
+        return f':{position}'
+    if paramstyle == 'dollar-numeric':
+        return f'${position}'
+    if paramstyle == 'qmark':
+        return '?'
+    if paramstyle == 'format':
+        return '%s'
+    raise ValueError(paramstyle)
 
 
 def _values(paramstyle, items):
     """
     Build the expected params (dict) or args (list) from an ordered
-    list of (bind_name, value) tuples.
+    list of (bind_name, value) tuples. Each test passes items in the
+    canonical named-paramstyle shape; this helper converts for
+    positional styles.
     """
-    if paramstyle == 'named':
+    if paramstyle in DICT_STYLES:
         return dict(items)
     return [v for _, v in items]
 
@@ -687,13 +706,24 @@ def test_ps_subst(paramstyle):
     assert values == _values(paramstyle, [('min_age', 30)])
 
 
-@pytest.mark.parametrize('paramstyle', PARAMSTYLES)
-def test_ps_subst_repeated_shares(paramstyle):
+@pytest.mark.parametrize('paramstyle', BACKREF_STYLES)
+def test_ps_subst_repeated_backref(paramstyle):
+    """Styles with back-reference share one slot across occurrences."""
     r = sqlize('(age >= $(x) & weight = $(x))')
     sql, values = Resolver.build(r.where, paramstyle=paramstyle, x=42)
     ph = _placeholder(paramstyle, 'x', 1)
     assert sql == f'(age >= {ph}) AND (weight = {ph})'
     assert values == _values(paramstyle, [('x', 42)])
+
+
+@pytest.mark.parametrize('paramstyle', ['qmark', 'format'])
+def test_ps_subst_repeated_no_backref(paramstyle):
+    """qmark/format repeat the value (no back-reference)."""
+    r = sqlize('(age >= $(x) & weight = $(x))')
+    sql, values = Resolver.build(r.where, paramstyle=paramstyle, x=42)
+    ph = _placeholder(paramstyle, 'x', 1)
+    assert sql == f'(age >= {ph}) AND (weight = {ph})'
+    assert values == [42, 42]
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
@@ -746,7 +776,7 @@ def test_ps_mixed_pattern_and_scalar(paramstyle):
 
 # ---------------- ParamStyle enum accepted ----------------
 
-@pytest.mark.parametrize('style', [ParamStyle.named, ParamStyle.dollar_numeric])
+@pytest.mark.parametrize('style', list(ParamStyle))
 def test_paramstyle_enum_member_accepted(style):
     """Enum members work interchangeably with their string values."""
     r = sqlize('age = 30')
