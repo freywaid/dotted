@@ -150,12 +150,16 @@ class Pattern(MatchOp):
         return True
 
 
-class Subst(Pattern):
+class Subst(MatchOp):
     """
     Substitution op: $0, $(name), $(0|transform), $(name|int), etc.
     Resolves against bindings via __getitem__: list for positional,
     dict for named or numeric keys.  Optional transforms applied
     after lookup.
+
+    Not a Pattern subclass — substitutions resolve to a single key, not
+    a set of keys. is_template() is the right check for "contains a
+    substitution".
     """
     def __init__(self, *args, transforms=(), **kwargs):
         super().__init__(*args, **kwargs)

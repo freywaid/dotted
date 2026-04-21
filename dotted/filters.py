@@ -6,6 +6,13 @@ from . import predicates
 from .access import Slot, Slice
 
 
+def _any_template(items):
+    """
+    True if any item in an iterable has is_template() returning True.
+    """
+    return any(hasattr(x, 'is_template') and x.is_template() for x in items)
+
+
 class FilterOp(base.MatchOp):
     def is_pattern(self):
         return False
@@ -49,6 +56,12 @@ class FilterKey(base.MatchOp):
 
     def is_dotted(self):
         return len(self.parts) > 1
+
+    def is_template(self):
+        """
+        True if any part of the filter key contains a substitution reference.
+        """
+        return _any_template(self.parts)
 
     def get_values(self, node):
         """
@@ -187,6 +200,16 @@ class FilterKeyValue(FilterOp):
     def __repr__(self):
         t_str = ''.join('|' + t.operator() for t in self.transforms) if self.transforms else ''
         return f'{self.key}{t_str}{self._eq_str}{self.val}'
+
+    def is_template(self):
+        """
+        True if the key, value, or any transform contains a substitution.
+        """
+        if hasattr(self.key, 'is_template') and self.key.is_template():
+            return True
+        if hasattr(self.val, 'is_template') and self.val.is_template():
+            return True
+        return _any_template(self.transforms)
 
     def _eq_match(self, node):
         """
@@ -351,6 +374,11 @@ class FilterGroup(FilterOp):
             return None
         return self.inner.match(op.inner)
 
+    def is_template(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_template')
+                and self.inner.is_template())
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in inner filter.
@@ -403,6 +431,9 @@ class FilterAnd(FilterOp):
             results.append(m)
         return FilterAnd(*results)
 
+    def is_template(self):
+        return _any_template(self.filters)
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in each filter.
@@ -442,6 +473,9 @@ class FilterOr(FilterOp):
                 if item_id not in seen:
                     seen.add(item_id)
                     yield item
+
+    def is_template(self):
+        return _any_template(self.filters)
 
     def resolve(self, bindings, partial=False):
         """
@@ -487,6 +521,11 @@ class FilterKeyValueFirst(FilterOp):
         if self.inner and op.inner:
             return self.inner.match(op.inner)
         return None
+
+    def is_template(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_template')
+                and self.inner.is_template())
 
     def resolve(self, bindings, partial=False):
         """
@@ -540,6 +579,11 @@ class FilterNot(FilterOp):
         if not self.matchable(op):
             return None
         return self.inner.match(op.inner)
+
+    def is_template(self):
+        return (self.inner is not None
+                and hasattr(self.inner, 'is_template')
+                and self.inner.is_template())
 
     def resolve(self, bindings, partial=False):
         """

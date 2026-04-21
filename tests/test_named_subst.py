@@ -106,6 +106,80 @@ def test_is_template_named_escaped():
     assert dotted.is_template('\\$(name)') is False
 
 
+# ---- is_template catches substs in all positions ----
+
+def test_is_template_guard_value():
+    # Subst as guard RHS (previously missed)
+    assert dotted.is_template('a=$(x)') is True
+    assert dotted.is_template('a>=$(x)') is True
+    assert dotted.is_template('a!=$(x)') is True
+
+
+def test_is_template_guard_transform():
+    # Subst combined with guard cast
+    assert dotted.is_template('a|int=$(x)') is True
+
+
+def test_is_template_filter_wrap_value():
+    # Subst inside filter-wrap predicate value
+    assert dotted.is_template('a[*&x=$(y)]') is True
+
+
+def test_is_template_filter_wrap_key():
+    # Subst as filter key
+    assert dotted.is_template('a[$(k)=1]') is True
+
+
+def test_is_template_filter_wrap_transform():
+    # Subst with filter transform
+    assert dotted.is_template('a[*&x|int=$(y)]') is True
+
+
+def test_is_template_filter_negation():
+    # Subst under filter negation
+    assert dotted.is_template('a[!x=$(y)]') is True
+
+
+def test_is_template_filter_group():
+    # Subst inside filter group (AND/OR of predicates)
+    assert dotted.is_template('a[*&(b=$(x) & c=1)]') is True
+
+
+def test_is_template_slice_filter():
+    # SliceFilter (compact [filter] form) carrying a subst
+    assert dotted.is_template('a[$(k)=1]') is True
+
+
+def test_is_template_group_branch():
+    # Subst in an access-op group branch
+    assert dotted.is_template('(a=$(x) & b=1)') is True
+
+
+def test_is_template_false_for_refs():
+    # References are not templates (resolve against data, not bindings)
+    assert dotted.is_template('a.$$(b)') is False
+    assert dotted.is_template('a=$$(b)') is False
+
+
+def test_is_template_false_for_patterns():
+    # Plain patterns are not templates
+    assert dotted.is_template('a.*.b') is False
+    assert dotted.is_template('a=/re/') is False
+
+
+# ---- is_pattern: substitutions are NOT patterns (single-yield) ----
+
+def test_is_pattern_false_for_subst_in_access():
+    # $(x) as an access-position matcher is not a pattern (yields one key).
+    assert dotted.is_pattern('a.$(x)') is False
+    assert dotted.is_pattern('a.$0') is False
+
+
+def test_is_pattern_false_for_subst_in_guard():
+    # Concrete access with subst guard is still not a pattern
+    assert dotted.is_pattern('a=$(x)') is False
+
+
 # ---- quote ----
 
 def test_quote_named_subst_literal():

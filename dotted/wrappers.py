@@ -202,6 +202,20 @@ class ValueGuard(Wrap):
     def is_pattern(self):
         return self.inner.is_pattern()
 
+    def is_template(self):
+        """
+        True if the inner op, the guard value, or any transform contains
+        a substitution reference.
+        """
+        if self.inner.is_template():
+            return True
+        if hasattr(self.guard, 'is_template') and self.guard.is_template():
+            return True
+        for t in self.transforms:
+            if hasattr(t, 'is_template') and t.is_template():
+                return True
+        return False
+
     def is_recursive(self):
         return self.inner.is_recursive()
 
@@ -418,6 +432,17 @@ class FilterWrap(Wrap):
         if s.endswith(']'):
             return s[:-1] + filter_str + ']'
         return s + filter_str
+
+    def is_template(self):
+        """
+        True if the inner op or any attached filter contains a
+        substitution reference.
+        """
+        if self.inner.is_template():
+            return True
+        return any(
+            hasattr(f, 'is_template') and f.is_template()
+            for f in self.filters)
 
     def default(self):
         """

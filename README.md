@@ -207,6 +207,14 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.43.4
+- **`is_pattern` no longer returns `True` for substitutions**. `Subst` previously
+  inherited from `Pattern` in the class hierarchy, so any path containing a
+  substitution in an access position (e.g. `a.$(x)`, `a.$0`) reported as a
+  pattern. Substitutions resolve to a single key, not a set — that was a
+  misclassification. Use `is_template(path)` to check "contains a
+  substitution."
+
 ### v0.40.0
 - **`unpack()` now returns a `dict`**: Previously returned a tuple of
   `(path, value)` pairs. Now returns `{path: value, ...}` directly.

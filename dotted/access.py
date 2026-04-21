@@ -862,6 +862,14 @@ class SliceFilter(BaseOp):
     def is_pattern(self):
         return False
 
+    def is_template(self):
+        """
+        True if any attached filter contains a substitution reference.
+        """
+        return any(
+            hasattr(f, 'is_template') and f.is_template()
+            for f in self.filters)
+
     def is_empty(self, node):
         return not node
 
