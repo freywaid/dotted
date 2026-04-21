@@ -1,7 +1,7 @@
 """
 Translate a dotted path into SQL clause components.
 
-Returns a dict with keys select, where, from, params, missing. Only keys that
+Returns a dict with keys select, where, from, params, unbound. Only keys that
 apply to the given path are included. Callers stitch the fragments into a
 full statement, e.g.:
 
@@ -13,10 +13,12 @@ navigation inside it.
 
 Placeholders are emitted in SQLAlchemy named style (`:name`). Literals on the
 RHS of guards are hoisted into `params` under generated names (`_p1`, `_p2`,
-…). Unresolved substitutions keep their declared names and appear in
-`missing`; callers fill them in by name before executing.
+…). Unresolved substitutions appear in `unbound` as a dict mapping
+`bind_param_name → original_name`; callers fill the params dict by the bind
+name before executing.
 """
 import decimal
+import hashlib
 import re
 
 from . import access
@@ -46,44 +48,29 @@ def _quote_ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-# Subst names may themselves be dotted paths. To survive as SQL bind
-# parameter names (which must be plain identifiers), the access operators
-# are encoded with mnemonic tokens. This preserves the distinction
-# between `a.b`, `a@b`, and `a[0]` in the placeholder name.
-_OP_ENCODE = {
-    '.': '_dot_',
-    '@': '_at_',
-    '[': '_br_',
-    ']': '',
-}
+# Substitution names that aren't already valid SQL identifiers are mapped
+# to a hash-based name for use as a SQL bind parameter. Deterministic —
+# the same subst name always produces the same hashed param.
+_HASH_PREFIX = '_s_'
+_GEN_PREFIX = '_p'
+_RESERVED_PREFIXES = (_HASH_PREFIX, _GEN_PREFIX)
 
 
-def _encode_subst_name(name):
+def _param_name_for_subst(name):
     """
-    Encode a subst name (a dotted path) into a plain SQL identifier.
-    Recognised access ops become mnemonic tokens; unsupported characters
-    raise TranslationError.
+    Return a SQL identifier-safe bind parameter name for a substitution.
+
+    Plain identifiers pass through unchanged. Anything else — dotted
+    paths, quoted keys, special characters — hashes to a deterministic
+    `_s_<hex>` name. Names that collide with our reserved generated-name
+    prefixes (`_p<N>`, `_s_`) are also hashed so they can never clobber
+    hoisted literals.
     """
-    if _IDENT_RE.fullmatch(name):
+    if _IDENT_RE.fullmatch(name) and not any(
+            name.startswith(p) for p in _RESERVED_PREFIXES):
         return name
-    out = []
-    for c in name:
-        if c in _OP_ENCODE:
-            out.append(_OP_ENCODE[c])
-        elif c.isalnum() or c == '_':
-            out.append(c)
-        else:
-            raise TranslationError(
-                f'cannot encode character {c!r} in substitution name {name!r}; '
-                'resolve via bindings= at sqlize time'
-            )
-    encoded = ''.join(out)
-    if not _IDENT_RE.fullmatch(encoded):
-        raise TranslationError(
-            f'substitution name {name!r} does not encode to a valid '
-            'SQL identifier'
-        )
-    return encoded
+    h = hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]
+    return f'{_HASH_PREFIX}{h}'
 
 
 def _pg_path_segment(seg):
@@ -112,38 +99,41 @@ def _pg_string_literal(s):
 class _ParamState:
     """
     Shared state for hoisted params across a translate call and its
-    sub-translators. Generated param names use the `_p{n}` convention;
-    substitution param names come from the substitution itself.
+    sub-translators. Generated literal names use `_p{N}`; deferred
+    substitutions use their name when it's already a valid identifier,
+    or a `_s_<hex>` hash otherwise.
     """
 
     def __init__(self):
-        self.params = {}          # name → resolved value
-        self.missing = []         # list of substitution names awaiting a value
+        self.params = {}   # bind name → resolved value
+        self.unbound = {}  # bind name → original subst name
         self._gen_counter = 0
+        self._by_orig = {}  # original subst name → bind name (dedup)
 
     def hoist_literal(self, value):
         """
         Hoist a concrete literal into a generated-name slot.
         """
         self._gen_counter += 1
-        name = f'_p{self._gen_counter}'
+        name = f'{_GEN_PREFIX}{self._gen_counter}'
         self.params[name] = value
         return name
 
     def hoist_named(self, name):
         """
-        Hoist a named substitution. If a value is supplied later it lands
-        under the encoded name; until then it's recorded in `missing`.
-
-        Names that already are plain identifiers are used as-is. Dotted
-        paths (`$(user.age)`, `$(users[0].name)`, `$(obj@attr)`) are
-        encoded into plain identifiers using mnemonic tokens for access
-        ops so they can serve as SQL bind-parameter names.
+        Hoist a named substitution. If the name is already a valid SQL
+        identifier it's used directly as the bind parameter; otherwise a
+        deterministic `_s_<hash>` name is generated. The bind parameter
+        name keys the mapping in `unbound`, with the original source
+        name as the value. Repeated uses share one entry.
         """
-        encoded = _encode_subst_name(str(name))
-        if encoded not in self.params and encoded not in self.missing:
-            self.missing.append(encoded)
-        return encoded
+        name = str(name)
+        if name in self._by_orig:
+            return self._by_orig[name]
+        param = _param_name_for_subst(name)
+        self._by_orig[name] = param
+        self.unbound[param] = name
+        return param
 
 
 class _Translator:
@@ -196,8 +186,8 @@ class _Translator:
     def _result(self, **kw):
         d = {k: v for k, v in kw.items() if v is not None}
         d['params'] = dict(self.state.params)
-        if self.state.missing:
-            d['missing'] = list(self.state.missing)
+        if self.state.unbound:
+            d['unbound'] = dict(self.state.unbound)
         return d
 
     def _column_name(self, op):
@@ -490,20 +480,23 @@ def sqlize(path, *, bindings=None, flavor='postgres', format='sqlalchemy'):
     Translate a dotted path into SQL clause components.
 
     Returns a dict with some subset of keys select, where, from, params,
-    missing.
+    unbound.
 
     path — dotted path string or pre-parsed Dotted result.
     bindings — optional mapping/list used to resolve substitutions before
         translation. Path-position substitutions must be resolved or a
         TranslationError is raised. Unresolved value-position substitutions
-        keep their declared names and appear in 'missing'.
+        appear in 'unbound'.
     flavor — SQL flavor for JSONB operators; only 'postgres' is implemented.
     format — placeholder style. Only 'sqlalchemy' (`:name`) is supported in v1.
 
     Literals on the RHS of guards are hoisted into params under generated
-    names (`_p1`, `_p2`, …). Named substitutions keep their original names.
-    Callers fill any names still in 'missing' before handing params to a
-    driver.
+    names (`_p1`, `_p2`, …). Substitutions are hoisted under their own
+    name when it's a valid SQL identifier; otherwise a deterministic
+    `_s_<hash>` bind name is generated. Unresolved substitutions appear
+    in 'unbound' as a dict mapping bind_param_name → original_name so
+    callers can fill params by bind name and recover the source name
+    when needed.
 
     >>> sqlize("status = 'active'")
     {'select': 'status', 'where': 'status = :_p1', 'params': {'_p1': 'active'}}

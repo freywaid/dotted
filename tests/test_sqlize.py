@@ -297,23 +297,24 @@ def test_value_sub_with_binding():
 
 
 def test_value_sub_without_binding():
-    # Unbound substitution keeps its name; listed in missing
+    # Unbound substitution: name is already a valid identifier, so it's
+    # used directly as the bind name. unbound maps bind → orig.
     result = sqlize('age>=$(min_age)')
     assert result == {
         'select': 'age',
         'where': 'age >= :min_age',
         'params': {},
-        'missing': ['min_age'],
+        'unbound': {'min_age': 'min_age'},
     }
 
 
 def test_value_sub_repeated_dedupes():
-    # Same name used twice → single :x placeholder, one missing entry
+    # Same name used twice → single placeholder, one unbound entry.
     result = sqlize('(age>=$(x) & weight=$(x))')
     assert result == {
         'where': '(age >= :x) AND (weight = :x)',
         'params': {},
-        'missing': ['x'],
+        'unbound': {'x': 'x'},
     }
 
 
@@ -322,7 +323,7 @@ def test_mixed_subst_and_literal():
     assert result == {
         'where': '(age >= :min_age) AND (weight > :_p1)',
         'params': {'_p1': 200},
-        'missing': ['min_age'],
+        'unbound': {'min_age': 'min_age'},
     }
 
 
@@ -337,39 +338,40 @@ def test_value_sub_dotted_name_with_bindings():
     }
 
 
-def test_value_sub_dotted_name_encoded():
-    # Dotted subst name is encoded into a plain SQL identifier.
+def test_value_sub_dotted_name_hashed():
+    # Dotted subst name hashes to an _s_<hex> bind name; unbound maps
+    # bind → orig so callers can recover the source name.
     result = sqlize('age>=$(user.min_age)')
-    assert result == {
-        'select': 'age',
-        'where': 'age >= :user_dot_min_age',
-        'params': {},
-        'missing': ['user_dot_min_age'],
-    }
+    assert result['select'] == 'age'
+    assert set(result['unbound'].values()) == {'user.min_age'}
+    [(bind, orig)] = result['unbound'].items()
+    assert bind.startswith('_s_')
+    assert orig == 'user.min_age'
+    assert result['where'] == f'age >= :{bind}'
+    assert result['params'] == {}
 
 
-def test_value_sub_attr_name_encoded():
-    result = sqlize('age>=$(obj@attr)')
-    assert result['where'] == 'age >= :obj_at_attr'
-    assert result['missing'] == ['obj_at_attr']
+def test_value_sub_hash_is_deterministic():
+    # Same subst name → same hash across calls (still keyed by bind)
+    a = list(sqlize('age>=$(user.min_age)')['unbound'])[0]
+    b = list(sqlize('weight>=$(user.min_age)')['unbound'])[0]
+    assert a == b
 
 
-def test_value_sub_slot_name_encoded():
-    result = sqlize('age>=$(arr[0])')
-    assert result['where'] == 'age >= :arr_br_0'
-    assert result['missing'] == ['arr_br_0']
+def test_value_sub_hash_names_are_distinct():
+    # Different subst names produce different hashes
+    a = list(sqlize('age>=$(user.min_age)')['unbound'])[0]
+    b = list(sqlize('age>=$(user.max_age)')['unbound'])[0]
+    assert a != b
 
 
-def test_value_sub_mixed_path_name_encoded():
-    result = sqlize('age>=$(users[0].name)')
-    assert result['where'] == 'age >= :users_br_0_dot_name'
-    assert result['missing'] == ['users_br_0_dot_name']
-
-
-def test_value_sub_unencodable_char_errors():
-    # Characters outside the supported op set raise
-    with pytest.raises(TranslationError):
-        sqlize('age>=$(user age)')
+def test_value_sub_special_char_hashed():
+    # Names with spaces / quotes / punctuation hash without erroring
+    result = sqlize("age>=$('dr pepper')")
+    assert set(result['unbound'].values()) == {"'dr pepper'"}
+    [(bind, orig)] = result['unbound'].items()
+    assert bind.startswith('_s_')
+    assert orig == "'dr pepper'"
 
 
 def test_path_sub_with_binding():

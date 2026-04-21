@@ -2834,18 +2834,36 @@ time:
 
     >>> r = dotted.sqlize("age >= $(min_age)")
     >>> r
-    {'select': 'age', 'where': 'age >= :min_age', 'params': {}, 'missing': ['min_age']}
+    {'select': 'age', 'where': 'age >= :min_age', 'params': {},
+     'unbound': {'min_age': 'min_age'}}
 
-`missing` lists names that still need a value. Fill them in before passing
-`params` to a driver:
+`unbound` is a dict keyed by the **SQL bind parameter name** — the name
+that appears in the SQL `:placeholder` and as a key in `params`. Each
+value is the **original substitution name** (what was inside `$(...)`),
+kept as provenance so callers can trace a bind back to its source.
+
+`unbound.keys()` is the list of bind slots the caller needs to fill.
+Most often you just fill `params` by bind name directly:
 
     >>> r['params']['min_age'] = 30
     >>> # hand (r['where'], r['params']) to cursor.execute / session.execute / etc.
 
-Repeated uses of the same name share one placeholder automatically:
+Non-identifier names (dotted paths, quoted keys, spaces, etc.) hash to a
+deterministic `_s_<hex>` bind name — the bind-side name is different
+from what appeared in source, but the original is preserved in the
+`unbound` value:
+
+    >>> r = dotted.sqlize('age >= $(user.min_age)')
+    >>> r['where']    # doctest: +ELLIPSIS
+    'age >= :_s_...'
+    >>> list(r['unbound'].values())
+    ['user.min_age']
+
+Repeated uses of the same name share one entry automatically:
 
     >>> dotted.sqlize('(age >= $(x) & weight = $(x))')
-    {'where': '(age >= :x) AND (weight = :x)', 'params': {}, 'missing': ['x']}
+    {'where': '(age >= :x) AND (weight = :x)', 'params': {},
+     'unbound': {'x': 'x'}}
 
 If you pass `bindings=`, substitutions are resolved at sqlize time and hoisted
 like any other literal:
@@ -2873,7 +2891,7 @@ Returned dict may contain any subset of:
 | `select`  | `str`       | Expression yielding the value dotted would return   |
 | `where`   | `str`       | Predicate from guards / filters / boolean groups    |
 | `params`  | `dict`      | Hoisted values keyed by name                        |
-| `missing` | `list[str]` | Substitution names still awaiting a value           |
+| `unbound` | `dict`      | Deferred substitutions: `{bind_param_name: original_name}` |
 
 `select` is omitted when combining predicates across different columns
 (e.g. top-level groups), since there's no single meaningful expression.
