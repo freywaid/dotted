@@ -346,12 +346,14 @@ def test_pattern_with_substitution():
 
 
 def test_pattern_with_substitution_dollar():
-    # Dollar-numeric: jsonb_build_object still takes value by position
+    # Dollar-numeric: jsonb_build_object still takes value by position,
+    # and the placeholder carries an explicit cast so asyncpg can infer
+    # the type at prepare time.
     r = sqlize('data.users[*].age >= $(min_age)')
     sql, args = Resolver.build(r.where, paramstyle='dollar-numeric', min_age=30)
     assert sql == (
         "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
-        "jsonb_build_object('min_age', $1))"
+        "jsonb_build_object('min_age', $1::bigint))"
     )
     assert args == [30]
 
@@ -735,15 +737,25 @@ def test_ps_pattern_with_literal_inline(paramstyle):
     assert values == _values(paramstyle, [])
 
 
+def _cast_suffix(paramstyle, sql_cast):
+    """
+    Dollar-numeric adds explicit casts to placeholders inside
+    `jsonb_build_object(...)` so asyncpg can infer parameter types.
+    Other paramstyles emit the placeholder bare.
+    """
+    return f'::{sql_cast}' if paramstyle == 'dollar-numeric' else ''
+
+
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_pattern_with_string_hoisted(paramstyle):
     r = sqlize('data.*.status = "on"')
     sql, values = Resolver.build(r.where, paramstyle=paramstyle)
     ph = _placeholder(paramstyle, '_p1', 1)
+    cast = _cast_suffix(paramstyle, 'text')
     # String values flow through jsonb_build_object vars
     assert sql == (
         f"jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
-        f"jsonb_build_object('_p1', {ph}))"
+        f"jsonb_build_object('_p1', {ph}{cast}))"
     )
     assert values == _values(paramstyle, [('_p1', 'on')])
 
@@ -755,9 +767,10 @@ def test_ps_pattern_with_substitution(paramstyle):
                                  paramstyle=paramstyle,
                                  min_age=30)
     ph = _placeholder(paramstyle, 'min_age', 1)
+    cast = _cast_suffix(paramstyle, 'bigint')
     assert sql == (
         f"jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
-        f"jsonb_build_object('min_age', {ph}))"
+        f"jsonb_build_object('min_age', {ph}{cast}))"
     )
     assert values == _values(paramstyle, [('min_age', 30)])
 

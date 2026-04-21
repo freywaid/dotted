@@ -1,107 +1,36 @@
 """
-Translate a dotted path into SQL clause components.
+Postgres dialect for dotted.sqlize.
 
-`sqlize(path)` returns a `Resolver` with format-string SQL fragments
-(`.select`, `.where`, `.from_`) and the binding recipe. Fragments are
-`SQLFragment` objects that concatenate naturally via `+`. Call
-`Resolver.build(sql, paramstyle=..., **bindings)` to render into final
-driver-ready SQL plus a params dict or args list.
-
-    r = sqlize("data.user.age >= $(min_age)")
-    sql, args = Resolver.build(r.where, paramstyle='dollar-numeric',
-                               min_age=30)
-
-ParamStyle is decided at build time, not at sqlize time. Fragments
-carry `{name}` placeholder markers; `build` substitutes them with
-`:name` (for `paramstyle='named'`) or `$N` positional (for
-`paramstyle='dollar-numeric'`).
+Provides the Postgres translator and the `sqlize(...)` entry point.
+Registers a dialect-cast function with the core for the
+`dollar-numeric` paramstyle so asyncpg can infer parameter types at
+prepare time inside `jsonb_build_object(...)`.
 """
 import decimal
-import enum
-import hashlib
 import re
-import string as _string
 
-from . import access
-from . import filters as _filters
-from . import groups as _groups
-from . import matchers
-from . import predicates
-from . import recursive as _recursive
-from . import wrappers
-from .api import parse
+from .. import access
+from .. import filters as _filters
+from .. import groups as _groups
+from .. import matchers
+from .. import predicates
+from .. import recursive as _recursive
+from .. import wrappers
+from ..api import parse
 
-
-class TranslationError(Exception):
-    """
-    Raised when a dotted path cannot be translated to SQL.
-    """
-    pass
-
-
-# Bind-parameter markers in SQL fragments use Python format-string
-# syntax: `{name}` is a placeholder, `{{` / `}}` are literal braces.
-# `str.format()` does the substitution at build time.
-
-_FORMATTER = _string.Formatter()
+from .core import (
+    TranslationError,
+    SQLFragment,
+    Resolver,
+    _ParamState,
+    _FORMATTER,
+    _quote_ident,
+    _with_cast_spec,
+    _register_dialect_cast,
+)
 
 
-def _marker(name):
-    """
-    Render a bind-name marker for embedding in an SQL fragment's text.
-    """
-    return '{' + name + '}'
-
-
-def _escape_braces(s):
-    """
-    Escape literal `{` and `}` in a string for inclusion in an SQL
-    fragment's text. Needed wherever emitted SQL contains Postgres
-    constructs like JSONB path arrays (`'{a,b,c}'`) that would
-    otherwise be mistaken for format placeholders.
-    """
-    return s.replace('{', '{{').replace('}', '}}')
-
-
-_MISSING = object()   # sentinel for "value not yet supplied"
-
-
-_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
-
-
-def _quote_ident(name):
-    """
-    Quote a SQL identifier only when needed.
-    """
-    if _IDENT_RE.fullmatch(name):
-        return name
-    return '"' + name.replace('"', '""') + '"'
-
-
-# Substitution names that aren't already valid SQL identifiers are mapped
-# to a hash-based name for use as a SQL bind parameter. Deterministic —
-# the same subst name always produces the same hashed param.
-_HASH_PREFIX = '_s_'
-_GEN_PREFIX = '_p'
-_RESERVED_PREFIXES = (_HASH_PREFIX, _GEN_PREFIX)
-
-
-def _param_name_for_subst(name):
-    """
-    Return a SQL identifier-safe bind parameter name for a substitution.
-
-    Plain identifiers pass through unchanged. Anything else — dotted
-    paths, quoted keys, special characters — hashes to a deterministic
-    `_s_<hex>` name. Names that collide with our reserved generated-name
-    prefixes (`_p<N>`, `_s_`) are also hashed so they can never clobber
-    hoisted literals.
-    """
-    if _IDENT_RE.fullmatch(name) and not any(
-            name.startswith(p) for p in _RESERVED_PREFIXES):
-        return name
-    h = hashlib.sha256(name.encode('utf-8')).hexdigest()[:12]
-    return f'{_HASH_PREFIX}{h}'
-
+# ---- Postgres path / string literals --------------------------------
 
 def _pg_path_segment(seg):
     """
@@ -116,7 +45,7 @@ def _pg_path_array(segments):
     """
     Render literal segments as a Postgres text[] path literal. Braces
     are doubled so the result is safe to embed in a format-string
-    SQL fragment (Python format literal escaping: `{{` → `{`).
+    SQL fragment (Python format-literal escaping: `{{` → `{`).
     """
     return "'{{" + ",".join(_pg_path_segment(s) for s in segments) + "}}'"
 
@@ -128,15 +57,15 @@ def _pg_string_literal(s):
     return "'" + s.replace("'", "''") + "'"
 
 
-# ---- JSONPath fragments ----
+# ---- JSONPath fragments ---------------------------------------------
 
 _JP_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
 def _jsonpath_key(name):
     """
-    Format a key name for a JSONPath accessor. JSONPath uses double-quoted
-    strings for names that aren't plain identifiers.
+    Format a key name for a JSONPath accessor. JSONPath uses double-
+    quoted strings for names that aren't plain identifiers.
     """
     if _JP_IDENT_RE.fullmatch(name):
         return name
@@ -146,8 +75,9 @@ def _jsonpath_key(name):
 
 def _jsonpath_string_literal(s):
     """
-    Format a Python string as a JSONPath string literal. JSONPath strings
-    are double-quoted; escape backslashes and embedded double quotes.
+    Format a Python string as a JSONPath string literal. JSONPath
+    strings are double-quoted; escape backslashes and embedded double
+    quotes.
     """
     escaped = s.replace('\\', '\\\\').replace('"', '\\"')
     return f'"{escaped}"'
@@ -155,9 +85,9 @@ def _jsonpath_string_literal(s):
 
 def _jsonpath_value_literal(value):
     """
-    Inline a literal value in a JSONPath expression. Returns None if the
-    value cannot be safely inlined (caller should hoist to a JSONPath
-    variable instead).
+    Inline a literal value in a JSONPath expression. Returns None if
+    the value cannot be safely inlined (caller should hoist to a
+    JSONPath variable instead).
     """
     if value is None:
         return 'null'
@@ -180,8 +110,8 @@ _PRED_JSONPATH = {
 
 def _op_is_pattern_like(op):
     """
-    True if the op introduces a set-returning or recursive element that
-    can't be expressed as a literal JSON path — requires JSONPath.
+    True if the op introduces a set-returning or recursive element
+    that can't be expressed as a literal JSON path — requires JSONPath.
     """
     if isinstance(op, access.SliceFilter):
         return True
@@ -190,327 +120,51 @@ def _op_is_pattern_like(op):
     return False
 
 
-class ParamStyle(enum.StrEnum):
+# ---- Dialect cast for dollar-numeric --------------------------------
+#
+# SQL casts applied to dollar-numeric positional placeholders based on
+# the Python type of the bound value. Needed because asyncpg requires
+# the server to determine parameter types at prepare time; in
+# polymorphic contexts like `jsonb_build_object("any", "any", ...)`
+# there's no column type to infer from, so the cast pins it.
+# Non-primitive types (datetime, Decimal, dict, …) are left un-cast so
+# asyncpg's own type adapters can handle them.
+
+_DOLLAR_CAST_BY_PY_TYPE = {
+    bool: 'boolean',
+    int: 'bigint',
+    float: 'float8',
+    str: 'text',
+    bytes: 'bytea',
+}
+
+
+def _dollar_cast(value):
     """
-    SQL placeholder styles supported by `Resolver.build`. Values follow
-    PEP 249 naming where applicable; `dollar-numeric` covers Postgres's
-    native `$N` placeholders (used by asyncpg and similar drivers).
-
-    `StrEnum` — members compare equal to their string values, so callers
-    can pass either `ParamStyle.named` or `'named'`.
-
-    Output shape:
-      - `named` / `pyformat`: `(sql, params_dict)`. Repeated markers
-        share one binding entry (back-reference by name).
-      - `dollar-numeric` / `numeric`: `(sql, args_list)`. Repeated
-        markers share one position (back-reference by number).
-      - `qmark` / `format`: `(sql, args_list)`. Each marker occurrence
-        produces a separate arg — these styles have no back-reference
-        so a repeated substitution's value is emitted multiple times.
+    Return the SQL cast (e.g. `'text'`) appropriate for the given
+    Python value under `dollar-numeric` paramstyle, or None if no
+    cast should be emitted (asyncpg handles the type natively).
     """
-    named = 'named'                    # :name         (SQLAlchemy, sqlite3)
-    pyformat = 'pyformat'              # %(name)s      (psycopg)
-    qmark = 'qmark'                    # ?             (sqlite3 positional)
-    format = 'format'                  # %s            (psycopg positional)
-    numeric = 'numeric'                # :1, :2        (Oracle-style)
-    dollar_numeric = 'dollar-numeric'  # $1, $2        (asyncpg, native PG)
+    # bool is a subclass of int, so check bool first.
+    if isinstance(value, bool):
+        return 'boolean'
+    for py_type, cast in _DOLLAR_CAST_BY_PY_TYPE.items():
+        if type(value) is py_type:
+            return cast
+    return None
 
 
-_PARAMSTYLES = tuple(ps.value for ps in ParamStyle)
+# Side-effect: register the Postgres cast with the core so
+# Resolver.build applies it under `dollar-numeric`.
+_register_dialect_cast('dollar-numeric', _dollar_cast)
 
 
-class SQLFragment:
-    """
-    A format-string SQL fragment with placeholder markers and their
-    metadata.
-
-    - `text` is a string with `{name}` markers where a bind value
-      goes.
-    - `params` maps marker name → pre-hoisted value (literals resolved
-      at sqlize time, including bindings supplied then).
-    - `unbound` maps marker name → original substitution name (values
-      still to be provided at build time).
-
-    Fragments compose via `+` / `__radd__`, merging metadata:
-
-        combined = "SELECT " + r.select + " FROM t WHERE " + r.where
-
-    `str(sql)` returns the marker-form text — inspectable but not
-    directly executable. Use `Resolver.build(sql, ...)` to render into
-    driver-ready SQL.
-    """
-
-    __slots__ = ('text', 'params', 'unbound')
-
-    def __init__(self, text='', params=None, unbound=None):
-        self.text = text
-        self.params = dict(params or {})
-        self.unbound = dict(unbound or {})
-
-    def __str__(self):
-        return self.text
-
-    def __repr__(self):
-        return f'SQLFragment({self.text!r})'
-
-    def __eq__(self, other):
-        if isinstance(other, SQLFragment):
-            return (self.text == other.text
-                    and self.params == other.params
-                    and self.unbound == other.unbound)
-        return NotImplemented
-
-    def __hash__(self):
-        return hash((self.text,
-                     tuple(sorted(self.params.items())),
-                     tuple(sorted(self.unbound.items()))))
-
-    def __bool__(self):
-        return bool(self.text)
-
-    def __add__(self, other):
-        if isinstance(other, SQLFragment):
-            return SQLFragment(self.text + other.text,
-                       {**self.params, **other.params},
-                       {**self.unbound, **other.unbound})
-        if isinstance(other, str):
-            return SQLFragment(self.text + other, self.params, self.unbound)
-        return NotImplemented
-
-    def __radd__(self, other):
-        if isinstance(other, str):
-            return SQLFragment(other + self.text, self.params, self.unbound)
-        return NotImplemented
-
-    def markers(self):
-        """
-        Yield marker names in occurrence order (duplicates included).
-        """
-        return [name for _, name, _, _ in _FORMATTER.parse(self.text)
-                if name is not None]
-
-    def substitute(self, replacer):
-        """
-        Return self.text with every `{marker}` replaced by the return
-        value of `replacer(marker_name)`. Text-level operation: the
-        caller decides what placeholder form to emit (`:name`, `$N`,
-        `?`, etc.) and is responsible for tracking per-marker values
-        externally. Literal braces in the fragment (doubled as `{{`/
-        `}}`) are unescaped to single braces in the output, per Python
-        format-string rules.
-
-        `replacer(name)` is called **once per occurrence**, in source
-        order. Callers that want back-referencing semantics (e.g.
-        `:name` or `$N` sharing one slot across multiple occurrences)
-        must cache results themselves.
-        """
-        parts = []
-        for literal, name, _, _ in _FORMATTER.parse(self.text):
-            parts.append(literal)
-            if name is not None:
-                parts.append(replacer(name))
-        return ''.join(parts)
-
-
-class Resolver:
-    """
-    Result of `sqlize(...)`. Carries paramstyle-neutral SQL fragments as
-    `SQLFragment` objects plus the union of their unbound bindings.
-
-    Attributes
-    ----------
-    select : SQL | None
-        Extraction expression (e.g. `data #>> '{user,name}'`).
-    where : SQL | None
-        Predicate.
-    from_ : SQL | None
-        LATERAL / join fragment (future — None in v1).
-    unbound : dict
-        Union of all fragments' unbound mappings: bind name → original
-        substitution name. Convenient for listing required bindings
-        before calling `build`.
-
-    Call `Resolver.build(sql, paramstyle=..., **bindings)` with any
-    `SQLFragment` (usually composed from this Resolver's fragments) to
-    render final SQL.
-    """
-
-    __slots__ = ('select', 'where', 'from_', 'unbound')
-
-    def __init__(self, select=None, where=None, from_=None, unbound=None):
-        self.select = select
-        self.where = where
-        self.from_ = from_
-        self.unbound = dict(unbound or {})
-
-    def __repr__(self):
-        bits = []
-        for attr in ('select', 'where', 'from_'):
-            v = getattr(self, attr)
-            if v is not None:
-                bits.append(f'{attr}={v.text!r}')
-        if self.unbound:
-            bits.append(f'unbound={list(self.unbound.values())}')
-        return f'Resolver({", ".join(bits)})'
-
-    @classmethod
-    def build(cls, sql, paramstyle='named', **bindings):
-        """
-        Render a composed `SQLFragment` into driver-ready SQL text plus
-        a params structure.
-
-        Returns `(text, params_or_args)`:
-          - `paramstyle='named'` → `(sql_text_with_colon_names, dict)`
-          - `paramstyle='dollar-numeric'` → `(sql_text_with_$N, list)`
-
-        Raises `TranslationError` on:
-          - unsupported paramstyle
-          - unknown binding (kwarg not corresponding to any unbound
-            substitution in the fragment)
-          - missing binding for an unbound marker present in the text
-        """
-        if not isinstance(sql, SQLFragment):
-            raise TranslationError(
-                f'build requires an SQLFragment, got {type(sql).__name__}'
-            )
-        if paramstyle not in _PARAMSTYLES:
-            raise TranslationError(
-                f'unsupported paramstyle: {paramstyle!r}'
-            )
-        # Validate bindings: every kwarg must correspond to an unbound
-        # orig name in this fragment.
-        expected_origs = set(sql.unbound.values())
-        extra = set(bindings) - expected_origs
-        if extra:
-            raise TranslationError(
-                f'unknown binding(s) for this fragment: {sorted(extra)}'
-            )
-
-        # Build a per-paramstyle replacer. Replacers are called once
-        # per marker occurrence — name-keyed styles cache results so
-        # repeated markers share a single param; positional back-ref
-        # styles (numeric, dollar-numeric) cache by position; qmark /
-        # format emit a fresh arg for every occurrence.
-        missing = []
-        if paramstyle in ('named', 'pyformat'):
-            out_params = {}
-            fmt = ':{name}' if paramstyle == 'named' else '%({name})s'
-
-            def replacer(marker):
-                value = cls._lookup_value(sql, marker, bindings, missing)
-                if value is _MISSING:
-                    return ''
-                out_params[marker] = value
-                return fmt.format(name=marker)
-
-            out_values = out_params
-        elif paramstyle in ('numeric', 'dollar-numeric'):
-            prefix = '$' if paramstyle == 'dollar-numeric' else ':'
-            out_args = []
-            pos_by_marker = {}
-
-            def replacer(marker):
-                if marker in pos_by_marker:
-                    return pos_by_marker[marker]
-                value = cls._lookup_value(sql, marker, bindings, missing)
-                if value is _MISSING:
-                    return ''
-                out_args.append(value)
-                ph = f'{prefix}{len(out_args)}'
-                pos_by_marker[marker] = ph
-                return ph
-
-            out_values = out_args
-        else:  # qmark, format — no back-reference
-            placeholder = '?' if paramstyle == 'qmark' else '%s'
-            out_args = []
-
-            def replacer(marker):
-                value = cls._lookup_value(sql, marker, bindings, missing)
-                if value is _MISSING:
-                    return ''
-                out_args.append(value)
-                return placeholder
-
-            out_values = out_args
-
-        final = sql.substitute(replacer)
-
-        if missing:
-            raise TranslationError(
-                f'missing binding(s) for substitution(s): '
-                f'{sorted(set(missing))}'
-            )
-        return final, out_values
-
-    @staticmethod
-    def _lookup_value(sql, marker, bindings, missing):
-        """
-        Resolve a marker to its value using the fragment's own
-        metadata, supplemented by caller-provided bindings. Records
-        marker-side misses in `missing` and returns `_MISSING` so the
-        caller can continue scanning (build raises after the full pass).
-        """
-        if marker in sql.params:
-            return sql.params[marker]
-        if marker in sql.unbound:
-            orig = sql.unbound[marker]
-            if orig not in bindings:
-                missing.append(orig)
-                return _MISSING
-            return bindings[orig]
-        raise TranslationError(
-            f'unknown marker {{{marker}}} in SQL fragment'
-        )
-
-
-class _ParamState:
-    """
-    Shared state for hoisted params across a translate call and its
-    sub-translators. ParamStyle-neutral — fragments emit `{name}`
-    markers; final paramstyle is chosen at build time.
-
-    Fields:
-      params  — marker name → pre-hoisted value (literals + resolved
-                substitutions)
-      unbound — marker name → original substitution name (to be bound
-                later)
-    """
-
-    def __init__(self):
-        self.params = {}    # marker name → resolved value
-        self.unbound = {}   # marker name → original subst name
-        self._gen_counter = 0
-        self._by_orig = {}  # original subst name → marker name (dedup)
-
-    def hoist_literal(self, value):
-        """
-        Hoist a concrete literal. Returns the marker form `{name}`
-        ready to embed in SQL text.
-        """
-        self._gen_counter += 1
-        name = f'{_GEN_PREFIX}{self._gen_counter}'
-        self.params[name] = value
-        return _marker(name)
-
-    def hoist_named(self, name):
-        """
-        Hoist a named substitution. Returns the marker form `{name}`.
-        Repeated uses of the same original name share one marker.
-        """
-        name = str(name)
-        if name in self._by_orig:
-            return _marker(self._by_orig[name])
-        marker = _param_name_for_subst(name)
-        self._by_orig[name] = marker
-        self.unbound[marker] = name
-        return _marker(marker)
-
+# ---- Translator -----------------------------------------------------
 
 class _Translator:
     """
-    Walks the ops tree producing SQL fragments, sharing a _ParamState
-    across branches and sub-translators.
+    Walks the ops tree producing Postgres SQL fragments, sharing a
+    _ParamState across branches and sub-translators.
     """
 
     def __init__(self, state=None):
@@ -527,8 +181,8 @@ class _Translator:
             raise TranslationError('empty path')
         col_op = ops[0]
         rest = ops[1:]
-        # Column-level guard: `status = "active"` has one op, a ValueGuard
-        # wrapping the column key.
+        # Column-level guard: `status = "active"` has one op, a
+        # ValueGuard wrapping the column key.
         if isinstance(col_op, wrappers.ValueGuard):
             if rest:
                 raise TranslationError('path continues after column-level guard')
@@ -552,8 +206,7 @@ class _Translator:
         """
         Carry intermediate translation output. Keys are fragment names
         (`select`, `where`, `from_`), values are marker-form SQL text
-        strings. State (params, unbound) is read from self.state at
-        the top level.
+        strings.
         """
         return {k: v for k, v in kw.items() if v is not None}
 
@@ -610,14 +263,15 @@ class _Translator:
             return self._walk(col_ident, prefix + (segment,), rest)
         raise TranslationError(f'unsupported op: {type(op).__name__}')
 
-    # ---- Pattern paths via jsonb_path_exists ----
+    # ---- Pattern paths via jsonb_path_exists ------------------------
 
     def _pattern_predicate(self, col_ident, prefix, ops):
         """
-        Build a `jsonb_path_exists(col, 'path', vars_jsonb?)` predicate for
-        a path containing patterns. `prefix` is the tuple of literal
-        segments already accumulated (before the pattern section); `ops`
-        is the remaining path from the first pattern-like op onward.
+        Build a `jsonb_path_exists(col, 'path', vars_jsonb?)` predicate
+        for a path containing patterns. `prefix` is the tuple of
+        literal segments already accumulated (before the pattern
+        section); `ops` is the remaining path from the first
+        pattern-like op onward.
         """
         jvars = {}   # jsonpath var name → SQL placeholder expression
         parts = ['$']
@@ -635,16 +289,19 @@ class _Translator:
             parts.append(frag)
             if trailing_filter:
                 parts.append(f' ? ({trailing_filter})')
-            # If this op was a terminal ValueGuard, it consumed the guard;
-            # anything after is a bug.
+            # If this op was a terminal ValueGuard, it consumed the
+            # guard; anything after is a bug.
             if isinstance(op, wrappers.ValueGuard) and i != len(ops) - 1:
                 raise TranslationError('path continues after value guard')
         jsonpath_str = ''.join(parts)
         jsonpath_sql = _pg_string_literal(jsonpath_str)
         if not jvars:
             return f'jsonb_path_exists({col_ident}, {jsonpath_sql})'
+        # Inside jsonb_build_object the placeholder's SQL type is
+        # ambiguous (arg is declared `"any"`), so flag it for cast at
+        # build time via the `:cast` format spec.
         kv_pairs = ', '.join(
-            f"'{name}', {placeholder}"
+            f"'{name}', {_with_cast_spec(placeholder)}"
             for name, placeholder in jvars.items())
         return (f'jsonb_path_exists({col_ident}, {jsonpath_sql}, '
                 f'jsonb_build_object({kv_pairs}))')
@@ -652,9 +309,9 @@ class _Translator:
     def _op_to_jsonpath(self, op, jvars):
         """
         Translate one op into a JSONPath fragment. Returns
-        (fragment, trailing_filter_or_None).  trailing_filter is an
-        expression placed inside `? (...)` after the fragment — used for
-        guards and bracket filters.
+        (fragment, trailing_filter_or_None). trailing_filter is an
+        expression placed inside `? (...)` after the fragment — used
+        for guards and bracket filters.
         """
         # NB: Slot is a subclass of Key, so check Slot first.
         if isinstance(op, access.Slot):
@@ -729,8 +386,8 @@ class _Translator:
 
     def _guard_to_jsonpath(self, guard_op, jvars):
         """
-        Translate a ValueGuard's predicate to a JSONPath filter expression
-        (without the surrounding `? (...)`).
+        Translate a ValueGuard's predicate to a JSONPath filter
+        expression (without the surrounding `? (...)`).
         """
         if guard_op.transforms:
             raise TranslationError(
@@ -746,8 +403,9 @@ class _Translator:
 
     def _value_to_jsonpath(self, val, jvars):
         """
-        Render a guard / filter value as a JSONPath expression — either an
-        inline literal or a $var referencing a SQL placeholder.
+        Render a guard / filter value as a JSONPath expression —
+        either an inline literal or a $var referencing a SQL
+        placeholder.
         """
         if isinstance(val, matchers.NoneValue):
             return 'null'
@@ -794,10 +452,10 @@ class _Translator:
 
     def _jvar_for_placeholder(self, placeholder, jvars):
         """
-        Map a SQL placeholder marker (`{name}`) into a JSONPath variable
-        name, registering it in the vars dict. The JSONPath var name
-        mirrors the bind marker name — safe under any paramstyle since
-        marker names are always plain identifiers.
+        Map a SQL placeholder marker (`{name}`) into a JSONPath
+        variable name, registering it in the vars dict. The JSONPath
+        var name mirrors the bind marker name — safe under any
+        paramstyle since marker names are always plain identifiers.
         """
         if not (placeholder.startswith('{') and placeholder.endswith('}')):
             raise TranslationError(
@@ -809,8 +467,8 @@ class _Translator:
 
     def _filters_to_jsonpath(self, filters, jvars):
         """
-        Translate a sequence of FilterOp predicates to a JSONPath filter
-        expression (no surrounding `? (...)`).
+        Translate a sequence of FilterOp predicates to a JSONPath
+        filter expression (no surrounding `? (...)`).
         """
         parts = []
         for f in filters:
@@ -862,10 +520,10 @@ class _Translator:
 
     def _filter_key_to_jsonpath(self, key):
         """
-        Translate a FilterKey to the LHS of a JSONPath filter predicate,
-        relative to `@` (current node). FilterKey.parts contains raw
-        matchers (Word, Wildcard, Numeric, etc.) plus access ops for
-        slots/slices — handle both forms.
+        Translate a FilterKey to the LHS of a JSONPath filter
+        predicate, relative to `@` (current node). FilterKey.parts
+        contains raw matchers (Word, Wildcard, Numeric, etc.) plus
+        access ops for slots/slices — handle both forms.
         """
         if isinstance(key, _filters.FilterKey):
             parts = ['@']
@@ -903,7 +561,7 @@ class _Translator:
             f'unsupported filter key: {type(key).__name__}'
         )
 
-    # ---- scalar (non-pattern) path helpers ----
+    # ---- scalar (non-pattern) path helpers --------------------------
 
     def _segment_from_key(self, key_op):
         if not isinstance(key_op, access.Key):
@@ -1142,10 +800,12 @@ class _Translator:
         return {'select': select, 'where': joined}
 
 
+# ---- Public entry point ---------------------------------------------
+
 def sqlize(path, *, bindings=None, flavor='postgres'):
     """
-    Translate a dotted path into a `Resolver` carrying paramstyle-neutral
-    SQL fragments.
+    Translate a dotted path into a `Resolver` carrying paramstyle-
+    neutral SQL fragments.
 
     path — dotted path string or pre-parsed Dotted result.
     bindings — optional mapping/list used to resolve substitutions at
@@ -1156,13 +816,13 @@ def sqlize(path, *, bindings=None, flavor='postgres'):
         implemented.
 
     Literals on the RHS of guards are hoisted for injection safety.
-    Substitutions that are valid SQL identifiers bind by that name; any
-    other form (dotted, quoted, punctuation) gets a deterministic
+    Substitutions that are valid SQL identifiers bind by that name;
+    any other form (dotted, quoted, punctuation) gets a deterministic
     `_s_<hash>` marker.
 
     Use `Resolver.build(sql, paramstyle=..., **bindings)` on any SQL
-    fragment (or composition like `r.select + r.where`) to render final
-    driver-ready SQL.
+    fragment (or composition like `r.select + r.where`) to render
+    final driver-ready SQL.
 
     >>> r = sqlize("status = 'active'")
     >>> Resolver.build(r.where)

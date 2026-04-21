@@ -26,11 +26,11 @@ test: install
 # Integration tests only (requires a live Postgres reachable via
 # DOTTED_TEST_DSN, defaults to postgres://postgres:postgres@localhost:5432/postgres).
 test.integration: install
-	$(VENV_BIN)/pytest --integration tests/integration/ $(PYTEST_ARGS)
+	$(VENV_BIN)/pytest tests/integration/ $(PYTEST_ARGS)
 
 # Everything: unit + integration.
 test.all: install
-	$(VENV_BIN)/pytest --integration $(PYTEST_ARGS)
+	$(VENV_BIN)/pytest --all $(PYTEST_ARGS)
 
 clean:
 	rm -rf $(VENV) .pytest_cache *.egg-info build dist
