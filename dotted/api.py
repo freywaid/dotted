@@ -17,7 +17,7 @@ from . import matchers
 from . import utypes
 
 
-class Attrs(enum.StrEnum):
+class Attrs(enum.Enum):
     """
     Feature flags for unpack attr inclusion.
     """
@@ -25,7 +25,7 @@ class Attrs(enum.StrEnum):
     special = 'special'
 
 
-class GroupMode(enum.StrEnum):
+class GroupMode(enum.Enum):
     """
     Controls what match() returns in groups.
 
@@ -298,9 +298,9 @@ def _is_mutable_container(obj):
     # Namedtuples
     if hasattr(obj, '_fields') and hasattr(obj, '_replace'):
         return False
-    # Frozen dataclasses
-    import dataclasses
-    if dataclasses.is_dataclass(obj) and obj.__dataclass_fields__:
+    # Frozen dataclasses (no-op on Python 3.6 — no dataclasses module)
+    from .utils import is_dataclass
+    if is_dataclass(obj) and obj.__dataclass_fields__:
         # Check if frozen
         try:
             # Try to detect frozen - frozen dataclasses raise FrozenInstanceError
@@ -770,7 +770,9 @@ def match(pattern, key, groups=False, partial=True, strict=False):
     'b.b.b'
     >>> match('*b', 'a.b.c')
     """
-    _patterns_only = (groups == GroupMode.patterns)
+    # groups can be a bool, a GroupMode member, or its string value.
+    _patterns_only = (groups == GroupMode.patterns
+                      or groups == GroupMode.patterns.value)
 
     def returns(r, matches, is_pat=None):
         if not groups:
@@ -1110,11 +1112,13 @@ def unpack(obj, attrs=None):
     >>> pack(r) == d
     True
     """
-    if not attrs:
+    # Accept either `Attrs` enum members or their string values.
+    attr_values = {a.value if isinstance(a, Attrs) else a for a in (attrs or ())}
+    if not attr_values:
         extra = ''
-    elif set(attrs) >= {Attrs.standard, Attrs.special}:
+    elif attr_values >= {Attrs.standard.value, Attrs.special.value}:
         extra = ', @*'
-    elif Attrs.standard in attrs:
+    elif Attrs.standard.value in attr_values:
         extra = ', @/(?!__).*/'
     else:
         extra = ', @/__.*/'

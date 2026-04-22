@@ -811,10 +811,14 @@ def test_ps_mixed_pattern_and_scalar(paramstyle):
 
 @pytest.mark.parametrize('style', list(ParamStyle))
 def test_paramstyle_enum_member_accepted(style):
-    """Enum members work interchangeably with their string values."""
+    """
+    Enum members normalize to their string value at `Resolver.build`
+    entry — passing `ParamStyle.named` produces the same output as
+    passing `'named'`.
+    """
     r = sqlize('age = 30')
     sql_enum, args_enum = Resolver.build(r.where, paramstyle=style)
-    sql_str, args_str = Resolver.build(r.where, paramstyle=str(style))
+    sql_str, args_str = Resolver.build(r.where, paramstyle=style.value)
     assert sql_enum == sql_str
     assert args_enum == args_str
 

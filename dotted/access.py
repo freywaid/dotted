@@ -599,10 +599,10 @@ class Attr(Key):
         # Try namedtuple _replace
         if hasattr(node, '_replace'):
             return node._replace(**{key: val})
-        # Try dataclasses.replace for frozen dataclass
-        import dataclasses
-        if dataclasses.is_dataclass(node):
-            return dataclasses.replace(node, **{key: val})
+        # Try dataclasses.replace for frozen dataclass (skipped on 3.6)
+        from .utils import is_dataclass, dataclass_replace
+        if is_dataclass(node):
+            return dataclass_replace(node, **{key: val})
         raise AttributeError(f"Cannot set attribute '{key}' on {type(node).__name__}")
     def upsert(self, node, val):
         if not self.is_pattern():
@@ -622,9 +622,9 @@ class Attr(Key):
         updates = {k: val for k in keys}
         if hasattr(node, '_replace'):
             return node._replace(**updates)
-        import dataclasses
-        if dataclasses.is_dataclass(node):
-            return dataclasses.replace(node, **updates)
+        from .utils import is_dataclass, dataclass_replace
+        if is_dataclass(node):
+            return dataclass_replace(node, **updates)
         raise AttributeError(f"Cannot set attributes on {type(node).__name__}")
 
     def pop(self, node, key):

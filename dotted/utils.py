@@ -2,6 +2,31 @@
 Shared type-checking helpers (duck-typing).
 """
 
+try:
+    import dataclasses as _dc
+except ImportError:
+    # Python 3.6 ships without dataclasses; treat everything as non-dataclass.
+    _dc = None
+
+
+def is_dataclass(obj):
+    """
+    True if `obj` is a dataclass (class or instance). Returns False on
+    interpreters without the stdlib `dataclasses` module (Python 3.6).
+    """
+    return _dc is not None and _dc.is_dataclass(obj)
+
+
+def dataclass_replace(obj, **changes):
+    """
+    Thin wrapper over `dataclasses.replace(obj, **changes)`. Call only
+    after `is_dataclass(obj)` is True — raises on interpreters without
+    the module.
+    """
+    if _dc is None:
+        raise RuntimeError('dataclasses module is unavailable')
+    return _dc.replace(obj, **changes)
+
 
 def is_dict_like(node):
     """

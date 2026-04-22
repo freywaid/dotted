@@ -109,14 +109,15 @@ def _param_name_for_subst(name):
 
 # ---- Paramstyle enum ------------------------------------------------
 
-class ParamStyle(enum.StrEnum):
+class ParamStyle(enum.Enum):
     """
     SQL placeholder styles supported by `Resolver.build`. Values follow
     PEP 249 naming where applicable; `dollar-numeric` covers Postgres's
     native `$N` placeholders (used by asyncpg and similar drivers).
 
-    `StrEnum` — members compare equal to their string values, so callers
-    can pass either `ParamStyle.named` or `'named'`.
+    Members carry the paramstyle string as their `.value`. `Resolver.build`
+    accepts either a `ParamStyle` member or the plain string — enum
+    members are normalized to their value at the entry point.
 
     Output shape:
       - `named` / `pyformat`: `(sql, params_dict)`. Repeated markers
@@ -544,6 +545,9 @@ class Resolver(collections.abc.Mapping):
             else:
                 cast_fn = cls.cast_fn if cls.cast else None
         else:
+            # Accept a ParamStyle enum member or its string value.
+            if isinstance(paramstyle, ParamStyle):
+                paramstyle = paramstyle.value
             if paramstyle not in _PARAMSTYLES:
                 raise TranslationError(
                     f'unsupported paramstyle: {paramstyle!r}'

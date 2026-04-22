@@ -3154,8 +3154,9 @@ retained as a low-level escape hatch that takes an explicit paramstyle
 and bypasses the driver's cast setting. Normal application code uses
 the instance form above.
 
-A `ParamStyle` `StrEnum` is available for the low-level classmethod
-and for introspection:
+A `ParamStyle` enum is available for the low-level classmethod and
+for introspection. Members are accepted alongside their `.value`
+strings at `Resolver.build` — enum members normalize internally:
 
     >>> dotted.ParamStyle.named, dotted.ParamStyle.dollar_numeric
     (<ParamStyle.named: 'named'>, <ParamStyle.dollar_numeric: 'dollar-numeric'>)

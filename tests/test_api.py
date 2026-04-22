@@ -602,6 +602,12 @@ def test_namedtuple_update_index_pattern():
 
 
 # frozen dataclass operations
+#
+# `dataclasses` is stdlib from Python 3.7; skip the whole group on 3.6
+# which is still deployed in some enterprise / container images.
+
+_dataclasses = pytest.importorskip('dataclasses')
+
 
 def test_frozen_dataclass_get():
     from dataclasses import dataclass
