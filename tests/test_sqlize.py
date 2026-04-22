@@ -1262,3 +1262,84 @@ def test_resolver_splat_as_kwargs_works():
     r = sqlize('data.users[*].age')
     kwargs = {**r}
     assert set(kwargs) == {'select', 'where', 'lateral'}
+
+
+# ---------------- psycopg3 alias + pyformat cast emission ----------------
+
+def test_psycopg3_alias_resolves_to_psycopg_driver():
+    """
+    `psycopg3` and `psycopg` both dispatch to `PsycopgResolver`; the
+    canonical driver name on the class is `'psycopg'`.
+    """
+    r1 = sqlize('age = 30', driver='psycopg')
+    r2 = sqlize('age = 30', driver='psycopg3')
+    assert type(r1) is type(r2)
+    assert type(r1).driver == 'psycopg'
+
+
+def test_psycopg3_appears_in_drivers_list():
+    """
+    Both names are registered.
+    """
+    from dotted.sql import drivers
+    names = drivers()
+    assert 'psycopg' in names
+    assert 'psycopg3' in names
+
+
+def test_psycopg_emits_cast_inside_jsonb_build_object():
+    """
+    Psycopg v3 uses pyformat but binary mode resolves placeholder
+    types server-side — it needs explicit casts the same way asyncpg
+    does. Driver classvar `cast = True` now honors the `:cast` marker
+    spec under pyformat.
+    """
+    r = sqlize('data.users[*].age >= $(min)', driver='psycopg')
+    sql, params = r.build(r.where, min=30)
+    assert sql == (
+        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
+        "jsonb_build_object('min', %(min)s::bigint))"
+    )
+    assert params == {'min': 30}
+
+
+def test_psycopg2_still_emits_no_cast():
+    """
+    Psycopg2 substitutes placeholders client-side and has no
+    server-side type inference issue. `cast = False` (inherited) →
+    no cast emitted, even though the marker carries `:cast`.
+    """
+    r = sqlize('data.users[*].age >= $(min)', driver='psycopg2')
+    sql, params = r.build(r.where, min=30)
+    assert sql == (
+        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
+        "jsonb_build_object('min', %(min)s))"
+    )
+    assert params == {'min': 30}
+
+
+def test_cast_under_named_paramstyle_with_driver_cast_true():
+    """
+    The `:cast` spec is now honored across every paramstyle when the
+    driver's `cast_fn` is active — not just dollar-numeric. Verify the
+    named-style renderer inherits the same fix.
+    """
+    from dotted.sql import Resolver
+    from dotted.sql.pg import PostgresMixin
+
+    # Spin up an ad-hoc named-style driver with cast on, using
+    # PostgresMixin's cast_fn. (Don't register — this is unit-test
+    # local.)
+    class _NamedCastResolver(PostgresMixin, Resolver):
+        paramstyle = 'named'
+        cast       = True
+
+    r = _NamedCastResolver()
+    r.translate(__import__('dotted').parse(
+        'data.users[*].age >= $(min)', partial=True).ops)
+    sql, params = r.build(r.where, min=30)
+    assert sql == (
+        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
+        "jsonb_build_object('min', :min::bigint))"
+    )
+    assert params == {'min': 30}

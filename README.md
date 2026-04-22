@@ -2777,11 +2777,11 @@ driver.
 
 Registered drivers:
 
-| driver      | placeholders    | output shape | notes                                     |
-|-------------|-----------------|--------------|-------------------------------------------|
-| `asyncpg`   | `$1, $2, ...`   | list         | Native Postgres; always server-side PREPARE — emits `::cast` for polymorphic contexts. |
-| `psycopg2`  | `%(name)s` / `%s` | dict       | Client-side parameter substitution.       |
-| `psycopg`   | `%(name)s` / `%s` | dict       | psycopg v3 — server-side binding in binary mode, so casts on. |
+| driver                  | placeholders      | output shape | notes                                                                                  |
+|-------------------------|-------------------|--------------|----------------------------------------------------------------------------------------|
+| `asyncpg`               | `$1, $2, ...`     | list         | Native Postgres; always server-side PREPARE — emits `::cast` for polymorphic contexts. |
+| `psycopg2`              | `%(name)s` / `%s` | dict         | Client-side parameter substitution. No casts.                                          |
+| `psycopg` / `psycopg3`  | `%(name)s` / `%s` | dict         | psycopg v3 (same class under either name) — server-side binding in binary mode, emits `::cast` for polymorphic contexts. |
 
 Pick the driver you'll actually hand the SQL to; it determines the
 placeholder syntax and whether explicit SQL casts are emitted.

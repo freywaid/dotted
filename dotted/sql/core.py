@@ -574,6 +574,19 @@ def _render(sql, paramstyle, cast_fn, bindings):
     emitted, no cast is applied. Same behavior across every paramstyle.
     """
     missing = []
+
+    def _apply_cast(ph, value, spec):
+        """
+        If the marker carried `:cast` and a cast_fn is provided, append
+        `::<type>` to the placeholder. Shared across every paramstyle
+        branch so `cast = True` on a driver honors the spec uniformly.
+        """
+        if spec == 'cast' and cast_fn is not None:
+            cast = cast_fn(value)
+            if cast is not None:
+                return f'{ph}::{cast}'
+        return ph
+
     if paramstyle in ('named', 'pyformat'):
         out_params = {}
         fmt = ':{name}' if paramstyle == 'named' else '%({name})s'
@@ -585,7 +598,7 @@ def _render(sql, paramstyle, cast_fn, bindings):
             if isinstance(value, Raw):
                 return value.sql
             out_params[marker] = value
-            return fmt.format(name=marker)
+            return _apply_cast(fmt.format(name=marker), value, spec)
 
         out_values = out_params
     elif paramstyle in ('numeric', 'dollar-numeric'):
@@ -604,11 +617,7 @@ def _render(sql, paramstyle, cast_fn, bindings):
                 # occurrence emits the raw SQL afresh.
                 return value.sql
             out_args.append(value)
-            ph = f'{prefix}{len(out_args)}'
-            if spec == 'cast' and cast_fn is not None:
-                cast = cast_fn(value)
-                if cast is not None:
-                    ph = f'{ph}::{cast}'
+            ph = _apply_cast(f'{prefix}{len(out_args)}', value, spec)
             pos_by_marker[marker] = ph
             return ph
 
@@ -624,7 +633,7 @@ def _render(sql, paramstyle, cast_fn, bindings):
             if isinstance(value, Raw):
                 return value.sql
             out_args.append(value)
-            return placeholder
+            return _apply_cast(placeholder, value, spec)
 
         out_values = out_args
 

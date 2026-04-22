@@ -1009,11 +1009,17 @@ class Psycopg2Resolver(PostgresMixin, Resolver):
 
 
 @driver('psycopg')
+@driver('psycopg3')
 class PsycopgResolver(PostgresMixin, Resolver):
     """
     psycopg (v3) driver. Uses `%s` / `%(name)s` like psycopg2 but can
     run in binary / server-bound mode where placeholder types are
     resolved server-side — keep casts on to stay correct in that mode.
+
+    Registered under both `'psycopg'` (matches the Python module name)
+    and `'psycopg3'` (matches what most humans type). Either works in
+    `sqlize(..., driver=...)`; `type(r).driver` holds the canonical
+    `'psycopg'`.
     """
     paramstyle = 'pyformat'
     cast       = True
