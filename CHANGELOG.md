@@ -3,6 +3,12 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.10]
+
+### Added
+- `project_urls` in `setup.py` so PyPI shows a "Changelog" sidebar
+  link pointing at `CHANGELOG.md` on GitHub.
+
 ## [0.43.9]
 
 ### Changed (breaking)

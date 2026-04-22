@@ -5,7 +5,7 @@ with open("README.md", "rt") as f:
 
 setuptools.setup(
     name="dotted_notation",
-    version="0.43.9",
+    version="0.43.10",
     author="Frey Waid",
     author_email="logophage1@gmail.com",
     description="Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms",
@@ -13,6 +13,10 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/freywaid/dotted",
+    project_urls={
+        "Changelog": "https://github.com/freywaid/dotted/blob/master/CHANGELOG.md",
+        "Source":    "https://github.com/freywaid/dotted",
+    },
     packages=setuptools.find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
