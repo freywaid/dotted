@@ -3,6 +3,24 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.13]
+
+### Added
+- `Resolver.lateral` — new fragment: `LATERAL jsonb_path_query(...) AS
+  _patN(value)` for pattern paths. Compose `r.select` + `r.lateral`
+  into a FROM for row-per-match extraction; `r.where` still filters
+  rows via `jsonb_path_exists`. Same Resolver carries both shapes.
+- `ParamPool.alloc_pattern_alias()` — shared `_pat1`, `_pat2`, …
+  counter so pattern paths sharing a pool don't alias-collide.
+- `Resolver` implements the `collections.abc.Mapping` protocol over
+  its fragment attributes: `r['where']`, `list(r.keys())`, `dict(r)`,
+  `**r` splat, `isinstance(r, Mapping)`.
+
+### Changed
+- Pattern paths: `r.select` is now `_patN.value` (was a bare column
+  reference). The bare form was effectively meaningless; the new
+  value composes with `r.lateral` for extract-style queries.
+
 ## [0.43.12]
 
 ### Added
