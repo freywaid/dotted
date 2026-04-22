@@ -353,10 +353,11 @@ class Resolver:
 
     # ---- overridable translation surface ----
 
-    def translate(self, ops):
+    def translate(self, ops, pool=None):
         """
         Walk the parsed ops tree, populating self.select / self.where /
-        self.from_ / self.unbound.
+        self.from_ / self.unbound. Optionally accepts a shared
+        `ParamPool`; when None, the mixin creates a fresh one.
 
         Default implementation raises — flavor mixins (like
         PostgresMixin) supply the real implementation.
@@ -528,20 +529,32 @@ def _lookup_value(sql, marker, bindings, missing):
     )
 
 
-# ---- Param state for translators ------------------------------------
+# ---- Shared bind-parameter pool -------------------------------------
 
-class _ParamState:
+class ParamPool:
     """
-    Shared state for hoisted params across a translate call and its
-    nested sub-translations (group branches, reference subpaths).
-    ParamStyle-neutral — fragments emit `{name}` markers; final
-    paramstyle is chosen at build time.
+    Shared pool of bind-parameter metadata that can span multiple
+    `sqlize()` calls. Pass the same `ParamPool` as `pool=` to each
+    `sqlize()` so the Resolvers it produces share one bind-name space
+    — literal hoists count through a single counter, substitutions
+    dedup across Resolvers, and the combined `params` / `unbound`
+    maps never have collisions.
+
+    Without a shared pool, each `sqlize()` creates its own and two
+    Resolvers can independently pick the same marker name (e.g.
+    `_p1`). Composing such fragments via `+` would silently overwrite
+    one with the other.
 
     Fields:
       params  — marker name → pre-hoisted value (literals + resolved
                 substitutions)
       unbound — marker name → original substitution name (to be bound
-                later)
+                at build time)
+
+    Normal use is handoff only — construct once, pass to each
+    `sqlize()` that should share the bind space, then read each
+    Resolver's fragments normally. Mutating the pool externally is
+    not supported.
     """
 
     def __init__(self):
@@ -563,7 +576,9 @@ class _ParamState:
     def hoist_named(self, name):
         """
         Hoist a named substitution. Returns the marker form `{name}`.
-        Repeated uses of the same original name share one marker.
+        Repeated uses of the same original name share one marker —
+        within a single pool, which means across all Resolvers using
+        that pool.
         """
         name = str(name)
         if name in self._by_orig:
@@ -588,20 +603,27 @@ def _quote_ident(name):
 
 # ---- sqlize entry point ---------------------------------------------
 
-def sqlize(path, *, driver, bindings=None):
+def sqlize(path, *, driver, bindings=None, pool=None):
     """
     Translate a dotted path into a driver-specific `Resolver` instance
     carrying paramstyle-neutral SQL fragments.
 
     Arguments:
         path     — dotted path string or pre-parsed Dotted result.
-        driver   — required. Driver name registered via `@register`:
+        driver   — required. Driver name registered via `@driver`:
                    'asyncpg', 'psycopg2', 'psycopg', ...
         bindings — optional mapping/list used to resolve substitutions
                    at sqlize time. Path-position substitutions must be
                    resolved here or `TranslationError` is raised.
                    Unresolved value-position substitutions appear in
                    `r.unbound`.
+        pool     — optional `ParamPool` shared across multiple
+                   `sqlize()` calls. When Resolvers share a pool their
+                   bind-parameter names are allocated from a single
+                   counter so fragments from different Resolvers can
+                   be composed (via `+`, a CTE envelope, etc.) without
+                   marker-name collisions. Omit to give this Resolver
+                   its own private pool.
 
     The driver picks both the SQL flavor (via the class's flavor
     mixin, e.g. `PostgresMixin`) and the build-time rendering behavior
@@ -627,5 +649,5 @@ def sqlize(path, *, driver, bindings=None):
         )
     parsed = parse(path, bindings=bindings, partial=True)
     r = cls()
-    r.translate(parsed.ops)
+    r.translate(parsed.ops, pool=pool)
     return r

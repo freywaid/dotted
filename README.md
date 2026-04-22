@@ -2965,6 +2965,36 @@ Not yet supported:
 - Regex-in-access like `data./prefix_\d+/.field`
 - Pattern refs
 
+### Composing multiple Resolvers — ParamPool
+
+Each call to `dotted.sqlize()` allocates its own bind-parameter name
+pool, so two independent Resolvers can both emit `_p1` for their first
+hoisted literal. Composing their fragments via `+` (or wrapping them
+in a CTE) would then collide at render time — the second `_p1` would
+silently overwrite the first.
+
+Pass a shared `ParamPool` to every `sqlize()` call that should compose:
+
+    >>> pool = dotted.ParamPool()
+    >>> r1 = dotted.sqlize('status = "active"', driver='asyncpg', pool=pool)
+    >>> r2 = dotted.sqlize('age >= 30',          driver='asyncpg', pool=pool)
+    >>> combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    >>> dotted.Resolver.build(combined, paramstyle='dollar-numeric')
+    ('(status = $1) AND (age = $2)', ['active', 30])
+
+Substitutions by the same original name dedup across Resolvers sharing
+a pool — one slot, one value, back-referenced in the rendered SQL:
+
+    >>> pool = dotted.ParamPool()
+    >>> r1 = dotted.sqlize('age >= $(threshold)',   driver='asyncpg', pool=pool)
+    >>> r2 = dotted.sqlize('score >= $(threshold)', driver='asyncpg', pool=pool)
+    >>> combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    >>> dotted.Resolver.build(combined, paramstyle='dollar-numeric', threshold=100)
+    ('(age >= $1) AND (score >= $1)', [100])
+
+When a `ParamPool` isn't passed, each Resolver gets a private pool —
+the single-Resolver case continues to work unchanged.
+
 ### Adding a driver
 
 Drivers are registered via the `@dotted.sql.driver('<name>')`

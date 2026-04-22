@@ -13,16 +13,17 @@ runs. Every concrete render in this file goes through the classmethod
 """
 import pytest
 from dotted.sql import (
-    sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, TranslationError,
+    sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, ParamPool,
+    TranslationError,
 )
 
 
-def sqlize(path, *, driver='asyncpg', bindings=None):
+def sqlize(path, *, driver='asyncpg', bindings=None, pool=None):
     """
     Test-file shim: fills in a default driver so existing test calls
     `sqlize('path')` continue to work without touching every call site.
     """
-    return _sqlize(path, driver=driver, bindings=bindings)
+    return _sqlize(path, driver=driver, bindings=bindings, pool=pool)
 
 
 # All supported paramstyles as fixture values. Used to parametrize
@@ -816,3 +817,108 @@ def test_paramstyle_enum_member_accepted(style):
     sql_str, args_str = Resolver.build(r.where, paramstyle=str(style))
     assert sql_enum == sql_str
     assert args_enum == args_str
+
+
+# ---------------- shared ParamPool ----------------
+
+def test_pool_none_gives_independent_marker_spaces():
+    """
+    Without a shared pool each Resolver allocates from its own counter,
+    so two independent sqlize calls can both emit `_p1` — composing
+    them blind would collide (this test just documents the unshared
+    behavior; the next tests cover the shared fix).
+    """
+    r1 = sqlize('status = "active"')
+    r2 = sqlize('age = 30')
+    assert '_p1' in r1.where.params
+    assert '_p1' in r2.where.params
+    # Same marker name, different values — real collision if merged naively.
+    assert r1.where.params['_p1'] != r2.where.params['_p1']
+
+
+def test_pool_shared_avoids_marker_collision():
+    """
+    Two Resolvers sharing a pool allocate through one counter, so their
+    markers are distinct and fragment composition merges cleanly.
+    """
+    pool = ParamPool()
+    r1 = sqlize('status = "active"', pool=pool)
+    r2 = sqlize('age = 30', pool=pool)
+    assert r1.where.params == {'_p1': 'active'}
+    assert r2.where.params == {'_p2': 30}
+    assert pool.params == {'_p1': 'active', '_p2': 30}
+
+
+def test_pool_shared_fragment_composition_renders_both_params():
+    """
+    When the markers across two Resolvers don't collide, composing
+    their fragments produces a single SQLFragment whose render picks
+    up both params in order.
+    """
+    pool = ParamPool()
+    r1 = sqlize('status = "active"', pool=pool)
+    r2 = sqlize('age = 30', pool=pool)
+    combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    sql, args = Resolver.build(combined, paramstyle='dollar-numeric')
+    assert sql == '(status = $1) AND (age = $2)'
+    assert args == ['active', 30]
+
+
+def test_pool_shared_dedups_substitutions_across_resolvers():
+    """
+    A substitution by the same original name resolves to the same
+    marker across Resolvers that share a pool — one bind, one value,
+    back-referenced at render time.
+    """
+    pool = ParamPool()
+    r1 = sqlize('age >= $(threshold)', pool=pool)
+    r2 = sqlize('score >= $(threshold)', pool=pool)
+    combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    sql, args = Resolver.build(combined,
+                               paramstyle='dollar-numeric',
+                               threshold=100)
+    assert sql == '(age >= $1) AND (score >= $1)'
+    assert args == [100]
+
+
+def test_pool_shared_named_paramstyle_unique_keys():
+    """
+    Under `named`/`pyformat` the rendered placeholder carries the
+    marker name directly; shared pool ensures those names are
+    unique across Resolvers so the output dict has one entry per
+    real value.
+    """
+    pool = ParamPool()
+    r1 = sqlize('status = "active"', pool=pool)
+    r2 = sqlize('age = 30', pool=pool)
+    combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    sql, params = Resolver.build(combined, paramstyle='named')
+    assert sql == '(status = :_p1) AND (age = :_p2)'
+    assert params == {'_p1': 'active', '_p2': 30}
+
+
+def test_pool_mixed_literal_and_substitution_across_resolvers():
+    """
+    A pool spanning a literal hoist in r1 and a substitution in r2
+    generates distinct markers for each and renders with the right
+    mix of pre-hoisted and supplied values.
+    """
+    pool = ParamPool()
+    r1 = sqlize('status = "active"', pool=pool)
+    r2 = sqlize('age >= $(min_age)', pool=pool)
+    combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    sql, args = Resolver.build(combined,
+                               paramstyle='dollar-numeric',
+                               min_age=18)
+    assert sql == '(status = $1) AND (age >= $2)'
+    assert args == ['active', 18]
+
+
+def test_pool_is_public():
+    """
+    `ParamPool` is re-exported from both `dotted.sql` and `dotted`.
+    """
+    import dotted
+    import dotted.sql
+    assert ParamPool is dotted.ParamPool
+    assert ParamPool is dotted.sql.ParamPool

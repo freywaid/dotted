@@ -69,7 +69,7 @@ from .api import \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
-from .sql import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle
+from .sql import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
 
 __all__ = [
     # Core
@@ -88,7 +88,7 @@ __all__ = [
     'is_indeterminate', 'is_simple',
     'is_inverted', 'mutable',
     # SQL
-    'sqlize', 'Resolver', 'SQLFragment', 'ParamStyle', 'TranslationError',
+    'sqlize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
     # Constants
     'ANY', 'AUTO', 'Attrs', 'GroupMode',
 ]

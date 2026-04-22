@@ -27,7 +27,7 @@ from .core import (
     TranslationError,
     SQLFragment,
     Resolver,
-    _ParamState,
+    ParamPool,
     _FORMATTER,
     _quote_ident,
     _with_cast_spec,
@@ -182,18 +182,24 @@ class PostgresMixin:
     its binding model.
 
     Invariants while `translate()` runs:
-      - `self._state` is a live `_ParamState` shared across every
+      - `self._state` is a live `ParamPool` shared across every
         nested translation (group branches, reference subpaths).
+        When a pool is passed by the caller, `self._state` is that
+        pool — used to coordinate names across sibling Resolvers.
       - `self._state` is cleared back to None before translate()
         returns, so callers can reuse an instance safely.
     """
 
-    def translate(self, ops):
+    def translate(self, ops, pool=None):
         """
         Walk the parsed ops tree; populate `self.select`, `self.where`,
         `self.from_`, `self.unbound` with the rendered SQLFragments.
+
+        `pool` — optional `ParamPool` shared with sibling Resolvers so
+        bind-parameter names don't collide across fragments. When None,
+        a fresh pool is allocated for this call alone.
         """
-        self._state = _ParamState()
+        self._state = pool if pool is not None else ParamPool()
         try:
             raw = self._translate(ops)
         finally:
