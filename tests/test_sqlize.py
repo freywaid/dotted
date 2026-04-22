@@ -1077,3 +1077,188 @@ def test_raw_rejects_non_string():
     """
     with pytest.raises(TranslationError):
         Raw(42)
+
+
+# ---------------- Pattern-path LATERAL form ----------------
+
+def test_pattern_lateral_simple_wildcard():
+    """
+    Wildcard pattern produces a LATERAL clause (extract-style) plus
+    the existing jsonb_path_exists WHERE predicate.
+    """
+    r = sqlize('data.users[*].age')
+    assert str(r.select) == '_pat1.value'
+    assert str(r.where) == "jsonb_path_exists(data, '$.users[*].age')"
+    assert str(r.lateral) == (
+        "LATERAL jsonb_path_query(data, '$.users[*].age') AS _pat1(value)"
+    )
+
+
+def test_pattern_lateral_with_guard():
+    """
+    Pattern with a guard: the guard lives inside the jsonpath filter
+    in both the WHERE and LATERAL forms.
+    """
+    r = sqlize('data.users[*].age >= 30')
+    assert str(r.where) == (
+        "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+    )
+    assert str(r.lateral) == (
+        "LATERAL jsonb_path_query(data, '$.users[*].age ? (@ >= 30)') "
+        "AS _pat1(value)"
+    )
+
+
+def test_pattern_lateral_builds_with_driver_paramstyle():
+    """
+    Rendering the lateral fragment under the driver paramstyle inlines
+    any hoisted placeholders (strings / substitutions) with casts per
+    driver. The lateral and where share the same jsonpath so their
+    jsonb_build_object vars match.
+    """
+    r = sqlize('data.*.status = "on"')
+    where_sql, where_args = Resolver.build(r.where, paramstyle='dollar-numeric')
+    lat_sql, lat_args = Resolver.build(r.lateral, paramstyle='dollar-numeric')
+    assert where_sql == (
+        "jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
+        "jsonb_build_object('_p1', $1::text))"
+    )
+    assert lat_sql == (
+        "LATERAL jsonb_path_query(data, '$.*.status ? (@ == $_p1)', "
+        "jsonb_build_object('_p1', $1::text)) AS _pat1(value)"
+    )
+    assert where_args == ['on']
+    assert lat_args == ['on']
+
+
+def test_pattern_lateral_alias_from_shared_pool():
+    """
+    Pool-shared translation of two pattern paths allocates unique
+    aliases from the pool's counter so their lateral clauses don't
+    collide in a composed query.
+    """
+    pool = ParamPool()
+    r1 = sqlize('data.users[*].age', pool=pool)
+    r2 = sqlize('data.orders[*].amount', pool=pool)
+    assert '_pat1' in str(r1.lateral)
+    assert '_pat2' in str(r2.lateral)
+    assert str(r1.select) == '_pat1.value'
+    assert str(r2.select) == '_pat2.value'
+
+
+def test_pattern_lateral_alias_per_resolver_when_no_pool():
+    """
+    Without a shared pool each Resolver's own ParamPool resets the
+    counter, so two independent pattern Resolvers both emit `_pat1`.
+    (Composing them blind collides — use a shared pool.)
+    """
+    r1 = sqlize('data.users[*].age')
+    r2 = sqlize('data.orders[*].amount')
+    assert '_pat1' in str(r1.lateral)
+    assert '_pat1' in str(r2.lateral)
+
+
+def test_scalar_path_has_no_lateral():
+    """
+    Scalar (non-pattern) paths don't produce a lateral.
+    """
+    r = sqlize('status = "active"')
+    assert r.lateral is None
+    r = sqlize('data.user.age >= 30')
+    assert r.lateral is None
+    r = sqlize('data.user.name')
+    assert r.lateral is None
+
+
+def test_pattern_extract_composition():
+    """
+    End-to-end: compose the extract-style query, pulling id plus each
+    matched value by joining on the lateral. The engine's job — sqlize
+    supplies the pieces.
+    """
+    r = sqlize('data.users[*].age >= 30')
+    select_sql, select_args = Resolver.build(
+        r.select, paramstyle='dollar-numeric')
+    lat_sql, _ = Resolver.build(r.lateral, paramstyle='dollar-numeric')
+    query = f"SELECT id, {select_sql} FROM items, {lat_sql}"
+    assert query == (
+        "SELECT id, _pat1.value "
+        "FROM items, LATERAL jsonb_path_query("
+        "data, '$.users[*].age ? (@ >= 30)') AS _pat1(value)"
+    )
+    assert select_args == []
+
+
+# ---------------- Resolver as Mapping ----------------
+
+def test_resolver_mapping_keys_only_present_fragments():
+    """
+    `keys()` lists only the fragment attributes that are not None.
+    """
+    r = sqlize('status = "active"')
+    assert list(r.keys()) == ['select', 'where']
+    r = sqlize('data.users[*].age')
+    assert list(r.keys()) == ['select', 'where', 'lateral']
+    r = sqlize('data.user.name')   # pure traversal, no predicate
+    assert list(r.keys()) == ['select']
+
+
+def test_resolver_mapping_getitem():
+    """
+    Indexing returns the fragment; absent / unknown keys raise.
+    """
+    r = sqlize('status = "active"')
+    assert isinstance(r['where'], SQLFragment)
+    assert r['where'] is r.where
+    with pytest.raises(KeyError):
+        r['lateral']     # no pattern → no lateral
+    with pytest.raises(KeyError):
+        r['nonsense']
+
+
+def test_resolver_mapping_contains_and_len():
+    """
+    `in` tests for a present non-None fragment. `len()` counts them.
+    """
+    r = sqlize('data.users[*].age')
+    assert 'where' in r
+    assert 'lateral' in r
+    assert 'from_' not in r
+    assert len(r) == 3
+
+    r = sqlize('data.user.name')
+    assert len(r) == 1
+    assert 'select' in r
+
+
+def test_resolver_mapping_dict_cast():
+    """
+    `dict(r)` materializes present fragments; values() / items() work
+    via the Mapping ABC.
+    """
+    r = sqlize('status = "active"')
+    d = dict(r)
+    assert set(d.keys()) == {'select', 'where'}
+    assert all(isinstance(v, SQLFragment) for v in d.values())
+    for k, v in r.items():
+        assert r[k] is v
+
+
+def test_resolver_is_a_mapping():
+    """
+    Resolver registers as a collections.abc.Mapping for isinstance
+    checks (useful for duck-typing).
+    """
+    import collections.abc
+    r = sqlize('status = "active"')
+    assert isinstance(r, collections.abc.Mapping)
+
+
+def test_resolver_splat_as_kwargs_works():
+    """
+    `**r` unpacking relies on keys() + __getitem__ — each key becomes
+    a kwarg bound to its fragment.
+    """
+    r = sqlize('data.users[*].age')
+    kwargs = {**r}
+    assert set(kwargs) == {'select', 'where', 'lateral'}

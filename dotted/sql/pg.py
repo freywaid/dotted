@@ -226,6 +226,7 @@ class PostgresMixin:
         self.select = _mkfrag(raw.get('select'))
         self.where = _mkfrag(raw.get('where'))
         self.from_ = _mkfrag(raw.get('from'))
+        self.lateral = _mkfrag(raw.get('lateral'))
         self.unbound = unbound
 
     @staticmethod
@@ -338,10 +339,20 @@ class PostgresMixin:
                 raise TranslationError('path continues after group')
             return self._translate_group(op, col_ident, prefix)
         # If any remaining op introduces a pattern-like segment (wildcard,
-        # recursive, filter bracket), switch to JSONPath mode.
+        # recursive, filter bracket), switch to JSONPath mode. Pattern
+        # paths produce three fragments: a WHERE predicate (via
+        # jsonb_path_exists), a LATERAL clause (via jsonb_path_query),
+        # and a select expression that references the lateral's alias.
+        # The engine picks which to compose — filter-style from `where`
+        # or extract-style from `lateral` + `select`.
         if any(_op_is_pattern_like(o) for o in ops):
-            where = self._pattern_predicate(col_ident, prefix, ops)
-            return {'select': col_ident, 'where': where}
+            jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
+                col_ident, prefix, ops)
+            where = self._pattern_where(col_ident, jsonpath_sql, jvars)
+            alias = self._state.alloc_pattern_alias()
+            lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
+            select = f'{alias}.value'
+            return {'select': select, 'where': where, 'lateral': lateral}
         if isinstance(op, wrappers.ValueGuard):
             if rest:
                 raise TranslationError('path continues after value guard')
@@ -357,15 +368,18 @@ class PostgresMixin:
 
     # ---- Pattern paths via jsonb_path_exists ------------------------
 
-    def _pattern_predicate(self, col_ident, prefix, ops):
+    def _pattern_jsonpath_and_vars(self, col_ident, prefix, ops):
         """
-        Build a `jsonb_path_exists(col, 'path', vars_jsonb?)` predicate
-        for a path containing patterns. `prefix` is the tuple of
-        literal segments already accumulated (before the pattern
-        section); `ops` is the remaining path from the first
-        pattern-like op onward.
+        Walk a pattern path and build the JSONPath expression + the
+        SQL-placeholder vars map. Shared by the WHERE (jsonb_path_exists)
+        and LATERAL (jsonb_path_query) emitters below.
+
+        Returns `(jsonpath_sql, jvars)` where `jsonpath_sql` is the
+        SQL-literal form of the jsonpath string (single-quoted, ready
+        to embed) and `jvars` is a dict of `jsonpath var name → SQL
+        placeholder marker` for any hoisted values / substitutions.
         """
-        jvars = {}   # jsonpath var name → SQL placeholder expression
+        jvars = {}
         parts = ['$']
         # Literal prefix becomes plain `.key` accessors.
         for kind, value in prefix:
@@ -386,17 +400,48 @@ class PostgresMixin:
             if isinstance(op, wrappers.ValueGuard) and i != len(ops) - 1:
                 raise TranslationError('path continues after value guard')
         jsonpath_str = ''.join(parts)
-        jsonpath_sql = _pg_string_literal(jsonpath_str)
+        return _pg_string_literal(jsonpath_str), jvars
+
+    def _pattern_where(self, col_ident, jsonpath_sql, jvars):
+        """
+        Emit `jsonb_path_exists(col, 'jsonpath'[, vars_jsonb])` — the
+        filter-style rendering of a pattern path. Keeps the rows where
+        the pattern matches; same input row → zero or one output row.
+        """
         if not jvars:
             return f'jsonb_path_exists({col_ident}, {jsonpath_sql})'
-        # Inside jsonb_build_object the placeholder's SQL type is
-        # ambiguous (arg is declared `"any"`), so flag it for cast at
-        # build time via the `:cast` format spec.
+        return (f'jsonb_path_exists({col_ident}, {jsonpath_sql}, '
+                f'{self._build_jsonpath_vars(jvars)})')
+
+    def _pattern_lateral(self, col_ident, jsonpath_sql, jvars, alias):
+        """
+        Emit a `LATERAL jsonb_path_query(...) AS <alias>(value)` clause
+        — the extract-style rendering of a pattern path. One input row
+        → N output rows (one per match), each exposing the matched
+        value as `<alias>.value`.
+
+        Returned without a leading comma or `CROSS JOIN` keyword so the
+        caller picks the attachment syntax (comma, `CROSS JOIN`, `LEFT
+        JOIN ... ON TRUE`, …).
+        """
+        if not jvars:
+            return (f'LATERAL jsonb_path_query({col_ident}, {jsonpath_sql}) '
+                    f'AS {alias}(value)')
+        return (f'LATERAL jsonb_path_query({col_ident}, {jsonpath_sql}, '
+                f'{self._build_jsonpath_vars(jvars)}) AS {alias}(value)')
+
+    def _build_jsonpath_vars(self, jvars):
+        """
+        Render the `jsonb_build_object('n1', $1::cast, ...)` argument
+        list used to pass SQL values into a jsonpath expression as
+        `$var` references. Each placeholder carries the `:cast` format
+        spec so it picks up an explicit SQL cast at build time (asyncpg
+        and similar server-bound drivers need it).
+        """
         kv_pairs = ', '.join(
             f"'{name}', {_with_cast_spec(placeholder)}"
             for name, placeholder in jvars.items())
-        return (f'jsonb_path_exists({col_ident}, {jsonpath_sql}, '
-                f'jsonb_build_object({kv_pairs}))')
+        return f'jsonb_build_object({kv_pairs})'
 
     def _op_to_jsonpath(self, op, jvars):
         """

@@ -189,3 +189,45 @@ def test_mixed_pattern_and_scalar(query):
     assert _run_where(query,
                       '(data.users[*].age >= 30 & status = "active")') \
         == [1, 2, 5]
+
+
+# ---------------- pattern paths as LATERAL extract ----------------
+
+def test_lateral_extracts_matching_values(query):
+    """
+    Composing r.select + r.lateral gives one row per matching user.age,
+    joined back to the source row via the items table in the FROM.
+
+    Seed ages (non-deleted rows): 1→32(deleted? no), 2→35, 3→40,
+    5→50 (also 18 — excluded by guard). id=6 has users=[] so no rows
+    from it.
+    """
+    r = sqlize('data.users[*].age >= 30', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, lat_args = r.build(r.lateral)
+    sql = (f'SELECT id, {sel_sql} AS matched_age '
+           f'FROM dotted_test.items, {lat_sql} '
+           f'ORDER BY id, matched_age')
+    rows = query(sql, lat_args)
+    # JSONB numbers come back as int in asyncpg / psycopg2 (RealDictCursor)
+    pairs = sorted((r['id'], int(r['matched_age'])) for r in rows)
+    assert pairs == [(1, 32), (2, 35), (3, 40), (5, 50)]
+
+
+def test_lateral_no_guard_extracts_all_values(query):
+    """
+    With no guard, LATERAL produces every element — id=5 contributes
+    50 and 18 (both ages).
+    """
+    r = sqlize('data.users[*].age', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    sql = (f'SELECT id, {sel_sql} AS age '
+           f'FROM dotted_test.items, {lat_sql} '
+           f'ORDER BY id, age')
+    rows = query(sql, ())
+    pairs = sorted((r['id'], int(r['age'])) for r in rows)
+    # id=1 → 25, 32; id=2 → 35; id=3 → 40; id=4 → 17; id=5 → 18, 50;
+    # id=6 and id=7 contribute nothing (users: []).
+    assert pairs == [(1, 25), (1, 32), (2, 35), (3, 40),
+                     (4, 17), (5, 18), (5, 50)]

@@ -2956,12 +2956,40 @@ Pattern predicates compose with scalar ones via dotted's `&` / `,` /
     >>> sql
     "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) AND (status = $1)"
 
-`select` for a pattern path is set to the column itself — pattern
-paths don't have a single extractable value. Use the WHERE predicate
-to filter rows; write your own SELECT for the columns you want.
+Pattern paths produce three fragments: the filter-style `r.where`
+(via `jsonb_path_exists`), the extract-style `r.lateral` (via
+`LATERAL jsonb_path_query`), and `r.select` pointing at the lateral's
+output alias. Use whichever matches your row semantics — filter-style
+keeps one row per source row, extract-style produces one row per
+match.
+
+    >>> r = dotted.sqlize('data.users[*].age >= 30', driver='asyncpg')
+    >>> str(r.where)
+    "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+    >>> str(r.lateral)
+    "LATERAL jsonb_path_query(data, '$.users[*].age ? (@ >= 30)') AS _pat1(value)"
+    >>> str(r.select)
+    '_pat1.value'
+
+Filter-style — "which items have any matching user?":
+
+    SELECT id FROM items WHERE jsonb_path_exists(...)
+    # composed:  "SELECT id FROM items WHERE " + r.where
+
+Extract-style — "each matching age, one row per match":
+
+    SELECT id, _pat1.value FROM items, LATERAL jsonb_path_query(...) AS _pat1(value)
+    # composed:  "SELECT id, " + r.select + " FROM items, " + r.lateral
+
+The lateral fragment has no leading comma or `JOIN` keyword — attach
+it however fits: `, LATERAL ...`, `CROSS JOIN ...`, `LEFT JOIN ... ON
+TRUE` to keep rows without matches, etc.
+
+Lateral aliases (`_pat1`, `_pat2`, …) are allocated from the
+`ParamPool`, so two pattern paths sharing a pool pick distinct
+aliases and compose into one query without collision.
 
 Not yet supported:
-- Pattern paths as SELECT (needing `LATERAL jsonb_path_query`)
 - Regex-in-access like `data./prefix_\d+/.field`
 - Pattern refs
 
@@ -3069,15 +3097,31 @@ registered drivers (built-ins + anything third-party code has added).
 
 ### Resolver attributes
 
-| Attribute       | Type                         | Meaning                                                            |
-|-----------------|------------------------------|--------------------------------------------------------------------|
-| `.driver`       | `str`                        | Name the resolver was registered under                             |
-| `.paramstyle`   | `str`                        | PEP 249 paramstyle emitted by `.build()`                           |
+| Attribute       | Type                         | Meaning                                                             |
+|-----------------|------------------------------|---------------------------------------------------------------------|
+| `.driver`       | `str`                        | Name the resolver was registered under                              |
+| `.paramstyle`   | `str`                        | PEP 249 paramstyle emitted by `.build()`                            |
 | `.cast`         | `bool`                       | Whether `.build()` emits explicit SQL casts in polymorphic contexts |
-| `.select`       | `SQLFragment` \| `None`      | Extraction expression (None when path is a predicate-only group)   |
-| `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                               |
-| `.from_`        | `SQLFragment` \| `None`      | LATERAL / join (future — None in v1)                               |
-| `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}` |
+| `.select`       | `SQLFragment` \| `None`      | Extraction expression (for pattern paths: ref into `.lateral`)      |
+| `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                                |
+| `.from_`        | `SQLFragment` \| `None`      | FROM extension (reserved)                                           |
+| `.lateral`      | `SQLFragment` \| `None`      | `LATERAL jsonb_path_query(...) AS _patN(value)` for pattern paths   |
+| `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}`  |
+
+The Resolver also implements the `collections.abc.Mapping` protocol
+over its non-None fragment attributes (`select` / `where` / `from_` /
+`lateral`):
+
+    >>> r = dotted.sqlize('data.users[*].age', driver='asyncpg')
+    >>> list(r.keys())
+    ['select', 'where', 'lateral']
+    >>> 'lateral' in r
+    True
+    >>> dict(r)                    # map of present fragments
+    {'select': ..., 'where': ..., 'lateral': ...}
+
+`driver` / `paramstyle` / `cast` / `unbound` are reached as plain
+attributes, not via the Mapping.
 
 A `SQLFragment` carries:
 

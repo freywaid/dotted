@@ -18,6 +18,7 @@ helpers are retained only as a low-level hook for the unit test
 matrix, which exercises every paramstyle emitter without needing a
 corresponding driver class.
 """
+import collections.abc
 import enum
 import hashlib
 import re
@@ -377,13 +378,13 @@ class SQLFragment:
 
 # ---- Resolver -------------------------------------------------------
 
-class Resolver:
+class Resolver(collections.abc.Mapping):
     """
     Base class + container for sqlize() output. Subclasses in dialect
-    modules (registered via `@register`) set the driver's knobs as
+    modules (registered via `@driver`) set the driver's knobs as
     classvars:
 
-        driver     — set by the @register decorator (string name)
+        driver     — set by the @driver decorator (string name)
         paramstyle — placeholder syntax to emit at build time
         cast       — bool: does this driver need explicit SQL casts?
 
@@ -392,44 +393,80 @@ class Resolver:
 
     Instance attributes — populated by `translate()`:
 
-        select : SQLFragment | None  — extraction expression
-        where  : SQLFragment | None  — predicate
-        from_  : SQLFragment | None  — LATERAL / join fragment (future)
-        unbound: dict                — bind name → original subst name
+        select  : SQLFragment | None  — extraction expression
+        where   : SQLFragment | None  — predicate (WHERE-style filter)
+        from_   : SQLFragment | None  — FROM extension (reserved)
+        lateral : SQLFragment | None  — CROSS JOIN LATERAL form for
+                                        pattern-path extraction
+        unbound : dict                — bind name → original subst name
+
+    Mapping interface — `r` acts as a dict over its non-None fragment
+    attributes:
+
+        r['where']                 # same as r.where
+        list(r.keys())             # ['select', 'where', 'lateral']
+        'lateral' in r             # True if the path produced a lateral
+        dict(r)                    # {name: fragment} for present ones
+
+    Only fragment attributes (`select`, `where`, `from_`, `lateral`)
+    are exposed via the Mapping; classvar knobs (`driver`, `paramstyle`,
+    `cast`) and `unbound` are reached as plain attributes.
 
     Rendering:
 
         r = sqlize('status = "active"', driver='asyncpg')
         sql, args = r.build(r.where)
-        # ('status = $1::text', ['active'])
+        # ('status = $1', ['active'])
 
     The same classmethod `Resolver.build(sql, paramstyle=...)` form
     still works as a low-level emitter-testing escape hatch. It
     consults `_DIALECT_CAST_FNS` to decide whether to emit casts.
     """
 
-    driver     = None     # set by @register
+    driver     = None     # set by @driver
     paramstyle = None     # set by driver subclass
     cast       = False    # set by driver subclass
 
-    __slots__ = ('select', 'where', 'from_', 'unbound', '_state')
+    _FRAGMENT_KEYS = ('select', 'where', 'from_', 'lateral')
 
-    def __init__(self, select=None, where=None, from_=None, unbound=None):
+    __slots__ = ('select', 'where', 'from_', 'lateral', 'unbound', '_state')
+
+    def __init__(self, select=None, where=None, from_=None, lateral=None,
+                 unbound=None):
         self.select = select
         self.where = where
         self.from_ = from_
+        self.lateral = lateral
         self.unbound = dict(unbound or {})
         self._state = None
 
     def __repr__(self):
         bits = [f'driver={type(self).driver!r}'] if type(self).driver else []
-        for attr in ('select', 'where', 'from_'):
+        for attr in self._FRAGMENT_KEYS:
             v = getattr(self, attr)
             if v is not None:
                 bits.append(f'{attr}={v.text!r}')
         if self.unbound:
             bits.append(f'unbound={list(self.unbound.values())}')
         return f'{type(self).__name__}({", ".join(bits)})'
+
+    # ---- Mapping protocol over fragment attributes ----
+
+    def __getitem__(self, key):
+        if key not in self._FRAGMENT_KEYS:
+            raise KeyError(key)
+        value = getattr(self, key)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __iter__(self):
+        return (k for k in self._FRAGMENT_KEYS
+                if getattr(self, k) is not None)
+
+    def __len__(self):
+        return sum(1 for k in self._FRAGMENT_KEYS
+                   if getattr(self, k) is not None)
 
     # ---- overridable translation surface ----
 
@@ -653,6 +690,7 @@ class ParamPool:
         self.params = {}    # marker name → resolved value
         self.unbound = {}   # marker name → original subst name
         self._gen_counter = 0
+        self._pat_counter = 0
         self._by_orig = {}  # original subst name → marker name (dedup)
 
     def hoist_literal(self, value):
@@ -679,6 +717,17 @@ class ParamPool:
         self._by_orig[name] = marker
         self.unbound[marker] = name
         return _marker(marker)
+
+    def alloc_pattern_alias(self):
+        """
+        Return a unique SQL alias for a LATERAL pattern-path query.
+        Counter shared across every Resolver using the pool so two
+        pattern paths in a composed query don't collide on the same
+        alias. Returns the plain alias string (e.g. '_pat1') — not a
+        marker, since it's emitted directly into SQL text.
+        """
+        self._pat_counter += 1
+        return f'_pat{self._pat_counter}'
 
 
 # ---- Shared identifier helper ---------------------------------------
