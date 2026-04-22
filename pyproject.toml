@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dotted_notation"
+version = "0.43.15"
+description = "Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms"
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "MIT" }
+authors = [
+    { name = "Frey Waid", email = "logophage1@gmail.com" },
+]
+keywords = [
+    "dotted",
+    "nested",
+    "path",
+    "pattern-matching",
+    "json",
+    "jsonb",
+    "sql",
+    "traversal",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "pyparsing>=3.0",
+]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=5.0"]
+toml = ['tomli>=1.0;python_version<"3.11"', "tomli_w>=1.0"]
+all  = [
+    "PyYAML>=5.0",
+    'tomli>=1.0;python_version<"3.11"',
+    "tomli_w>=1.0",
+]
+
+[project.scripts]
+dq = "dotted.cli.main:main"
+
+[project.urls]
+Homepage  = "https://github.com/freywaid/dotted"
+Source    = "https://github.com/freywaid/dotted"
+Changelog = "https://github.com/freywaid/dotted/blob/master/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["dotted*"]
