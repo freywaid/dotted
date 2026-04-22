@@ -3,6 +3,24 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.15]
+
+### Changed
+- `enum.StrEnum` replaced with plain `enum.Enum` for `ParamStyle`,
+  `Attrs`, `GroupMode`. Entry-point normalization preserves the
+  "member or string" API — `Resolver.build(paramstyle=...)`,
+  `match(groups=...)`, `unpack(attrs=...)` all accept either form.
+- `dataclasses` usage routed through `utils.is_dataclass` /
+  `utils.dataclass_replace` wrappers that degrade gracefully on
+  interpreters without the module.
+
+### Fixed
+- `python_requires='>=3.6'` is now actually honest. Previously the
+  declaration promised 3.6+ but the code used `StrEnum` (3.11+) and
+  unconditional `import dataclasses` (3.7+), so installs on older
+  Python succeeded but failed at import time. Both sources of
+  breakage removed.
+
 ## [0.43.14]
 
 ### Added
