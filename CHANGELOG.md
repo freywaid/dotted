@@ -3,6 +3,14 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.11]
+
+### Added
+- `ParamPool` — shared bind-parameter pool passed as `pool=` to
+  multiple `sqlize()` calls so composed fragments don't have marker
+  collisions. Substitutions by the same original name dedup across
+  Resolvers sharing a pool. Single-Resolver behavior unchanged.
+
 ## [0.43.10]
 
 ### Added
