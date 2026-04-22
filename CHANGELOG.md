@@ -3,6 +3,21 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.14]
+
+### Added
+- `psycopg3` driver alias — dispatches to the same `PsycopgResolver`
+  as `psycopg`. Use whichever reads better.
+
+### Fixed
+- Casts under `named` / `pyformat` / `qmark` / `format` paramstyles.
+  The `:cast` marker spec was only honored by numeric / dollar-numeric
+  renderers; every paramstyle now respects it when the driver's
+  `cast_fn` is active. The `psycopg` driver (cast=True) now emits
+  `::bigint` / `::text` casts inside `jsonb_build_object(...)`
+  polymorphic contexts as intended — previously was indistinguishable
+  from `psycopg2` output.
+
 ## [0.43.13]
 
 ### Added
