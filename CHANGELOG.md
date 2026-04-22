@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.43.9]
 
 ### Changed (breaking)
 - `sqlize(path)` now requires `driver=` (`'asyncpg'`, `'psycopg2'`,
