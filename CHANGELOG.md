@@ -3,6 +3,22 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.16]
+
+### Added
+- PyPI metadata: `keywords`, expanded `classifiers` (license,
+  audience, topic, per-Python-version 3.6–3.13). Package now surfaces
+  under PyPI's Python-version filter.
+- `MANIFEST.in` — includes `CHANGELOG.md` in sdist, excludes `tests/`
+  (previously pulled in incidentally via auto-discovery).
+
+### Changed
+- Packaging migrated from `setup.py` to `pyproject.toml` ([PEP 621]
+  `[project]` table with setuptools as the build backend).
+  Install-time behavior unchanged; source builds now require pip >=19.
+
+[PEP 621]: https://peps.python.org/pep-0621/
+
 ## [0.43.15]
 
 ### Changed
