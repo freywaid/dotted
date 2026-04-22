@@ -3,6 +3,17 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.43.12]
+
+### Added
+- `Raw` and `Col` substitution-value wrappers for emitting SQL
+  expressions in place of a bind parameter. `Raw('matched.customer')`
+  renders verbatim (low-level escape hatch); `Col('matched.customer')`
+  validates each identifier segment before wrapping. Exposes the
+  CTE-composition use case: same Resolver serves N+1 orchestration
+  (bind runtime value) and single-SQL composition (bind a column ref
+  via `Raw` / `Col`).
+
 ## [0.43.11]
 
 ### Added
