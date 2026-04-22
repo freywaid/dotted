@@ -1,5 +1,5 @@
 """
-End-to-end integration tests: run dotted.sqlize output against the
+End-to-end integration tests: run dotted.sql output against the
 seeded Postgres schema and verify row-level semantics.
 
 The seeded table `dotted_test.items` has columns:
@@ -21,12 +21,13 @@ Seed (from tests/integration/conftest.py):
     id=7: status=pending age=NULL              user.role=guest (no age/active)
           users[]
 
-Integration tests use asyncpg, which requires `dollar-numeric`
-paramstyle. Named / pyformat / etc. are covered by the unit test
-matrix.
+Each test runs twice — once per driver (asyncpg / psycopg2) — via the
+parametrized `query` fixture. The driver determines the paramstyle
+`Resolver.build` emits (`dollar-numeric` for asyncpg, `pyformat` for
+psycopg2) so both SQL shapes get exercised against real Postgres.
 """
 import pytest
-from dotted import sqlize, Resolver
+from dotted import sqlize
 
 
 def _ids(query, where_sql, args=()):
@@ -41,13 +42,12 @@ def _ids(query, where_sql, args=()):
 
 def _run_where(query, path, **bindings):
     """
-    Translate `path`, build dollar-numeric, run the predicate against
-    the seed data, return sorted matching ids.
+    Translate `path` for the active driver, render the WHERE clause
+    using the driver's paramstyle/cast, run it against the seed data,
+    return sorted matching ids.
     """
-    r = sqlize(path)
-    sql, args = Resolver.build(r.where,
-                               paramstyle='dollar-numeric',
-                               **bindings)
+    r = sqlize(path, driver=query.driver)
+    sql, args = r.build(r.where, **bindings)
     return _ids(query, sql, args)
 
 

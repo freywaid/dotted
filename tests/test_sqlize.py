@@ -1,13 +1,28 @@
 """
-Tests for dotted.sqlize — dotted path → SQL clause components.
+Tests for dotted.sql — dotted path → SQL clause components.
 
-sqlize() returns a paramstyle-neutral Resolver with SQL fragments.
-Resolver.build(sql, paramstyle=..., **bindings) renders final SQL.
+sqlize(path, driver=...) returns a driver-specific Resolver with SQL
+fragments. `r.build(sql, **bindings)` uses the driver's paramstyle;
+`Resolver.build(sql, paramstyle=..., **bindings)` is the low-level
+classmethod this file exercises to cover every paramstyle emitter.
+
+A local `sqlize` wrapper defaults `driver='asyncpg'` because these
+tests don't care which driver picks the class as long as translation
+runs. Every concrete render in this file goes through the classmethod
+`Resolver.build(paramstyle=...)` which ignores the driver's paramstyle.
 """
 import pytest
-from dotted.sqlize import (
-    sqlize, Resolver, SQLFragment, ParamStyle, TranslationError,
+from dotted.sql import (
+    sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, TranslationError,
 )
+
+
+def sqlize(path, *, driver='asyncpg', bindings=None):
+    """
+    Test-file shim: fills in a default driver so existing test calls
+    `sqlize('path')` continue to work without touching every call site.
+    """
+    return _sqlize(path, driver=driver, bindings=bindings)
 
 
 # All supported paramstyles as fixture values. Used to parametrize
@@ -523,9 +538,13 @@ def test_wildcard_first_segment_still_errors():
         sqlize('*.age=30')
 
 
-def test_unsupported_flavor_errors():
+def test_unknown_driver_errors():
+    """
+    sqlize raises TranslationError for a driver name that isn't
+    registered in the driver registry.
+    """
     with pytest.raises(TranslationError):
-        sqlize('age=30', flavor='mysql')
+        _sqlize('age=30', driver='mysql')
 
 
 def test_unsupported_paramstyle_errors():

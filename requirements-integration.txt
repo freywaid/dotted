@@ -3,3 +3,4 @@
 # use dotted at runtime.
 
 asyncpg>=0.27
+psycopg2-binary>=2.9

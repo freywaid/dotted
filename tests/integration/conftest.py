@@ -7,9 +7,12 @@ override.
 
 A session-scoped fixture creates a dedicated `dotted_test` schema and
 seeds a sample table; per-test transaction rollback keeps tests
-isolated. Tests receive a sync `query` fixture that runs an asyncpg
-call wrapped in `asyncio.run()` — keeps test code straightforward
-without pulling in pytest-asyncio.
+isolated. Tests receive a sync `query` fixture parametrized over the
+installed drivers (`asyncpg`, `psycopg2`). The callable exposes a
+`.driver` attribute so tests can pick the matching paramstyle —
+`PARAMSTYLE_BY_DRIVER` carries that mapping. asyncpg is async; its
+branch wraps calls in `asyncio.run()` so tests stay sync and don't
+need pytest-asyncio.
 """
 import asyncio
 import datetime
@@ -22,6 +25,19 @@ try:
     import asyncpg
 except ImportError:
     asyncpg = None
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
+
+
+# Driver names the `query` fixture parametrizes over. Each must be
+# registered in the dotted.sql driver registry — tests pass the
+# name straight into `sqlize(path, driver=...)`, and paramstyle/cast
+# come from the Resolver subclass.
+_DRIVERS = ('asyncpg', 'psycopg2')
 
 
 SCHEMA = 'dotted_test'
@@ -146,12 +162,40 @@ def _schema(dsn):
     _run(teardown())
 
 
-@pytest.fixture
-def query(dsn):
+@pytest.fixture(params=_DRIVERS)
+def query(request, dsn):
     """
     Return a sync callable `(sql, args) -> list[dict]` that runs the
-    query inside a transaction and rolls back on exit. Read-only tests
-    don't strictly need rollback, but it's cheap insurance.
+    query inside a transaction and rolls back on exit. Read-only
+    tests don't strictly need rollback, but it's cheap insurance.
+
+    Parametrized over the supported drivers. The callable exposes a
+    `.driver` attribute so tests can pass it directly into
+    `sqlize(path, driver=query.driver)`. If a driver isn't installed,
+    that parametrization skips individually — the other driver still
+    runs.
+    """
+    driver = request.param
+    if driver == 'asyncpg':
+        if asyncpg is None:
+            pytest.skip('asyncpg not installed')
+        q = _make_asyncpg_query(dsn)
+    elif driver == 'psycopg2':
+        if psycopg2 is None:
+            pytest.skip('psycopg2 not installed')
+        q = _make_psycopg2_query(dsn)
+    else:
+        raise RuntimeError(f'unknown driver: {driver!r}')
+    q.driver = driver
+    return q
+
+
+def _make_asyncpg_query(dsn):
+    """
+    asyncpg-backed sync `query(sql, args)` — runs the async call on a
+    fresh event loop per invocation. Transaction is aborted via an
+    internal sentinel exception so rows are rolled back after the
+    fetch.
     """
     def _q(sql, args=()):
         async def go():
@@ -159,8 +203,6 @@ def query(dsn):
             try:
                 async with conn.transaction():
                     rows = await conn.fetch(sql, *args)
-                    # Copy into plain dicts so the caller sees data
-                    # after the connection closes.
                     result = [dict(r) for r in rows]
                     # Raising here aborts the transaction → ROLLBACK.
                     raise _RollbackAndReturn(result)
@@ -169,6 +211,34 @@ def query(dsn):
             finally:
                 await conn.close()
         return _run(go())
+    return _q
+
+
+def _make_psycopg2_query(dsn):
+    """
+    psycopg2-backed sync `query(sql, args)`. Uses `RealDictCursor` so
+    rows come back as dicts, matching the asyncpg branch. `args` is
+    passed as a tuple for positional pyformat (`%s`); psycopg2 also
+    accepts a mapping for named pyformat (`%(name)s`) — either shape
+    works since Resolver.build under `pyformat` returns a dict.
+
+    Rolls back explicitly after fetch so write-side tests stay
+    isolated even on the happy path. `with conn:` is deliberately
+    avoided — psycopg2's context manager commits on successful exit.
+    """
+    def _q(sql, args=()):
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor(
+                    cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # psycopg2 accepts tuple for %s and dict for %(name)s.
+                params = args if isinstance(args, dict) else tuple(args)
+                cur.execute(sql, params)
+                result = [dict(r) for r in cur.fetchall()]
+            conn.rollback()
+            return result
+        finally:
+            conn.close()
     return _q
 
 

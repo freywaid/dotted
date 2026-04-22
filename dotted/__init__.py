@@ -69,7 +69,7 @@ from .api import \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
-from .sqlize import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle
+from .sql import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle
 
 __all__ = [
     # Core

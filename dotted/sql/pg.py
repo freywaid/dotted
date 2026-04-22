@@ -1,10 +1,15 @@
 """
-Postgres dialect for dotted.sqlize.
+Postgres dialect for dotted.sql.
 
-Provides the Postgres translator and the `sqlize(...)` entry point.
-Registers a dialect-cast function with the core for the
-`dollar-numeric` paramstyle so asyncpg can infer parameter types at
-prepare time inside `jsonb_build_object(...)`.
+Defines the `PostgresMixin` — the flavor's translation methods and
+cast-inference — and a `Resolver` subclass per supported Postgres
+driver (`asyncpg`, `psycopg2`, `psycopg` aka v3). Driver classes are
+registered with the core via `@driver('<driver-name>')`.
+
+Also registers `_dollar_cast` with the legacy `_DIALECT_CAST_FNS`
+hook so `Resolver.build(sql, paramstyle='dollar-numeric')` keeps
+emitting explicit casts for the unit-test matrix, which exercises
+paramstyle emitters without a specific driver.
 """
 import decimal
 import re
@@ -27,6 +32,7 @@ from .core import (
     _quote_ident,
     _with_cast_spec,
     _register_dialect_cast,
+    driver,
 )
 
 
@@ -120,15 +126,20 @@ def _op_is_pattern_like(op):
     return False
 
 
-# ---- Dialect cast for dollar-numeric --------------------------------
+# ---- Cast inference for Postgres ------------------------------------
 #
-# SQL casts applied to dollar-numeric positional placeholders based on
-# the Python type of the bound value. Needed because asyncpg requires
-# the server to determine parameter types at prepare time; in
-# polymorphic contexts like `jsonb_build_object("any", "any", ...)`
-# there's no column type to infer from, so the cast pins it.
-# Non-primitive types (datetime, Decimal, dict, …) are left un-cast so
-# asyncpg's own type adapters can handle them.
+# Postgres drivers that use server-side prepared statements (asyncpg
+# always; psycopg3 in binary/server-bound mode) need explicit SQL
+# casts on placeholders inside polymorphic-argument functions like
+# `jsonb_build_object("any", "any", ...)`. psycopg2 substitutes
+# client-side so it never needs this.
+#
+# `PostgresMixin.cast_fn` is the method driver classes inherit; it's
+# consulted at build time when `cast = True` on the class. The same
+# function is also registered into the legacy `_DIALECT_CAST_FNS`
+# under `'dollar-numeric'` so the low-level `Resolver.build(
+# paramstyle='dollar-numeric')` call path (used by the unit-test
+# matrix) still emits casts the same way.
 
 _DOLLAR_CAST_BY_PY_TYPE = {
     bool: 'boolean',
@@ -142,8 +153,9 @@ _DOLLAR_CAST_BY_PY_TYPE = {
 def _dollar_cast(value):
     """
     Return the SQL cast (e.g. `'text'`) appropriate for the given
-    Python value under `dollar-numeric` paramstyle, or None if no
-    cast should be emitted (asyncpg handles the type natively).
+    Python value when a Postgres placeholder needs explicit typing,
+    or None if no cast should be emitted (driver handles the type
+    natively).
     """
     # bool is a subclass of int, so check bool first.
     if isinstance(value, bool):
@@ -154,29 +166,80 @@ def _dollar_cast(value):
     return None
 
 
-# Side-effect: register the Postgres cast with the core so
-# Resolver.build applies it under `dollar-numeric`.
 _register_dialect_cast('dollar-numeric', _dollar_cast)
 
 
-# ---- Translator -----------------------------------------------------
+# ---- Postgres mixin -------------------------------------------------
 
-class _Translator:
+class PostgresMixin:
     """
-    Walks the ops tree producing Postgres SQL fragments, sharing a
-    _ParamState across branches and sub-translators.
+    Postgres-flavored translation methods and cast inference. Mix into
+    a `Resolver` subclass to get Postgres JSONB / JSONPath SQL
+    generation.
+
+    Shared across all Postgres drivers — each driver subclass only
+    needs to set `paramstyle` and toggle `cast` on/off according to
+    its binding model.
+
+    Invariants while `translate()` runs:
+      - `self._state` is a live `_ParamState` shared across every
+        nested translation (group branches, reference subpaths).
+      - `self._state` is cleared back to None before translate()
+        returns, so callers can reuse an instance safely.
     """
-
-    def __init__(self, state=None):
-        self.state = state if state is not None else _ParamState()
-
-    def _hoist_value(self, value):
-        return self.state.hoist_literal(value)
-
-    def _hoist_subst(self, name):
-        return self.state.hoist_named(name)
 
     def translate(self, ops):
+        """
+        Walk the parsed ops tree; populate `self.select`, `self.where`,
+        `self.from_`, `self.unbound` with the rendered SQLFragments.
+        """
+        self._state = _ParamState()
+        try:
+            raw = self._translate(ops)
+        finally:
+            state = self._state
+            self._state = None
+
+        params = dict(state.params)
+        unbound = dict(state.unbound)
+
+        def _mkfrag(text):
+            """
+            Narrow the shared params/unbound maps down to the markers
+            this specific fragment actually references, so downstream
+            composition of fragments doesn't pull in unrelated bindings.
+            """
+            if text is None:
+                return None
+            used = {name for _, name, _, _ in _FORMATTER.parse(text)
+                    if name is not None}
+            f_params = {k: v for k, v in params.items() if k in used}
+            f_unbound = {k: v for k, v in unbound.items() if k in used}
+            return SQLFragment(text, f_params, f_unbound)
+
+        self.select = _mkfrag(raw.get('select'))
+        self.where = _mkfrag(raw.get('where'))
+        self.from_ = _mkfrag(raw.get('from'))
+        self.unbound = unbound
+
+    @staticmethod
+    def cast_fn(value):
+        """
+        Postgres cast inference for placeholders that need explicit
+        typing (polymorphic contexts under server-side PREPARE).
+        Returns a SQL cast name ('bigint', 'text', …) or None.
+        """
+        return _dollar_cast(value)
+
+    # ---- core walk --------------------------------------------------
+
+    def _translate(self, ops):
+        """
+        Inner translation entry point — returns a dict of text
+        fragments (`select`, `where`, ...). Shares `self._state`
+        with the caller so nested invocations (group branches,
+        reference subpaths) hoist params into the same pool.
+        """
         if not ops:
             raise TranslationError('empty path')
         col_op = ops[0]
@@ -210,7 +273,25 @@ class _Translator:
         """
         return {k: v for k, v in kw.items() if v is not None}
 
+    def _hoist_value(self, value):
+        """
+        Hoist a concrete literal into `self._state.params`; return the
+        `{marker}` string to embed in SQL text.
+        """
+        return self._state.hoist_literal(value)
+
+    def _hoist_subst(self, name):
+        """
+        Hoist a named substitution into `self._state.unbound`; return
+        the `{marker}` string.
+        """
+        return self._state.hoist_named(name)
+
     def _column_name(self, op):
+        """
+        Extract the column name (a SQL identifier) from the first op
+        of a path. Reject matchers that can't name a column.
+        """
         if not isinstance(op, access.Key):
             raise TranslationError(
                 f'first path segment must be a column key, got {type(op).__name__}'
@@ -234,6 +315,11 @@ class _Translator:
         return value
 
     def _walk(self, col_ident, prefix, ops):
+        """
+        Walk the remaining path ops after the column, accumulating
+        literal segments in `prefix`. Dispatches to group /
+        pattern-mode / scalar-guard / jsonb-guard paths as needed.
+        """
         if not ops:
             return {'select': self._path_expr(col_ident, prefix, text=bool(prefix))}
         op = ops[0]
@@ -564,6 +650,11 @@ class _Translator:
     # ---- scalar (non-pattern) path helpers --------------------------
 
     def _segment_from_key(self, key_op):
+        """
+        Turn a `Key` op inside a path into a `(kind, value)` tuple:
+        `('lit', 'user')` for a plain key, or `('expr', sql)` for a
+        reference whose subpath is recursively translated.
+        """
         if not isinstance(key_op, access.Key):
             raise TranslationError(
                 f'expected Key inside path, got {type(key_op).__name__}'
@@ -578,8 +669,9 @@ class _Translator:
             if not subpath:
                 raise TranslationError('empty reference path')
             sub_parsed = parse(subpath, partial=True)
-            sub = _Translator(state=self.state)
-            sub_result = sub.translate(sub_parsed.ops)
+            # Recurse on self — self._state is already live and the
+            # sub-translation hoists into the same pool.
+            sub_result = self._translate(sub_parsed.ops)
             sub_expr = sub_result.get('select')
             if sub_expr is None:
                 raise TranslationError('reference subpath has no select expression')
@@ -597,6 +689,13 @@ class _Translator:
         return ('lit', str(matcher.value))
 
     def _path_expr(self, col_ident, prefix, text):
+        """
+        Build the Postgres extraction expression for a `prefix` tuple.
+        Pure literal prefixes use `#>>` / `#>` with a text[] array
+        literal; mixed literal + expression prefixes use a chain of
+        `->` / `->>` arrows so embedded reference expressions can be
+        inlined.
+        """
         if not prefix:
             return col_ident
         if all(kind == 'lit' for kind, _ in prefix):
@@ -612,6 +711,10 @@ class _Translator:
         return expr
 
     def _scalar_predicate(self, guard_op, col_ident):
+        """
+        Build a WHERE predicate for a guard on a scalar (non-JSONB)
+        column.
+        """
         if guard_op.transforms:
             raise TranslationError(
                 'guard transforms on scalar columns not supported in v1'
@@ -641,6 +744,12 @@ class _Translator:
         return f'{col_ident} {pred.op} {self._hoist_value(val.value)}'
 
     def _jsonb_predicate(self, guard_op, col_ident, full_prefix):
+        """
+        Build a WHERE predicate for a guard nested inside a JSONB
+        column. Computes both the text-extraction and the jsonb-form
+        of the path so each value type can be compared with its
+        matching operator (numeric cast, boolean equality, etc.).
+        """
         text_expr = self._path_expr(col_ident, full_prefix, text=True)
         jsonb_expr = self._path_expr(col_ident, full_prefix, text=False)
         pred = guard_op.pred_op
@@ -686,6 +795,11 @@ class _Translator:
         raise TranslationError(f'unsupported guard value: {type(val).__name__}')
 
     def _predicate_for_resolved(self, text_expr, jsonb_expr, pred, py_val):
+        """
+        Build a JSONB predicate when the RHS has already been resolved
+        from a binding (ResolvedValue) — dispatch on the Python value's
+        type.
+        """
         if py_val is None:
             if pred is predicates.EQ:
                 return f"{jsonb_expr} IS NULL OR jsonb_typeof({jsonb_expr}) = 'null'"
@@ -704,6 +818,11 @@ class _Translator:
         return f'({text_expr}) {pred.op} {self._hoist_value(py_val)}'
 
     def _compare_with_lhs(self, lhs, pred, val):
+        """
+        Compare a pre-built LHS expression (e.g. `(expr)::bigint`)
+        against a guard value. Used for JSONB predicates whose LHS
+        already carries a transform-driven cast.
+        """
         if isinstance(val, matchers.NoneValue):
             if pred is predicates.EQ:
                 return f'{lhs} IS NULL'
@@ -728,6 +847,11 @@ class _Translator:
     }
 
     def _transforms_to_cast(self, transforms):
+        """
+        Map a path-level transform (like `|int`) to the Postgres cast
+        that should be applied to the text extraction. Only a narrow
+        set is supported today.
+        """
         if len(transforms) != 1:
             raise TranslationError(
                 'only single-transform casts supported in v1'
@@ -741,14 +865,19 @@ class _Translator:
         return cast
 
     def _translate_top_group(self, group_op):
+        """
+        Translate a group op at the top of a path — each branch is a
+        complete path starting from its own column. Branches share
+        `self._state` via the recursive call, so hoisted literals are
+        unified.
+        """
         wheres = []
         for branch in group_op.branches:
             if not isinstance(branch, tuple):
                 raise TranslationError(
                     f'unsupported branch form: {type(branch).__name__}'
                 )
-            sub = _Translator(state=self.state)
-            br_result = sub.translate(branch)
+            br_result = self._translate(branch)
             where = br_result.get('where')
             if where is None:
                 raise TranslationError(
@@ -770,6 +899,10 @@ class _Translator:
         )
 
     def _translate_group(self, group_op, col_ident, prefix):
+        """
+        Translate a group op nested inside a path — each branch is a
+        tail continuation sharing the outer column and prefix.
+        """
         branch_results = []
         for branch in group_op.branches:
             if not isinstance(branch, tuple):
@@ -800,60 +933,36 @@ class _Translator:
         return {'select': select, 'where': joined}
 
 
-# ---- Public entry point ---------------------------------------------
+# ---- Driver classes -------------------------------------------------
 
-def sqlize(path, *, bindings=None, flavor='postgres'):
+@driver('asyncpg')
+class AsyncPGResolver(PostgresMixin, Resolver):
     """
-    Translate a dotted path into a `Resolver` carrying paramstyle-
-    neutral SQL fragments.
-
-    path — dotted path string or pre-parsed Dotted result.
-    bindings — optional mapping/list used to resolve substitutions at
-        sqlize time. Path-position substitutions must be resolved here
-        or a TranslationError is raised. Unresolved value-position
-        substitutions appear in `unbound`.
-    flavor — SQL flavor for JSONB operators; only `'postgres'` is
-        implemented.
-
-    Literals on the RHS of guards are hoisted for injection safety.
-    Substitutions that are valid SQL identifiers bind by that name;
-    any other form (dotted, quoted, punctuation) gets a deterministic
-    `_s_<hash>` marker.
-
-    Use `Resolver.build(sql, paramstyle=..., **bindings)` on any SQL
-    fragment (or composition like `r.select + r.where`) to render
-    final driver-ready SQL.
-
-    >>> r = sqlize("status = 'active'")
-    >>> Resolver.build(r.where)
-    ('status = :_p1', {'_p1': 'active'})
-    >>> Resolver.build(r.where, paramstyle='dollar-numeric')
-    ('status = $1', ['active'])
+    asyncpg driver. Uses native `$N` placeholders and server-side
+    PREPARE, so placeholders in polymorphic contexts need explicit
+    casts.
     """
-    if flavor != 'postgres':
-        raise TranslationError(f'unsupported flavor: {flavor!r}')
-    parsed = parse(path, bindings=bindings, partial=True)
-    tr = _Translator()
-    raw = tr.translate(parsed.ops)
-    # Build SQLFragment objects per fragment sharing the translator state.
-    state = tr.state
-    params = dict(state.params)
-    unbound = dict(state.unbound)
+    paramstyle = 'dollar-numeric'
+    cast       = True
 
-    def _mkfrag(text):
-        if text is None:
-            return None
-        # Limit params/unbound to markers that actually appear in this
-        # fragment's text.
-        used = {name for _, name, _, _ in _FORMATTER.parse(text)
-                if name is not None}
-        f_params = {k: v for k, v in params.items() if k in used}
-        f_unbound = {k: v for k, v in unbound.items() if k in used}
-        return SQLFragment(text, f_params, f_unbound)
 
-    return Resolver(
-        select=_mkfrag(raw.get('select')),
-        where=_mkfrag(raw.get('where')),
-        from_=_mkfrag(raw.get('from')),
-        unbound=unbound,
-    )
+@driver('psycopg2')
+class Psycopg2Resolver(PostgresMixin, Resolver):
+    """
+    psycopg2 driver. Substitutes `%s` / `%(name)s` placeholders
+    client-side before sending SQL to the server, so no type
+    inference is needed.
+    """
+    paramstyle = 'pyformat'
+    # cast = False inherited.
+
+
+@driver('psycopg')
+class PsycopgResolver(PostgresMixin, Resolver):
+    """
+    psycopg (v3) driver. Uses `%s` / `%(name)s` like psycopg2 but can
+    run in binary / server-bound mode where placeholder types are
+    resolved server-side — keep casts on to stay correct in that mode.
+    """
+    paramstyle = 'pyformat'
+    cast       = True
