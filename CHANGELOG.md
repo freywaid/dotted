@@ -57,3 +57,143 @@ the ones listed are omitted — browse git history for earlier entries.
 ## [0.42.9]
 - Add concrete access fallback and `__slots__` support for attr/key
   fields.
+
+## [0.42.8]
+- Fix thread-safety in the parser with a lock around `parse_string`.
+
+## [0.42.7]
+- Mark package as Beta in classifiers.
+
+## [0.42.6]
+- Replace isinstance dispatch with polymorphism and declarative
+  `_match_from`; extract shared helpers.
+
+## [0.42.5]
+- Fix `unpack` dropping leaves in mixed-depth trees.
+
+## [0.42.4]
+- Fix default generation for `FilterWrap`-ed slot groups.
+
+## [0.42.3]
+- Support multi-doc Python literals in `py` / `pyl` input formats.
+
+## [0.42.2]
+- `dq` CLI: add `py` / `pyl` input and output formats.
+
+## [0.42.1]
+- Fix type-erasing `str()` in `Subst.resolve()`; add var support in
+  containers and globs.
+
+## [0.42.0]
+- Add template bindings and a resolution guard to `parse()` and the
+  traversal APIs.
+- Add `+` concat operator for key construction.
+
+## [0.41.2]
+- Unify substitution classes with transform support.
+
+## [0.41.1]
+- Move `most_inner` to the `TraversalOp` base; add it to `Wrap` for
+  deep unwrapping; delegate `is_reference()` through `Wrap`.
+
+## [0.41.0]
+- Add relative references: `$$(^path)`, `$$(^^path)`,
+  `$$(^^^path)`.
+
+## [0.40.0]
+- **Breaking**: `unpack()` now returns a dict instead of a tuple of
+  pairs.
+- Add `$$(path)` internal references (absolute-root) with pattern
+  support.
+
+## [0.39.1]
+- Add `$(name)` named substitutions.
+
+## [0.39.0]
+- Make `quote()` idempotent; rename `match.py` → `matchers.py`.
+- Add `\$` escaping for literal dollar-sign keys; add `is_template`
+  API.
+
+## [0.38.1]
+- Enable pyparsing packrat mode (~40% parse speedup).
+
+## [0.38.0]
+- Add comparison operators (`<`, `>`, `<=`, `>=`) for filters and
+  value guards.
+- Add `translate_multi()` yielding `(original, translated)` tuples.
+
+## [0.37.0]
+- Add `GroupMode.patterns` and `translate()`.
+- Fix mid-path `**` parsing.
+
+## [0.36.1]
+- Add universal `$N` resolution via tree-level `resolve()`.
+- Extract filters from `AccessOp` into a dedicated `FilterWrap`
+  wrapper.
+
+## [0.36.0]
+- Add `$N` template substitution grammar, `replace()`, and `pack()`.
+
+## [0.35.6]
+- Fix recursive `remove` ignoring `val` parameter; add cycle
+  detection tests.
+
+## [0.35.5]
+- Add `keys()`, `values()`, `items()` APIs returning dict-view types.
+
+## [0.35.4]
+- Add transform support for value guards and filters.
+
+## [0.35.3]
+- Add `walk` / `walk_multi` API for lazy `(path, value)` iteration.
+
+## [0.35.2]
+- Extract `Dotted` / `assemble` into `results.py`; move transform
+  decorator to `transforms.py`; split `elements.py` into `access`,
+  `filters`, `recursive`, `wrappers`, `engine`, `groups` modules.
+
+## [0.35.1]
+- Add type restrictions on `OpGroup`s and recursive operators.
+
+## [0.35.0]
+- Add path segment type restrictions; remove `_RECURSIVE_TERMINALS`.
+
+## [0.34.4]
+- Cache concrete op construction for ~20% `pluck` speedup.
+
+## [0.34.3]
+- Rename `--attrs` to `--unpack-attrs`; document the `Attrs` enum.
+
+## [0.34.2]
+- Optimize stack-based traversal by eliminating `Frame` kwargs
+  copying.
+
+## [0.34.1]
+- Add `Attrs` enum for `unpack` attr filtering and `--attrs` CLI
+  flag.
+
+## [0.34.0]
+- Add `strict=True` mode for type-separated accessor matching.
+- Refactor the recursive operator: `**` is dict-only; add `*(expr)`
+  accessor groups.
+
+## [0.33.0]
+- Stack-based traversal, unified grammar, single `AccessOp`.
+
+## [0.32.2]
+- Split Projection and Unpack into separate README sections.
+
+## [0.32.1]
+- Improve `dq` intro phrasing; add explicit anchors for PyPI README
+  navigation.
+
+## [0.32.0]
+- Add key quoting, `normalize()`, and extended numeric literals.
+
+## [0.31.1]
+- Unify string and bytes glob grammar; README updates.
+
+## [0.31.0]
+- Add math, comparison, and membership transforms.
+- Add string glob, bytes glob, bytes literal, and value group
+  patterns; add container filter values.
