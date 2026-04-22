@@ -174,6 +174,86 @@ def drivers():
     return sorted(_DRIVERS)
 
 
+# ---- Raw SQL substitution values ------------------------------------
+
+class Raw:
+    """
+    Low-level wrapper signaling that a binding value should be emitted
+    as literal SQL at render time rather than hoisted as a bind
+    parameter. Use when the "value" for a substitution is actually a
+    SQL expression — a column reference, a subquery, a function call.
+
+        r = sqlize('customer = $(matched.customer)', driver='asyncpg')
+        r.build(r.where, **{'matched.customer': Raw('matched.customer')})
+        # ("customer = matched.customer", [])
+
+    Bypasses all paramstyle / cast / args-list machinery: the
+    placeholder slot is replaced verbatim with `.sql`, no arg is
+    emitted, no cast is applied, no back-reference is reserved. Same
+    behavior across every paramstyle.
+
+    WARNING: escape hatch. The contents of `sql` are emitted verbatim
+    — never pass untrusted input. For the common case of qualified
+    column references, use `Col` instead: it validates each identifier
+    segment and builds a safe `Raw`.
+    """
+
+    __slots__ = ('sql',)
+
+    def __init__(self, sql):
+        if not isinstance(sql, str):
+            raise TranslationError(
+                f'Raw expects a str, got {type(sql).__name__}'
+            )
+        self.sql = sql
+
+    def __repr__(self):
+        return f'Raw({self.sql!r})'
+
+    def __eq__(self, other):
+        if isinstance(other, Raw):
+            return self.sql == other.sql
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(('Raw', self.sql))
+
+
+class Col(Raw):
+    """
+    Safe qualified column reference. Validates that each identifier
+    segment is a plain SQL identifier, then joins with `.`:
+
+        Col('matched.customer')              # → Raw('matched.customer')
+        Col('matched', 'customer')           # same
+        Col('schema', 'table', 'col')        # → Raw('schema.table.col')
+
+    Rejects segments that aren't plain identifiers — no spaces,
+    punctuation, or SQL meta-characters — so user input flowing into
+    `Col()` cannot inject SQL via this path. For exotic column names
+    or expressions, use `Raw` directly.
+    """
+
+    def __init__(self, *parts):
+        if not parts:
+            raise TranslationError('Col() requires at least one part')
+        if len(parts) == 1 and isinstance(parts[0], str) and '.' in parts[0]:
+            parts = tuple(parts[0].split('.'))
+        for p in parts:
+            if not isinstance(p, str):
+                raise TranslationError(
+                    f'Col part must be a str, got {type(p).__name__}'
+                )
+            if not _IDENT_RE.fullmatch(p):
+                raise TranslationError(
+                    f'Col part is not a plain identifier: {p!r}'
+                )
+        super().__init__('.'.join(parts))
+
+    def __repr__(self):
+        return f'Col({self.sql!r})'
+
+
 # ---- Legacy dialect cast registry -----------------------------------
 #
 # Kept for the low-level `Resolver.build(sql, paramstyle='...')`
@@ -451,6 +531,10 @@ def _render(sql, paramstyle, cast_fn, bindings):
     returns a SQL cast name or None — pass None (not a no-op fn) to
     skip casting entirely so the `:cast` marker spec has no effect.
     `bindings` is a dict of orig-name → value provided by the caller.
+
+    `Raw` values bypass all paramstyle / cast / args machinery: their
+    `.sql` is substituted in place of the placeholder, no arg is
+    emitted, no cast is applied. Same behavior across every paramstyle.
     """
     missing = []
     if paramstyle in ('named', 'pyformat'):
@@ -461,6 +545,8 @@ def _render(sql, paramstyle, cast_fn, bindings):
             value = _lookup_value(sql, marker, bindings, missing)
             if value is _MISSING:
                 return ''
+            if isinstance(value, Raw):
+                return value.sql
             out_params[marker] = value
             return fmt.format(name=marker)
 
@@ -476,6 +562,10 @@ def _render(sql, paramstyle, cast_fn, bindings):
             value = _lookup_value(sql, marker, bindings, missing)
             if value is _MISSING:
                 return ''
+            if isinstance(value, Raw):
+                # No arg appended, no back-ref slot reserved — each
+                # occurrence emits the raw SQL afresh.
+                return value.sql
             out_args.append(value)
             ph = f'{prefix}{len(out_args)}'
             if spec == 'cast' and cast_fn is not None:
@@ -494,6 +584,8 @@ def _render(sql, paramstyle, cast_fn, bindings):
             value = _lookup_value(sql, marker, bindings, missing)
             if value is _MISSING:
                 return ''
+            if isinstance(value, Raw):
+                return value.sql
             out_args.append(value)
             return placeholder
 

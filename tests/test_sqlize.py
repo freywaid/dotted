@@ -14,7 +14,7 @@ runs. Every concrete render in this file goes through the classmethod
 import pytest
 from dotted.sql import (
     sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, ParamPool,
-    TranslationError,
+    Raw, Col, TranslationError,
 )
 
 
@@ -922,3 +922,158 @@ def test_pool_is_public():
     import dotted.sql
     assert ParamPool is dotted.ParamPool
     assert ParamPool is dotted.sql.ParamPool
+
+
+# ---------------- Raw / Col substitution values ----------------
+
+def test_raw_emits_literal_sql_not_a_bind_param():
+    """
+    Binding a substitution to Raw emits the SQL verbatim and adds
+    nothing to the args list.
+    """
+    r = sqlize('customer = $(matched.customer)')
+    sql, args = Resolver.build(r.where,
+                               paramstyle='dollar-numeric',
+                               **{'matched.customer': Raw('matched.customer')})
+    assert sql == 'customer = matched.customer'
+    assert args == []
+
+
+def test_raw_mixed_with_value_bindings():
+    """
+    Raw and regular value bindings coexist in one build call. The args
+    list receives only the value-bound substitutions, in occurrence
+    order.
+    """
+    r = sqlize('(status = $(s) & customer = $(c))')
+    sql, args = Resolver.build(r.where,
+                               paramstyle='dollar-numeric',
+                               s='active', c=Raw('matched.customer'))
+    assert sql == '(status = $1) AND (customer = matched.customer)'
+    assert args == ['active']
+
+
+def test_raw_across_paramstyles():
+    """
+    Raw emits the same literal SQL regardless of paramstyle — bypasses
+    placeholder formatting entirely.
+    """
+    r = sqlize('customer = $(c)')
+    for paramstyle in ['named', 'pyformat', 'qmark', 'format',
+                       'numeric', 'dollar-numeric']:
+        sql, args = Resolver.build(r.where,
+                                   paramstyle=paramstyle,
+                                   c=Raw('matched.customer'))
+        assert sql == 'customer = matched.customer', paramstyle
+        # Dict paramstyles produce {}; list paramstyles produce [].
+        assert not args, paramstyle
+
+
+def test_raw_repeated_emits_each_occurrence():
+    """
+    Same Raw value used in two places emits the SQL at each occurrence
+    — no back-reference reserved (unlike value bindings under numeric /
+    dollar-numeric paramstyles which back-ref to one slot).
+    """
+    r = sqlize('(a = $(x) & b = $(x))')
+    sql, args = Resolver.build(r.where,
+                               paramstyle='dollar-numeric',
+                               x=Raw('T.x'))
+    assert sql == '(a = T.x) AND (b = T.x)'
+    assert args == []
+
+
+def test_raw_drops_cast_inside_jsonb_build_object():
+    """
+    In pattern-path contexts, value substitutions flow through
+    `jsonb_build_object(..., $N::cast)`. A Raw binding in that slot
+    emits the expression verbatim — no placeholder, no cast.
+    """
+    r = sqlize('data.users[*].customer = $(c)')
+    sql, args = Resolver.build(r.where,
+                               paramstyle='dollar-numeric',
+                               c=Raw('matched.customer'))
+    assert sql == (
+        "jsonb_path_exists(data, '$.users[*].customer ? (@ == $c)', "
+        "jsonb_build_object('c', matched.customer))"
+    )
+    assert args == []
+
+
+def test_raw_with_shared_pool():
+    """
+    Raw bindings work inside a pool-shared composition. The Raw slot
+    doesn't participate in args numbering; non-Raw bindings get
+    sequential `$N` as usual.
+    """
+    pool = ParamPool()
+    r1 = sqlize('status = "active"', pool=pool)
+    r2 = sqlize('customer = $(matched.customer)', pool=pool)
+    combined = '(' + r1.where + ') AND (' + r2.where + ')'
+    sql, args = Resolver.build(combined,
+                               paramstyle='dollar-numeric',
+                               **{'matched.customer': Raw('matched.customer')})
+    assert sql == '(status = $1) AND (customer = matched.customer)'
+    assert args == ['active']
+
+
+def test_col_single_dotted_string():
+    """
+    `Col('matched.customer')` splits on `.` and joins back with `.` —
+    same net SQL as Raw('matched.customer') but validated.
+    """
+    c = Col('matched.customer')
+    assert isinstance(c, Raw)
+    assert c.sql == 'matched.customer'
+
+
+def test_col_multi_arg():
+    """
+    `Col('matched', 'customer')` takes separate segments.
+    """
+    assert Col('matched', 'customer').sql == 'matched.customer'
+    assert Col('schema', 'tbl', 'col').sql == 'schema.tbl.col'
+
+
+def test_col_rejects_non_identifier_segments():
+    """
+    Each segment must be a plain SQL identifier — no punctuation,
+    no SQL meta-characters.
+    """
+    with pytest.raises(TranslationError):
+        Col('bad; DROP TABLE x')
+    with pytest.raises(TranslationError):
+        Col('matched', 'bad col')
+    with pytest.raises(TranslationError):
+        Col('')
+
+
+def test_col_in_build():
+    """
+    Col passes through to the renderer as a Raw — emits the validated
+    dotted identifier verbatim.
+    """
+    r = sqlize('customer = $(c)')
+    sql, args = Resolver.build(r.where,
+                               paramstyle='dollar-numeric',
+                               c=Col('matched.customer'))
+    assert sql == 'customer = matched.customer'
+    assert args == []
+
+
+def test_raw_col_are_public():
+    """
+    Raw and Col are re-exported from both `dotted.sql` and the top-
+    level namespace is submodule-only by design.
+    """
+    import dotted.sql
+    assert Raw is dotted.sql.Raw
+    assert Col is dotted.sql.Col
+
+
+def test_raw_rejects_non_string():
+    """
+    Raw requires a str — construction errors for other types.
+    """
+    with pytest.raises(TranslationError):
+        Raw(42)

@@ -2995,6 +2995,56 @@ a pool — one slot, one value, back-referenced in the rendered SQL:
 When a `ParamPool` isn't passed, each Resolver gets a private pool —
 the single-Resolver case continues to work unchanged.
 
+### SQL expressions as substitution values (Raw / Col)
+
+Substitutions normally bind to Python values that hoist into bind
+parameters (`$1`, `%(name)s`, etc.). For the cases where the "value"
+is actually a **SQL expression** — a column reference, a subquery,
+a function call — bind to a `Raw` wrapper instead:
+
+    >>> from dotted.sql import Raw, Col
+    >>> r = dotted.sqlize('customer = $(matched.customer)', driver='asyncpg')
+    >>> r.build(r.where, **{'matched.customer': Raw('matched.customer')})
+    ('customer = matched.customer', [])
+
+The `Raw` contents are emitted verbatim in place of the placeholder.
+No bind parameter allocated, no cast emitted, no args-list entry.
+Behavior is identical across every paramstyle.
+
+**Typical use case:** composing CTEs where a substitution in one
+Resolver resolves to a column from another CTE:
+
+    WITH matched AS (...),
+         joined  AS (
+           SELECT * FROM ledger
+           WHERE <rendered joined-predicate with matched.customer as Raw>
+         )
+    SELECT * FROM joined
+
+The same Resolver works for both orchestration strategies: runtime
+value per matched row (`r.build(..., **{'matched.customer': 'alice'})`)
+or single-SQL CTE composition (`..., **{'matched.customer':
+Raw('matched.customer')})`). The caller picks at build time.
+
+**Safety:** `Raw` is an escape hatch. Never pass untrusted input —
+the string is emitted unescaped. For the common case of qualified
+column references, use `Col` instead, which validates each identifier
+segment before building a `Raw`:
+
+    >>> Col('matched.customer')
+    Col('matched.customer')
+    >>> Col('matched', 'customer')                       # equivalent
+    Col('matched.customer')
+    >>> Col('schema', 'table', 'col')
+    Col('schema.table.col')
+    >>> Col('bad; DROP TABLE')
+    Traceback (most recent call last):
+      ...
+    dotted.TranslationError: Col part is not a plain identifier: 'bad; DROP TABLE'
+
+`Col` is a subclass of `Raw`, so it behaves identically at render
+time — the only difference is construction-time validation.
+
 ### Adding a driver
 
 Drivers are registered via the `@dotted.sql.driver('<name>')`
