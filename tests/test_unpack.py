@@ -198,7 +198,7 @@ def test_auto_setdefault():
 
 def test_auto_update_multi_dict_from_dict():
     """
-    AUTO with dict-style keyvalues input.
+    AUTO with dict-style pathvalues input.
     """
     r = dotted.update_multi(AUTO, {'a.b': 1, 'c.d': 2})
     assert r == {'a': {'b': 1}, 'c': {'d': 2}}

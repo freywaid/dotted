@@ -40,25 +40,25 @@ ANY = utypes.ANY
 AUTO = type('AUTO', (), {'__repr__': lambda self: 'AUTO'})()
 
 
-def _auto_root_from_key(key):
+def _auto_root_from_path(path):
     """
-    Infer root container type from a single key.
+    Infer root container type from a single path.
     Returns [] if root is a sequence, {} otherwise.
     """
-    ops = parse(key)
+    ops = parse(path)
     if ops.ops and isinstance(ops.ops[0], access.Slot):
         return []
     return {}
 
 
-def _auto_root(keyvalues):
+def _auto_root(pathvalues):
     """
-    Infer root container type from the first key in keyvalues.
+    Infer root container type from the first path in pathvalues.
     Returns [] if root is a sequence, {} otherwise.
     """
-    for item in keyvalues:
-        key = item[0] if isinstance(item, (list, tuple)) else item
-        return _auto_root_from_key(key)
+    for item in pathvalues:
+        path = item[0] if isinstance(item, (list, tuple)) else item
+        return _auto_root_from_path(path)
     return {}
 
 
@@ -80,7 +80,7 @@ def _parse(ops):
     return results.Dotted(parsed)
 
 
-def parse(key, bindings=None, partial=True):
+def parse(path, bindings=None, partial=True):
     """
     Parse dotted notation. Results are LRU-cached (same path string reuses cached parse).
 
@@ -90,12 +90,12 @@ def parse(key, bindings=None, partial=True):
     >>> parse('hello.there|str:"=%s"')
     Dotted([hello, there], [str:'=%s'])
     """
-    if isinstance(key, results.Dotted):
-        ops = key
-    elif isinstance(key, tuple):
-        ops = results.Dotted({'ops': key, 'transforms': ()})
+    if isinstance(path, results.Dotted):
+        ops = path
+    elif isinstance(path, tuple):
+        ops = results.Dotted({'ops': path, 'transforms': ()})
     else:
-        ops = _parse(key)
+        ops = _parse(path)
     if bindings is not None:
         ops = ops.resolve(bindings, partial=partial)
     if not partial and _is_template(ops):
@@ -153,7 +153,7 @@ def _is_pattern(ops):
     return _is_pattern(ops[1:])
 
 
-def is_pattern(key):
+def is_pattern(path):
     """
     True if dotted is a pattern
     >>> is_pattern('hello.*')
@@ -161,9 +161,9 @@ def is_pattern(key):
     >>> is_pattern('hello.there')
     False
     """
-    if isinstance(key, results.Dotted):
-        return _is_pattern(key)
-    return _is_pattern(parse(key))
+    if isinstance(path, results.Dotted):
+        return _is_pattern(path)
+    return _is_pattern(parse(path))
 
 
 @functools.lru_cache(CACHE_SIZE)
@@ -175,7 +175,7 @@ def _is_template(ops):
     return _is_template(ops[1:])
 
 
-def is_template(key):
+def is_template(path):
     """
     True if dotted path contains substitution references.
     >>> is_template('a.$0')
@@ -183,9 +183,9 @@ def is_template(key):
     >>> is_template('a.b')
     False
     """
-    if isinstance(key, results.Dotted):
-        return _is_template(key)
-    return _is_template(parse(key))
+    if isinstance(path, results.Dotted):
+        return _is_template(path)
+    return _is_template(parse(path))
 
 
 @functools.lru_cache(CACHE_SIZE)
@@ -197,7 +197,7 @@ def _is_reference(ops):
     return _is_reference(ops[1:])
 
 
-def is_reference(key):
+def is_reference(path):
     """
     True if dotted path contains internal references ($$(...)).
     Walks into wraps, filters, and group branches.
@@ -209,12 +209,12 @@ def is_reference(key):
     >>> is_reference('a.$(x)')
     False
     """
-    if isinstance(key, results.Dotted):
-        return _is_reference(key)
-    return _is_reference(parse(key))
+    if isinstance(path, results.Dotted):
+        return _is_reference(path)
+    return _is_reference(parse(path))
 
 
-def is_indeterminate(key):
+def is_indeterminate(path):
     """
     True if the path contains substitutions or references — anything
     whose access target isn't pinned down by the source alone and
@@ -230,7 +230,7 @@ def is_indeterminate(key):
     >>> is_indeterminate('a.*.b')
     False
     """
-    parsed = key if isinstance(key, results.Dotted) else parse(key)
+    parsed = path if isinstance(path, results.Dotted) else parse(path)
     return _is_template(parsed) or _is_reference(parsed)
 
 
@@ -244,7 +244,7 @@ def _is_simple(ops):
     return True
 
 
-def is_simple(key):
+def is_simple(path):
     """
     True if the path is a plain chain of access ops (Key, Attr, Slot)
     with literal matchers — no patterns, substitutions, references,
@@ -270,13 +270,13 @@ def is_simple(key):
     >>> is_simple('a.$$(b)')
     False
     """
-    parsed = key if isinstance(key, results.Dotted) else parse(key)
+    parsed = path if isinstance(path, results.Dotted) else parse(path)
     if parsed.transforms:
         return False
     return _is_simple(parsed)
 
 
-def is_inverted(key):
+def is_inverted(path):
     """
     True if an inverted style pattern
     >>> is_inverted('-hello.there')
@@ -284,7 +284,7 @@ def is_inverted(key):
     >>> is_inverted('hello.there')
     False
     """
-    ops = parse(key)
+    ops = parse(path)
     return isinstance(ops[0], access.Invert)
 
 
@@ -320,9 +320,9 @@ def _is_mutable_container(obj):
     return False
 
 
-def mutable(obj, key, strict=False, bindings=None):
+def mutable(obj, path, strict=False, bindings=None):
     """
-    Check if update(obj, key, val) would mutate obj in place.
+    Check if update(obj, path, val) would mutate obj in place.
 
     Returns False if:
     - The path is empty (root replacement, not mutation)
@@ -347,7 +347,7 @@ def mutable(obj, key, strict=False, bindings=None):
     >>> mutable(((1, 2),), '[0][0]')
     False
     """
-    ops = parse(key, bindings=bindings, partial=False)
+    ops = parse(path, bindings=bindings, partial=False)
 
     # Empty path can never mutate (can't rebind caller's variable)
     if len(ops) == 1 and isinstance(ops[0], access.Empty):
@@ -376,35 +376,38 @@ def mutable(obj, key, strict=False, bindings=None):
 # Alias for use inside functions where 'mutable' parameter shadows the function
 _mutable = mutable
 
+# Public alias — parallels is_pattern, is_template, is_simple, etc.
+is_mutable = mutable
 
-def build_multi(obj, keys, strict=False, bindings=None):
+
+def build_multi(obj, paths, strict=False, bindings=None):
     """
-    Build a subset/default obj based on concrete key fields
+    Build a subset/default obj based on concrete path fields
     >>> build_multi({}, ('hello.bye[]', 'hello.there', ))
     {'hello': {'bye': [], 'there': None}}
     """
-    keys = tuple(keys)
+    paths = tuple(paths)
     if obj is AUTO:
-        obj = _auto_root(((k, None) for k in keys))
-    for key in keys:
-        built = engine.build(parse(key, bindings=bindings, partial=False), obj, strict=strict)
-        obj = update_multi(obj, pluck_multi(built, (key,), strict=strict), strict=strict)
+        obj = _auto_root(((p, None) for p in paths))
+    for path in paths:
+        built = engine.build(parse(path, bindings=bindings, partial=False), obj, strict=strict)
+        obj = update_multi(obj, pluck_multi(built, (path,), strict=strict), strict=strict)
     return obj
 
 
-def build(obj, key, strict=False, bindings=None):
+def build(obj, path, strict=False, bindings=None):
     """
     Build a subset/default obj based on dotted
     >>> build({}, 'hello.there')
     {'hello': {'there': None}}
     >>> # build({}, 'a.b.c[:2].d')
     """
-    return build_multi(obj, (key,), strict=strict, bindings=bindings)
+    return build_multi(obj, (path,), strict=strict, bindings=bindings)
 
 
-def get(obj, key, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None):
+def get(obj, path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None):
     """
-    Get a value specified by the dotted key. If dotted is a pattern,
+    Get a value specified by the dotted path. If dotted is a pattern,
     return a tuple of all matches.
 
     Cut (#) in disjunction: if a branch has # and it matches, only its results
@@ -429,7 +432,7 @@ def get(obj, key, default=None, pattern_default=(), apply_transforms=True, stric
     >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
     (7,)
     """
-    ops = parse(key, bindings=bindings, partial=False)
+    ops = parse(path, bindings=bindings, partial=False)
     vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )
@@ -448,13 +451,13 @@ def get_multi(obj, iterable, apply_transforms=True, strict=False, bindings=None)
     [7, 9]
     """
     dummy = object()
-    found = (get(obj, k, dummy, dummy, apply_transforms=apply_transforms, strict=strict, bindings=bindings) for k in iterable)
+    found = (get(obj, p, dummy, dummy, apply_transforms=apply_transforms, strict=strict, bindings=bindings) for p in iterable)
     return (v for v in found if v is not dummy)
 
 
-def has(obj, key, strict=False, bindings=None):
+def has(obj, path, strict=False, bindings=None):
     """
-    True if key/pattern is contained in obj
+    True if path/pattern is contained in obj
     >>> d = {'hello': {'there': [1, '2', 3]}}
     >>> has(d, 'hello.*')
     True
@@ -462,10 +465,10 @@ def has(obj, key, strict=False, bindings=None):
     False
     """
     dummy = object()
-    return get(obj, key, dummy, dummy, strict=strict, bindings=bindings) is not dummy
+    return get(obj, path, dummy, dummy, strict=strict, bindings=bindings) is not dummy
 
 
-def setdefault(obj, key, val, apply_transforms=True, strict=False, bindings=None):
+def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=None):
     """
     Get value at path if it exists, else set path to val and return that value (like dict.setdefault).
     >>> d = {'hello': 'there'}
@@ -477,17 +480,17 @@ def setdefault(obj, key, val, apply_transforms=True, strict=False, bindings=None
     7
     """
     if obj is AUTO:
-        obj = _auto_root_from_key(key)
-    if has(obj, key, strict=strict, bindings=bindings):
-        return  get(obj, key, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
-    obj = update(obj, key, val, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
-    return get(obj, key, apply_transforms=False, strict=strict, bindings=bindings)
+        obj = _auto_root_from_path(path)
+    if has(obj, path, strict=strict, bindings=bindings):
+        return  get(obj, path, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    obj = update(obj, path, val, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return get(obj, path, apply_transforms=False, strict=strict, bindings=bindings)
 
 
-def setdefault_multi(obj, keyvalues, apply_transforms=True, strict=False, bindings=None):
+def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindings=None):
     """
-    For each (key, value), set value at key only if key does not exist (like setdefault).
-    Returns an iterable of the value at each path (same order as keyvalues), like get_multi.
+    For each (path, value), set value at path only if path does not exist (like setdefault).
+    Returns an iterable of the value at each path (same order as pathvalues), like get_multi.
     Mutates obj in place.
     >>> d = {'a': 1}
     >>> list(setdefault_multi(d, [('a', 999), ('b', 2)]))
@@ -495,11 +498,11 @@ def setdefault_multi(obj, keyvalues, apply_transforms=True, strict=False, bindin
     >>> d
     {'a': 1, 'b': 2}
     """
-    for k, v in keyvalues.items() if hasattr(keyvalues, 'items') else keyvalues:
-        yield setdefault(obj, k, v, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    for p, v in pathvalues.items() if hasattr(pathvalues, 'items') else pathvalues:
+        yield setdefault(obj, p, v, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
 
 
-def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
     """
     Update only when pred(val) is true.  Default pred skips None values.
     Use pred=None for unconditional update (same as update).
@@ -514,7 +517,7 @@ def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, app
     {}
     """
     if obj is AUTO:
-        obj = _auto_root_from_key(key)
+        obj = _auto_root_from_path(path)
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True
@@ -522,14 +525,14 @@ def update_if(obj, key, val, pred=lambda val: val is not None, mutable=True, app
     if pred is not None and not pred(val):
         return obj
 
-    ops = parse(key, bindings=bindings, partial=False)
+    ops = parse(path, bindings=bindings, partial=False)
     return engine.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
 
 
 def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
     """
-    Update multiple keys, skipping items where pred(val) is false.
-    items: iterable of (key, val) or (key, val, pred).
+    Update multiple paths, skipping items where pred(val) is false.
+    items: iterable of (path, val) or (path, val, pred).
     >>> update_if_multi({}, [('a', 1), ('b', None), ('c', 3)])
     {'a': 1, 'c': 3}
     """
@@ -537,15 +540,15 @@ def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, 
         obj = copy.deepcopy(obj)
         mutable = True
     for item in items:
-        key, val, *rest = item
+        path, val, *rest = item
         p = rest[0] if rest else pred
-        obj = update_if(obj, key, val, pred=p, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+        obj = update_if(obj, path, val, pred=p, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
     return obj
 
 
-def update(obj, key, val, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update(obj, path, val, mutable=True, apply_transforms=True, strict=False, bindings=None):
     """
-    Update obj with all matches to dotted key with val
+    Update obj with all matches to dotted path with val
     >>> d = {'hello': {'there': {'stuff': 1}}}
     >>> update(d, 'hello.there.stuff', 2)
     {'hello': {'there': {'stuff': 2}}}
@@ -565,7 +568,7 @@ def update(obj, key, val, mutable=True, apply_transforms=True, strict=False, bin
     >>> update({'hello': {'there': {'me': 'bye'}}}, '-hello.there', ANY)    # invert
     {'hello': {}}
 
-    NOP (~) with first-match: update only if key missing
+    NOP (~) with first-match: update only if path missing
     >>> update({'name': {'first': 'alice'}}, '(name.~first, name.first)?', 'bob')
     {'name': {'first': 'alice'}}
     >>> update({'name': {}}, '(name.~first, name.first)?', 'bob')
@@ -583,13 +586,13 @@ def update(obj, key, val, mutable=True, apply_transforms=True, strict=False, bin
     >>> result
     {'a': 2}
     """
-    return update_if(obj, key, val, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return update_if(obj, path, val, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
 
 
-def update_multi(obj, keyvalues, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update_multi(obj, pathvalues, mutable=True, apply_transforms=True, strict=False, bindings=None):
     """
-    Update obj with all keyvalues.  Pass AUTO as obj to infer the root
-    container type from the first key.
+    Update obj with all pathvalues.  Pass AUTO as obj to infer the root
+    container type from the first path.
     >>> update_multi({}, [('hello.there', 7), ('my.my', 9)])
     {'hello': {'there': 7}, 'my': {'my': 9}}
     >>> update_multi({}, {'stuff.more.stuff': 'mine'})
@@ -597,17 +600,17 @@ def update_multi(obj, keyvalues, mutable=True, apply_transforms=True, strict=Fal
     >>> update_multi(AUTO, [('[0]', 'a'), ('[1]', 'b')])
     ['a', 'b']
     """
-    if hasattr(keyvalues, 'items') and callable(keyvalues.items):
-        keyvalues = keyvalues.items()
+    if hasattr(pathvalues, 'items') and callable(pathvalues.items):
+        pathvalues = pathvalues.items()
     if obj is AUTO:
-        keyvalues = list(keyvalues)
-        obj = _auto_root(keyvalues)
-    return update_if_multi(obj, keyvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+        pathvalues = list(pathvalues)
+        obj = _auto_root(pathvalues)
+    return update_if_multi(obj, pathvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
 
 
-def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True, strict=False, bindings=None):
+def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=True, strict=False, bindings=None):
     """
-    Remove only when pred(key) is true.  Default pred skips None keys.
+    Remove only when pred(path) is true.  Default pred skips None paths.
     Use pred=None for unconditional remove (same as remove).
 
     >>> remove_if({'a': 1}, 'a')
@@ -616,21 +619,21 @@ def remove_if(obj, key, pred=lambda key: key is not None, val=ANY, mutable=True,
     {'a': 1}
     """
     if obj is AUTO:
-        obj = _auto_root_from_key(key)
+        obj = _auto_root_from_path(path)
     if not mutable and _is_mutable_container(obj):
         obj = copy.deepcopy(obj)
         mutable = True
 
-    if pred is not None and not pred(key):
+    if pred is not None and not pred(path):
         return obj
 
-    return engine.removes(parse(key, bindings=bindings, partial=False), obj, val, strict=strict)
+    return engine.removes(parse(path, bindings=bindings, partial=False), obj, val, strict=strict)
 
 
-def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None, mutable=True, strict=False, bindings=None):
+def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not None, mutable=True, strict=False, bindings=None):
     """
-    Remove by keys or (key, val, pred), skipping items where pred(key) is false.
-    Default pred skips None keys.
+    Remove by paths or (path, val, pred), skipping items where pred(path) is false.
+    Default pred skips None paths.
     >>> remove_if_multi({'a': 1, 'b': 2}, ['a', None, 'b'])
     {}
     """
@@ -638,24 +641,24 @@ def remove_if_multi(obj, items, keys_only=True, pred=lambda key: key is not None
         obj = copy.deepcopy(obj)
         mutable = True
 
-    if keys_only:
-        for k in items:
-            obj = remove_if(obj, k, pred=pred, val=ANY, mutable=mutable, strict=strict, bindings=bindings)
+    if paths_only:
+        for p in items:
+            obj = remove_if(obj, p, pred=pred, val=ANY, mutable=mutable, strict=strict, bindings=bindings)
         return obj
 
     for item in items:
-        k, v, *rest = item
-        p = rest[0] if rest else pred
-        obj = remove_if(obj, k, pred=p, val=v, mutable=mutable, strict=strict, bindings=bindings)
+        p, v, *rest = item
+        pr = rest[0] if rest else pred
+        obj = remove_if(obj, p, pred=pr, val=v, mutable=mutable, strict=strict, bindings=bindings)
     return obj
 
 
-def remove(obj, key, val=ANY, mutable=True, strict=False, bindings=None):
+def remove(obj, path, val=ANY, mutable=True, strict=False, bindings=None):
     """
-    To remove all matches to `key`
-        remove(obj, key) or remove(obj, key, ANY)
-    To remove all matches to `key` with `val`
-        remove(obj, key, val)
+    To remove all matches to `path`
+        remove(obj, path) or remove(obj, path, ANY)
+    To remove all matches to `path` with `val`
+        remove(obj, path, val)
     >>> d = {'hello': {'there': [1, 2, 3]}}
     >>> remove(d, 'hello.there[-1]')
     {'hello': {'there': [1, 2]}}
@@ -678,30 +681,30 @@ def remove(obj, key, val=ANY, mutable=True, strict=False, bindings=None):
     >>> result
     {'b': 2}
     """
-    return remove_if(obj, key, pred=None, val=val, mutable=mutable, strict=strict, bindings=bindings)
+    return remove_if(obj, path, pred=None, val=val, mutable=mutable, strict=strict, bindings=bindings)
 
 
-def remove_multi(obj, iterable, keys_only=True, mutable=True, strict=False, bindings=None):
+def remove_multi(obj, iterable, paths_only=True, mutable=True, strict=False, bindings=None):
     """
-    Remove by keys or key-values
+    Remove by paths or path-value pairs
     >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
     {'my': {}}
     """
-    if keys_only:
-        return remove_if_multi(obj, iterable, keys_only=True, pred=None, mutable=mutable, strict=strict, bindings=bindings)
+    if paths_only:
+        return remove_if_multi(obj, iterable, paths_only=True, pred=None, mutable=mutable, strict=strict, bindings=bindings)
     if hasattr(iterable, 'items') and callable(iterable.items):
         iterable = iterable.items()
-    return remove_if_multi(obj, iterable, keys_only=False, pred=None, mutable=mutable, strict=strict, bindings=bindings)
+    return remove_if_multi(obj, iterable, paths_only=False, pred=None, mutable=mutable, strict=strict, bindings=bindings)
 
 
-def _match_ops(pats, keys, partial):
+def _match_ops(pats, path_ops, partial):
     """
-    Recursive match of pattern ops against key ops.
+    Recursive match of pattern ops against path ops.
     Returns list of match values on success, None on failure.
-    Handles Recursive ops which can consume variable-length key segments.
+    Handles Recursive ops which can consume variable-length path segments.
     """
     if not pats:
-        if not keys:
+        if not path_ops:
             return []
         if partial:
             return []
@@ -710,38 +713,38 @@ def _match_ops(pats, keys, partial):
     pop = pats[0]
     rest_pats = pats[1:]
 
-    # Non-recursive op: consume exactly one key segment
+    # Non-recursive op: consume exactly one path segment
     if not pop.is_recursive():
-        if not keys:
+        if not path_ops:
             return None
-        kop = keys[0]
+        kop = path_ops[0]
         m = pop.match(kop, specials=True)
         if not m:
             return None
-        rest_result = _match_ops(rest_pats, keys[1:], partial)
+        rest_result = _match_ops(rest_pats, path_ops[1:], partial)
         if rest_result is None:
             return None
         if isinstance(m, (tuple, list)):
             return [_m.val for _m in m] + rest_result
         return [m.val] + rest_result
 
-    # Recursive op: try consuming 1, 2, ... N key segments via backtracking
-    for n in range(1, len(keys) + 1):
-        kop = keys[n - 1]
-        key_val = getattr(getattr(kop, 'op', kop), 'value', kop)
-        matched = any(True for _ in pop.inner.matches((key_val,)))
+    # Recursive op: try consuming 1, 2, ... N path segments via backtracking
+    for n in range(1, len(path_ops) + 1):
+        kop = path_ops[n - 1]
+        seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
+        matched = any(True for _ in pop.inner.matches((seg_val,)))
         if not matched:
             break  # chain-following: stop extending once a segment fails
-        rest_result = _match_ops(rest_pats, keys[n:], partial)
+        rest_result = _match_ops(rest_pats, path_ops[n:], partial)
         if rest_result is not None:
-            combined = results.assemble(keys[:n])
+            combined = results.assemble(path_ops[:n])
             return [combined] + rest_result
     return None
 
 
-def match(pattern, key, groups=False, partial=True, strict=False):
+def match(pattern, path, groups=False, partial=True, strict=False):
     """
-    Returns `key` if `pattern` matches; otherwise `None`
+    Returns `path` if `pattern` matches; otherwise `None`
     >>> match('*.there', 'hello.there')
     'hello.there'
     >>> match('*', 'hello.there')
@@ -782,23 +785,23 @@ def match(pattern, key, groups=False, partial=True, strict=False):
         return (r, tuple(matches))
 
     pats = parse(pattern)
-    keys = parse(key)
+    path_ops = parse(path)
 
     # Check if any pattern op is Recursive — use new recursive matcher
     has_recursive = any(op.is_recursive() for op in pats)
 
     if has_recursive:
-        result = _match_ops(list(pats), list(keys), partial)
+        result = _match_ops(list(pats), list(path_ops), partial)
         if result is None:
             return returns(None, [])
         # TODO: pattern-only filtering for recursive matches
-        return returns(key, result)
+        return returns(path, result)
 
     # Original non-recursive match logic
     _matches = []
     _is_pat = []
-    for idx,(pop,kop) in enumerate(zip(pats, keys)):
-        # this means we have more pattern constraints than key items
+    for idx,(pop,kop) in enumerate(zip(pats, path_ops)):
+        # this means we have more pattern constraints than path segments
         if kop is None:
             return returns(None, [], [])
         if pop is None:
@@ -817,22 +820,22 @@ def match(pattern, key, groups=False, partial=True, strict=False):
     assert kop is not None          # sanity
 
     # exact match
-    if len(pats) == len(keys):
-        return returns(key, _matches, _is_pat)
+    if len(pats) == len(path_ops):
+        return returns(path, _matches, _is_pat)
 
     # if we're not doing partial matches or we haven't consumed all pats, fail
     if not partial or idx < len(pats) - 1:
         return returns(None, [], [])
 
     # otherwise inexact (partial) match
-    # assemble remaining keys
-    rkey = keys.assemble(start=idx)
+    # assemble remaining segments
+    rpath = path_ops.assemble(start=idx)
     if pop is None:
-        _matches.append(rkey)
+        _matches.append(rpath)
         _is_pat.append(False)
     else:
-        _matches[-1] = rkey
-    return returns(key, _matches, _is_pat)
+        _matches[-1] = rpath
+    return returns(path, _matches, _is_pat)
 
 
 def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
@@ -841,7 +844,7 @@ def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
     >>> list(match_multi('/h.*/', ['hello', 'there', 'hi']))
     ['hello', 'hi']
     """
-    matches = (match(pattern, k, groups=groups, partial=partial, strict=strict) for k in iterable)
+    matches = (match(pattern, p, groups=groups, partial=partial, strict=strict) for p in iterable)
     if groups:
         return (m for m in matches if m[0])
     return (m for m in matches if m)
@@ -921,20 +924,20 @@ def overlaps(a, b):
     return base.path_overlaps([a.ops], b.ops)
 
 
-def assemble_multi(keys_list):
+def assemble_multi(segments_list):
     """
     Given a list of a list of path segments assemble into a full dotted path
     >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
     ('hello.there', 'a.1.c')
     """
-    def _assemble(keys):
-        keys = ([k] if isinstance(k, base.Op) else parse(str(k) if not isinstance(k, str) else k) for k in keys)
-        iterable = itertools.chain.from_iterable(keys)
+    def _assemble(segments):
+        parsed = ([s] if isinstance(s, base.Op) else parse(str(s) if not isinstance(s, str) else s) for s in segments)
+        iterable = itertools.chain.from_iterable(parsed)
         return results.assemble(iterable)
-    return tuple(_assemble(keys) for keys in keys_list)
+    return tuple(_assemble(segments) for segments in segments_list)
 
 
-def assemble(keys):
+def assemble(segments):
     """
     Given a list of path segments assemble into a full dotted path
     >>> assemble(['hello', 'there'])
@@ -946,7 +949,7 @@ def assemble(keys):
     >>> assemble([7, 'hello'])
     '7.hello'
     """
-    return assemble_multi((keys,))[0]
+    return assemble_multi((segments,))[0]
 
 
 def expand_multi(obj, patterns, strict=False, bindings=None):
@@ -958,8 +961,8 @@ def expand_multi(obj, patterns, strict=False, bindings=None):
     """
     seen = {}
     for pat in patterns:
-        keys = (o.assemble() for o in engine.expands(parse(pat, bindings=bindings, partial=False), obj, strict=strict))
-        for found in keys:
+        paths = (o.assemble() for o in engine.expands(parse(pat, bindings=bindings, partial=False), obj, strict=strict))
+        for found in paths:
             if found not in seen:
                 seen[found] = None
     return tuple(seen)
@@ -967,7 +970,7 @@ def expand_multi(obj, patterns, strict=False, bindings=None):
 
 def expand(obj, pattern, strict=False, bindings=None):
     """
-    Return all keys that match `pattern` in `obj`
+    Return all paths that match `pattern` in `obj`
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
     >>> expand(d, '*')
     ('hello', 'bye', '9', "'9'")
@@ -1080,17 +1083,17 @@ def walk_multi(obj, patterns, strict=False, bindings=None):
         yield from walk(obj, pattern, strict=strict, bindings=bindings)
 
 
-def pack(keyvalues, apply_transforms=True, strict=False, bindings=None):
+def pack(pathvalues, apply_transforms=True, strict=False, bindings=None):
     """
-    Build a new object from dotted key-value pairs, typically via unpack.
-    Infers root container type from the first key.
+    Build a new object from dotted path-value pairs, typically via unpack.
+    Infers root container type from the first path.
 
     >>> pack([('a.b', 1), ('a.c', 2)])
     {'a': {'b': 1, 'c': 2}}
     >>> pack([('[0]', 'a'), ('[1]', 'b')])
     ['a', 'b']
     """
-    return update_multi(AUTO, keyvalues, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return update_multi(AUTO, pathvalues, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
 
 
 def unpack(obj, attrs=None):
@@ -1139,7 +1142,7 @@ def items(obj, attrs=None):
 
 def keys(obj, attrs=None):
     """
-    Return the dotted paths (keys) of obj in normal form.
+    Return the dotted paths of obj in normal form as dict_keys.
     Internally calls unpack().
 
     >>> d = {'a': {'b': 1}, 'x': 2}

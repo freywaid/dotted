@@ -314,16 +314,16 @@ def test_remove_multi_keys():
     assert result == {'my': {}, 'keep': 'this'}
 
 
-def test_remove_multi_keyvalues():
+def test_remove_multi_pathvalues():
     d = {'a': 1, 'b': 2, 'c': 3}
-    result = dotted.remove_multi(d, [('a', 1), ('b', 999)], keys_only=False)
+    result = dotted.remove_multi(d, [('a', 1), ('b', 999)], paths_only=False)
     # only 'a' removed because value matched, 'b' stays because value didn't match
     assert result == {'b': 2, 'c': 3}
 
 
 def test_remove_multi_dict():
     d = {'a': 1, 'b': 2, 'c': 3}
-    result = dotted.remove_multi(d, {'a': 1, 'c': 3}, keys_only=False)
+    result = dotted.remove_multi(d, {'a': 1, 'c': 3}, paths_only=False)
     assert result == {'b': 2}
 
 

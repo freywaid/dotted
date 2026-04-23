@@ -12,24 +12,24 @@ Use dotted to fetch, update, and remove data from deeply nested structures.
 
 Core Operations
 ---------------
-get(obj, key)           Get value at dotted key
-update(obj, key, val)   Update value at dotted key
-remove(obj, key)        Remove value at dotted key
-has(obj, key)           Check if key exists
-setdefault(obj, k, v)   Set value only if key missing
-mutable(obj, key)       Check if update would mutate in place
+get(obj, path)          Get value at dotted path
+update(obj, path, val)  Update value at dotted path
+remove(obj, path)       Remove value at dotted path
+has(obj, path)          Check if path exists
+setdefault(obj, p, v)   Set value only if path missing
+is_mutable(obj, path)   Check if update would mutate in place
 
 Pattern Matching
 ----------------
-match(pattern, key)     Match pattern to key
+match(pattern, path)    Match pattern to path
 replace(template, bind) Substitute $N in template path
-expand(obj, pattern)    Expand pattern to concrete keys
+expand(obj, pattern)    Expand pattern to concrete paths
 
 Building & Plucking
 -------------------
-build(obj, key)         Build default structure for key
-pack(keyvalues)         Build object from key-value pairs
-pluck(obj, pattern)     Extract field-value pairs
+build(obj, path)        Build default structure for path
+pack(pathvalues)        Build object from path-value pairs
+pluck(obj, pattern)     Extract (path, value) pairs
 walk(obj, pattern)      Yield (path, value) pairs (lazy)
 unpack(obj)             Extract to dotted normal form
 keys(obj)               Dotted paths of obj
@@ -49,7 +49,7 @@ transform(name)         Decorator for custom transforms
 Constants
 ---------
 ANY                     Match any value (for remove)
-AUTO                    Auto-infer root container type ({} or []) from first key
+AUTO                    Auto-infer root container type ({} or []) from first path
 
 For full documentation including all options and flags:
     $ pydoc dotted.api
@@ -57,7 +57,7 @@ For full documentation including all options and flags:
 """
 from .api import \
     parse, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
-    is_inverted, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
+    is_inverted, is_mutable, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -86,7 +86,7 @@ __all__ = [
     'parse', 'assemble', 'assemble_multi', 'quote',
     'is_pattern', 'is_template', 'is_reference',
     'is_indeterminate', 'is_simple',
-    'is_inverted', 'mutable',
+    'is_inverted', 'is_mutable', 'mutable',
     # SQL
     'sqlize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
     # Constants

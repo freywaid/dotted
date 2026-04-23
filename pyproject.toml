@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dotted_notation"
-version = "0.43.16"
+version = "0.44.0"
 description = "Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms"
 readme = "README.md"
 requires-python = ">=3.6"

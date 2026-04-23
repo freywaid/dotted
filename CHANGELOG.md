@@ -3,6 +3,35 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.0]
+
+### Changed (breaking)
+- Public-API parameter renamed from `key` to `path` across `get`,
+  `update`, `update_if`, `remove`, `remove_if`, `has`, `setdefault`,
+  `build`, `mutable`, `match`, `parse`, and all `is_*` predicates.
+  Positional calls are unaffected; keyword callers must update
+  (e.g. `update(obj, key=...)` → `update(obj, path=...)`).
+- `build_multi(obj, keys=...)` → `build_multi(obj, paths=...)`.
+- `setdefault_multi`, `update_multi`, `pack` rename `keyvalues=` to
+  `pathvalues=`.
+- `remove_multi` / `remove_if_multi` rename `keys_only=` to
+  `paths_only=`.
+- `assemble` / `assemble_multi` rename `keys`/`keys_list` to
+  `segments`/`segments_list`.
+- `remove_if` default pred signature: `lambda key: key is not None` →
+  `lambda path: path is not None`.
+
+### Added
+- `is_mutable` — preferred alias for `mutable`, parallels
+  `is_pattern`, `is_template`, etc. `mutable` remains as an alias.
+
+### Rationale
+- The library distinguishes a *path* (the whole dotted expression)
+  from a *path segment* or *field* (one component), with *key field*
+  referring specifically to the dot-notation kind (vs bracket or
+  attr fields). Using bare `key` as a parameter name for the whole
+  path conflated those. Docs and API now use precise terminology.
+
 ## [0.43.16]
 
 ### Added

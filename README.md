@@ -207,6 +207,32 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.44.0
+- **Parameter renamed from `key` to `path`** across the public API to align with
+  the terminology used throughout the docs (a _path_ is the whole dotted
+  expression; a _path segment_ or _field_ is one component). Positional calls
+  are unaffected; keyword callers must update:
+  - `get(obj, key=...)` → `get(obj, path=...)`
+  - `update(obj, key=...)`, `update_if(obj, key=...)` → `update(obj, path=...)`, etc.
+  - `remove(obj, key=...)`, `remove_if(obj, key=...)` → `remove(obj, path=...)`, etc.
+  - `has`, `setdefault`, `build`, `mutable`, `match` — same rename
+  - `is_pattern(key=...)`, `is_template(key=...)`, `is_reference(key=...)`,
+    `is_indeterminate(key=...)`, `is_simple(key=...)`, `is_inverted(key=...)` —
+    all take `path=` now.
+  - `parse(key=...)` → `parse(path=...)`
+  - `build_multi(obj, keys=...)` → `build_multi(obj, paths=...)`
+  - `setdefault_multi(obj, keyvalues=...)`, `update_multi(obj, keyvalues=...)` →
+    `setdefault_multi(obj, pathvalues=...)`, `update_multi(obj, pathvalues=...)`
+  - `pack(keyvalues=...)` → `pack(pathvalues=...)`
+  - `remove_multi(..., keys_only=...)`, `remove_if_multi(..., keys_only=...)` →
+    `remove_multi(..., paths_only=...)`, `remove_if_multi(..., paths_only=...)`
+  - `assemble(keys)` / `assemble_multi(keys_list)` → `assemble(segments)` /
+    `assemble_multi(segments_list)`
+  - `remove_if` default pred signature: `lambda key: key is not None` →
+    `lambda path: path is not None`
+- **`is_mutable` added as the preferred name for `mutable`** — parallels the
+  other `is_*` predicates. `mutable` remains as an alias.
+
 ### v0.43.4
 - **`is_pattern` no longer returns `True` for substitutions**. `Subst` previously
   inherited from `Pattern` in the class hierarchy, so any path containing a
@@ -287,7 +313,7 @@ Parsed dotted paths are LRU-cached (after the first parse of a given path string
 <a id="get"></a>
 ### Get
 
-See the Paths, Patterns, and Operators sections below for the full notation.
+Get the value at a dotted path. See the Paths, Patterns, and Operators sections below for the full notation.
 
     >>> import dotted
     >>> dotted.get({'a': {'b': {'c': {'d': 'nested'}}}}, 'a.b.c.d')
@@ -296,8 +322,8 @@ See the Paths, Patterns, and Operators sections below for the full notation.
 <a id="update"></a>
 ### Update
 
-Update will mutate the object if it can.  It always returns the changed object though. If
-it's not mutable, then get via the return.
+Update mutates the object when possible and always returns the result. For immutable
+objects, use the return value.
 
     >>> import dotted
     >>> l = []
@@ -408,8 +434,8 @@ Use `remove_if_multi` for batch removal with per-item `(key, val, pred)`.
 <a id="match"></a>
 ### Match
 
-Use to match a dotted-style pattern to a field.  Partial matching is on by default.  You
-can match via wildcard OR via regex.  Here's a regex example:
+Match a dotted-style pattern to a path. Partial matching is on by default. You
+can match via wildcard OR via regex. Here's a regex example:
 
     >>> import dotted
     >>> dotted.match('/a.+/', 'abced.b')
@@ -513,7 +539,7 @@ Returns `None` if no pattern matches:
 <a id="expand"></a>
 ### Expand
 
-You may wish to _expand_ all fields that match a pattern in an object.
+Expand a pattern into all matching paths in an object.
 
     >>> import dotted
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7}
@@ -546,7 +572,7 @@ decide which later-branch results to suppress.
 <a id="has"></a>
 ### Has
 
-Check if a key or pattern exists in an object.
+Check if a path or pattern exists in an object.
 
     >>> import dotted
     >>> d = {'a': {'b': 1}}
@@ -585,13 +611,13 @@ This is useful when you need to know whether to use the return value:
 <a id="setdefault"></a>
 ### Setdefault
 
-Set a value only if the key doesn't already exist. Creates nested structures as needed.
+Set a value only if the path doesn't already exist. Creates nested structures as needed.
 
     >>> import dotted
     >>> d = {'a': 1}
-    >>> dotted.setdefault(d, 'a', 999)  # key exists, no change; returns value
+    >>> dotted.setdefault(d, 'a', 999)  # path exists, no change; returns value
     1
-    >>> dotted.setdefault(d, 'b', 2)    # key missing, sets value; returns it
+    >>> dotted.setdefault(d, 'b', 2)    # path missing, sets value; returns it
     2
     >>> dotted.setdefault({}, 'a.b.c', 7)  # creates nested structure; returns value
     7
@@ -599,7 +625,7 @@ Set a value only if the key doesn't already exist. Creates nested structures as 
 <a id="pluck"></a>
 ### Pluck
 
-Extract (key, value) pairs from an object matching a pattern.
+Extract (path, value) pairs from an object matching a pattern.
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'nested': {'x': 10}}
@@ -645,6 +671,8 @@ which attributes are included:
 - `Attrs.standard` — non-dunder attributes
 - `Attrs.special` — dunder attributes (`__name__`, etc.)
 
+For example:
+
     >>> class Pt:
     ...     def __init__(self, x, y):
     ...         self.x = x
@@ -657,7 +685,7 @@ Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
 <a id="pack"></a>
 ### Pack
 
-Build a new object from key-value pairs. The inverse of `unpack` — infers the root
+Build a new object from path-value pairs. The inverse of `unpack` — infers the root
 container type automatically.
 
     >>> import dotted
@@ -704,7 +732,7 @@ All three accept `attrs=` (same as `unpack`):
 <a id="build"></a>
 ### Build
 
-Create a default nested structure for a dotted key.
+Create a default nested structure for a dotted path.
 
     >>> import dotted
     >>> dotted.build({}, 'a.b.c')
