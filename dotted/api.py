@@ -926,15 +926,17 @@ def overlaps(a, b):
 
 def assemble_multi(segments_list):
     """
-    Given a list of a list of path segments assemble into a full dotted path
-    >>> assemble_multi((['hello', 'there'], ['a', 1, 'c']))
-    ('hello.there', 'a.1.c')
+    Yield an assembled dotted path for each list of segments.
+
+    >>> list(assemble_multi((['hello', 'there'], ['a', 1, 'c'])))
+    ['hello.there', 'a.1.c']
     """
     def _assemble(segments):
         parsed = ([s] if isinstance(s, base.Op) else parse(str(s) if not isinstance(s, str) else s) for s in segments)
         iterable = itertools.chain.from_iterable(parsed)
         return results.assemble(iterable)
-    return tuple(_assemble(segments) for segments in segments_list)
+    for segments in segments_list:
+        yield _assemble(segments)
 
 
 def assemble(segments):
@@ -949,23 +951,25 @@ def assemble(segments):
     >>> assemble([7, 'hello'])
     '7.hello'
     """
-    return assemble_multi((segments,))[0]
+    return next(assemble_multi((segments,)))
 
 
 def expand_multi(obj, patterns, strict=False, bindings=None):
     """
-    Expand across a set of patterns
+    Yield deduped paths that match any of `patterns` in `obj`.
+
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
-    >>> expand_multi(d, ('hello', '*'))
-    ('hello', 'bye', '9', "'9'")
+    >>> list(expand_multi(d, ('hello', '*')))
+    ['hello', 'bye', '9', "'9'"]
     """
     seen = {}
     for pat in patterns:
         paths = (o.assemble() for o in engine.expands(parse(pat, bindings=bindings, partial=False), obj, strict=strict))
         for found in paths:
-            if found not in seen:
-                seen[found] = None
-    return tuple(seen)
+            if found in seen:
+                continue
+            seen[found] = None
+            yield found
 
 
 def expand(obj, pattern, strict=False, bindings=None):
@@ -981,7 +985,7 @@ def expand(obj, pattern, strict=False, bindings=None):
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    return expand_multi(obj, (pattern,), strict=strict, bindings=bindings)
+    return tuple(expand_multi(obj, (pattern,), strict=strict, bindings=bindings))
 
 
 def apply_multi(obj, patterns, strict=False, bindings=None):
@@ -1018,12 +1022,12 @@ def apply(obj, pattern, strict=False, bindings=None):
 
 def pluck_multi(obj, patterns, default=None, strict=False, bindings=None):
     """
-    Return the concrete field,value pairs from obj given patterns
+    Yield deduped (field, value) pairs from obj matching any of `patterns`.
+
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
-    >>> pluck_multi(d, ('hello', 'a.b'))
-    (('hello', 7), ('a.b', 'seven'))
+    >>> list(pluck_multi(d, ('hello', 'a.b')))
+    [('hello', 7), ('a.b', 'seven')]
     """
-    out = ()
     seen = {}
     for pattern in patterns:
         ops = parse(pattern, bindings=bindings, partial=False)
@@ -1034,8 +1038,7 @@ def pluck_multi(obj, patterns, default=None, strict=False, bindings=None):
             if field in seen:
                 continue
             seen[field] = None
-            out += ((field, val),)
-    return out
+            yield (field, val)
 
 
 def pluck(obj, pattern, default=None, strict=False, bindings=None):
@@ -1047,7 +1050,7 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None):
     >>> pluck(d, 'a.b')
     ('a.b', 'seven')
     """
-    out = pluck_multi(obj, (pattern,), default=default, strict=strict, bindings=bindings)
+    out = tuple(pluck_multi(obj, (pattern,), default=default, strict=strict, bindings=bindings))
     if not out:
         return ()
     if is_pattern(pattern):

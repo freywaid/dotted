@@ -20,6 +20,11 @@ the ones listed are omitted — browse git history for earlier entries.
   `segments`/`segments_list`.
 - `remove_if` default pred signature: `lambda key: key is not None` →
   `lambda path: path is not None`.
+- `expand_multi`, `pluck_multi`, `assemble_multi` now return a **generator**
+  instead of a tuple, aligning with `get_multi`, `match_multi`, `walk_multi`,
+  `translate_multi`, `setdefault_multi`. Callers that consumed the return as a
+  tuple (indexing, `len()`, equality) must wrap with `tuple(...)` /
+  `list(...)`. Singular forms (`expand`, `pluck`, `assemble`) unchanged.
 
 ### Added
 - `is_mutable` — preferred alias for `mutable`, parallels

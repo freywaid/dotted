@@ -232,6 +232,13 @@ Several Python libraries handle nested data access. Here's how dotted compares:
     `lambda path: path is not None`
 - **`is_mutable` added as the preferred name for `mutable`** — parallels the
   other `is_*` predicates. `mutable` remains as an alias.
+- **`expand_multi`, `pluck_multi`, `assemble_multi` now return a generator**
+  instead of a tuple, aligning with the other read-side `_multi` APIs
+  (`get_multi`, `match_multi`, `walk_multi`, `translate_multi`,
+  `setdefault_multi`). Callers that consumed the return as a tuple (indexing
+  `r[0]`, `len(r)`, equality `r == (...)`) must now materialize:
+  `tuple(pluck_multi(...))`. The singular forms (`expand`, `pluck`, `assemble`)
+  are unchanged.
 
 ### v0.43.4
 - **`is_pattern` no longer returns `True` for substitutions**. `Subst` previously
@@ -813,7 +820,14 @@ produce `[]`.
 
 Most operations have `*_multi` variants for batch processing:
 
-**Note:** `get_multi` returns a generator (not a list or tuple). That distinguishes it from a pattern `get`, which returns a tuple of matches. It also keeps input and output in the same style when you pass an iterator or generator of paths—lazy in, lazy out.
+**Note:** The read-side `_multi` APIs — `get_multi`, `match_multi`, `expand_multi`,
+`pluck_multi`, `walk_multi`, `translate_multi`, `assemble_multi`, and
+`setdefault_multi` — return a **generator**, not a list or tuple. Consume with
+`list()` / `tuple()` / `for`. The write-side `_multi` APIs (`update_multi`,
+`remove_multi`, `build_multi`, `apply_multi`, etc.) return the mutated object.
+The generator shape keeps input and output in the same style when you pass an
+iterator or generator of paths — lazy in, lazy out — and lets callers early-exit
+before a full traversal completes.
 
     >>> import dotted
     >>> d = {'a': 1, 'b': 2, 'c': 3}

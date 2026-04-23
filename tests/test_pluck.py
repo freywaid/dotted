@@ -135,28 +135,28 @@ def test_pluck_list_filter_pattern():
 
 def test_pluck_multi_basic():
     d = {'a': 1, 'b': 2, 'c': 3}
-    r = dotted.pluck_multi(d, ('a', 'c'))
+    r = tuple(dotted.pluck_multi(d, ('a', 'c')))
     assert r == (('a', 1), ('c', 3))
 
 
 def test_pluck_multi_nested():
     d = {'x': {'a': 1}, 'y': {'b': 2}}
-    r = dotted.pluck_multi(d, ('x.a', 'y.b'))
+    r = tuple(dotted.pluck_multi(d, ('x.a', 'y.b')))
     assert r == (('x.a', 1), ('y.b', 2))
 
 
 def test_pluck_multi_with_patterns():
     d = {'a': 1, 'b': 2, 'c': 3}
-    r = dotted.pluck_multi(d, ('a', '*'))
+    r = tuple(dotted.pluck_multi(d, ('a', '*')))
     # pluck_multi deduplicates, so 'a' only appears once
     assert len(r) == 3
     assert set(k for k, v in r) == {'a', 'b', 'c'}
 
 
 def test_pluck_multi_missing_with_default():
-    # Missing keys are not included in result (expand doesn't find them)
+    # Missing paths are not included in result (expand doesn't find them)
     d = {'a': 1}
-    r = dotted.pluck_multi(d, ('a', 'x'), default='missing')
+    r = tuple(dotted.pluck_multi(d, ('a', 'x'), default='missing'))
     assert r == (('a', 1),)
 
 
