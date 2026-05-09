@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.1]
+
+### Added
+- GitHub Actions: `tests.yml` runs pytest on push/PR; `publish.yml`
+  uses PyPI Trusted Publishing (OIDC) on GitHub Release, gated on
+  tests passing. Releases now show "Verified details" on PyPI.
+
 ## [0.44.0]
 
 ### Changed (breaking)
