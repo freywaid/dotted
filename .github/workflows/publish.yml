@@ -5,7 +5,45 @@ on:
     types: [published]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whether Tests workflow already passed for this SHA
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          status=$(gh run list \
+            --workflow=tests.yml \
+            --commit="${{ github.sha }}" \
+            --status=success \
+            --limit=1 \
+            --json conclusion \
+            -q '.[0].conclusion // ""')
+          if [ "$status" = "success" ]; then
+            echo "Tests already passed for ${{ github.sha }}; skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No prior successful Tests run for ${{ github.sha }}; running pytest."
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+      - name: Install
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+          pip install pytest
+      - name: Run tests
+        if: steps.check.outputs.skip != 'true'
+        run: pytest
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
