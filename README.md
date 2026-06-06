@@ -761,10 +761,13 @@ normal form. All three call `unpack()` internally.
     >>> dotted.keys({'a': 1, 'b': 2}) & dotted.keys({'b': 3, 'c': 4})
     {'b'}
 
-All three accept `attrs=` (same as `unpack`):
+All three accept the same `attrs=`, `project=`, and `partial=` arguments as
+`unpack`:
 
     >>> dotted.keys({'point': Pt(3, 4)}, attrs=[dotted.Attrs.standard])
     dict_keys(['point@x', 'point@y'])
+    >>> dotted.items({'a': {'b': 1, 'c': 2}, 'x': 3}, project='a')
+    dict_items([('a.b', 1), ('a.c', 2)])
 
 <a id="build"></a>
 ### Build
