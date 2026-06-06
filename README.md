@@ -689,6 +689,36 @@ For example:
 
 Pass both to include all attributes: `attrs=[Attrs.standard, Attrs.special]`.
 
+Pass `project=` to keep only the leaf paths selected by one or more dotted
+patterns. Selection is *directional* — a leaf survives if it `match`es a
+projection pattern — so projecting `a.b` never drags in a shallower scalar leaf
+`a`:
+
+    >>> o = {'a': {'b': 1, 'c': 2}, 'x': {'y': {'z': 3}}, 'extra': 9}
+    >>> dotted.unpack(o, project='a')
+    {'a.b': 1, 'a.c': 2}
+    >>> dotted.unpack(o, project=['a', 'x.y.z'])
+    {'a.b': 1, 'a.c': 2, 'x.y.z': 3}
+
+Matching uses `match`'s `partial=True` by default, so a trailing segment is
+greedy (`a.*` also keeps `a.b.c`). Set `partial=False` for exact-depth matching,
+where `a.*`, `a.*.*`, and `a.**` are all distinct:
+
+    >>> deep = {'a': {'b': {'c': 1}}, 'd': 9}
+    >>> dotted.unpack(deep, project='a.*', partial=False)
+    {}
+    >>> dotted.unpack(deep, project='a.**', partial=False)
+    {'a.b.c': 1}
+
+Override `partial` per field with a `(pattern, partial)` tuple — bare patterns
+inherit the global setting. This matters for mid-pattern matches that `**`
+cannot express (e.g. `a.*.c` keeping both `a.x.c` and `a.x.c.d`):
+
+    >>> dotted.unpack(deep, project=[('a.*', True), 'd'], partial=False)
+    {'a.b.c': 1, 'd': 9}
+
+`project=` and `partial=` also flow through `keys()`, `values()`, and `items()`.
+
 <a id="pack"></a>
 ### Pack
 

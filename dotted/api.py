@@ -1099,7 +1099,7 @@ def pack(pathvalues, apply_transforms=True, strict=False, bindings=None):
     return update_multi(AUTO, pathvalues, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
 
 
-def unpack(obj, attrs=None):
+def unpack(obj, attrs=None, project=None, partial=True):
     """
     Convert obj to dotted normal form.  A dict mapping dotted paths to leaf
     values, which can be replayed to regenerate the obj (see `pack`).
@@ -1117,6 +1117,27 @@ def unpack(obj, attrs=None):
     {'a.b': [1, 2, 3], 'x.y.z': [4, 5], 'extra': 'stuff'}
     >>> pack(r) == d
     True
+
+    Pass project= to keep only the leaf paths selected by one or more dotted
+    patterns.  A leaf survives if it `match`es any projection pattern, so
+    selection is directional: projecting 'a.b' never pulls in a scalar leaf
+    'a'.  project= accepts a single pattern or an iterable of them:
+
+    >>> o = {'a': {'b': 1, 'c': 2}, 'x': {'y': {'z': 3}}, 'extra': 9}
+    >>> unpack(o, project='a')
+    {'a.b': 1, 'a.c': 2}
+    >>> unpack(o, project=['a', 'x.y.z'])
+    {'a.b': 1, 'a.c': 2, 'x.y.z': 3}
+
+    Matching uses match()'s `partial=True` by default, so a trailing segment
+    is greedy ('a.*' also keeps 'a.b.c').  Set partial=False for exact-depth
+    matching, or override it per-field with a (pattern, partial) tuple:
+
+    >>> deep = {'a': {'b': {'c': 1}}, 'd': 9}
+    >>> unpack(deep, project='a.*', partial=False)
+    {}
+    >>> unpack(deep, project=[('a.*', True), 'd'])
+    {'a.b.c': 1, 'd': 9}
     """
     # Accept either `Attrs` enum members or their string values.
     attr_values = {a.value if isinstance(a, Attrs) else a for a in (attrs or ())}
@@ -1128,43 +1149,58 @@ def unpack(obj, attrs=None):
         extra = ', @/(?!__).*/'
     else:
         extra = ', @/__.*/'
-    return dict(pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})'))
+    result = dict(pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})'))
+    if project is None:
+        return result
+    if isinstance(project, str):
+        project = [project]
+    # Normalize each entry to (pattern, partial); bare patterns inherit the
+    # global `partial`, (pattern, partial) tuples override it per-field.
+    specs = [(p, partial) if isinstance(p, str) else tuple(p) for p in project]
+    return {k: v for k, v in result.items()
+            if any(match(pat, k, partial=pp) for pat, pp in specs)}
 
 
-def items(obj, attrs=None):
+def items(obj, attrs=None, project=None, partial=True):
     """
     Return (path, value) pairs of obj in normal form as a dict_items view.
-    Internally calls unpack().
+    Internally calls unpack(); accepts project=/partial= (see unpack).
 
     >>> d = {'a': {'b': 1}, 'x': 2}
     >>> sorted(items(d))
     [('a.b', 1), ('x', 2)]
+    >>> sorted(items(d, project='a'))
+    [('a.b', 1)]
     """
-    return unpack(obj, attrs=attrs).items()
+    return unpack(obj, attrs=attrs, project=project, partial=partial).items()
 
 
-def keys(obj, attrs=None):
+def keys(obj, attrs=None, project=None, partial=True):
     """
     Return the dotted paths of obj in normal form as dict_keys.
-    Internally calls unpack().
+    Internally calls unpack(); accepts project=/partial= (see unpack).
 
     >>> d = {'a': {'b': 1}, 'x': 2}
     >>> sorted(keys(d))
     ['a.b', 'x']
+    >>> sorted(keys(d, project='a'))
+    ['a.b']
     """
-    return unpack(obj, attrs=attrs).keys()
+    return unpack(obj, attrs=attrs, project=project, partial=partial).keys()
 
 
-def values(obj, attrs=None):
+def values(obj, attrs=None, project=None, partial=True):
     """
     Return the leaf values of obj in normal form.
-    Internally calls unpack().
+    Internally calls unpack(); accepts project=/partial= (see unpack).
 
     >>> d = {'a': {'b': 1}, 'x': 2}
     >>> sorted(values(d))
     [1, 2]
+    >>> sorted(values(d, project='a'))
+    [1]
     """
-    return unpack(obj, attrs=attrs).values()
+    return unpack(obj, attrs=attrs, project=project, partial=partial).values()
 
 
 #

@@ -3,6 +3,17 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `unpack(obj, project=...)` keeps only the leaf paths selected by one or
+  more dotted patterns. Selection is directional (a leaf survives if it
+  `match`es a pattern), so projecting `a.b` never pulls in a shallower scalar
+  `a`. Matching defaults to `partial=True` (trailing segment is greedy); pass
+  `partial=False` for exact-depth matching, or override per field with a
+  `(pattern, partial)` tuple. `project=`/`partial=` also flow through `keys`,
+  `values`, and `items`.
+
 ## [0.44.1]
 
 ### Added

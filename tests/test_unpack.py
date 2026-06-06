@@ -149,6 +149,104 @@ def test_unpack_attrs_false_skips_attrs():
     assert 'point' in r
 
 
+# --- project tests ---
+
+def test_project_single_pattern_string():
+    """
+    A bare string project selects matching leaves.
+    """
+    o = {'a': {'b': 1, 'c': 2}, 'x': {'y': 3}}
+    assert dotted.unpack(o, project='a') == {'a.b': 1, 'a.c': 2}
+
+
+def test_project_list_of_patterns():
+    o = {'a': {'b': 1, 'c': 2}, 'x': {'y': {'z': 3}}, 'extra': 9}
+    assert dotted.unpack(o, project=['a', 'x.y.z']) == {
+        'a.b': 1, 'a.c': 2, 'x.y.z': 3}
+
+
+def test_project_no_match_returns_empty():
+    o = {'a': {'b': 1}}
+    assert dotted.unpack(o, project='nope') == {}
+
+
+def test_project_none_returns_full_normal_form():
+    o = {'a': {'b': 1}, 'x': 2}
+    assert dotted.unpack(o, project=None) == dotted.unpack(o)
+
+
+def test_project_directional_does_not_pull_ancestor():
+    """
+    Projecting a deeper path must not select a shallower scalar leaf —
+    selection is match-directional, not overlap.
+    """
+    o = {'a': 1, 'b': 2}
+    assert dotted.unpack(o, project='a.b') == {}
+
+
+def test_project_wildcard_one_level():
+    o = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    assert dotted.unpack(o, project='a.*') == {'a.b': 1, 'a.c': 2}
+
+
+def test_project_partial_true_is_greedy():
+    """
+    Default partial=True lets a trailing segment match deeper leaves.
+    """
+    o = {'a': {'b': {'c': 1}}, 'd': 9}
+    assert dotted.unpack(o, project='a.*') == {'a.b.c': 1}
+
+
+def test_project_partial_false_is_exact_depth():
+    o = {'a': {'b': {'c': 1}}, 'd': 9}
+    assert dotted.unpack(o, project='a.*', partial=False) == {}
+    assert dotted.unpack(o, project='a.*.*', partial=False) == {'a.b.c': 1}
+
+
+def test_project_recursive_pattern():
+    o = {'a': {'b': 1, 'c': {'d': 2}}, 'x': 9}
+    assert dotted.unpack(o, project='a.**', partial=False) == {
+        'a.b': 1, 'a.c.d': 2}
+
+
+def test_project_per_field_partial_override():
+    """
+    A (pattern, partial) tuple overrides the global partial; bare patterns
+    inherit it.
+    """
+    o = {'a': {'b': {'c': 1}}, 'd': 9}
+    r = dotted.unpack(o, project=[('a.*', True), 'd'], partial=False)
+    assert r == {'a.b.c': 1, 'd': 9}
+
+
+def test_project_per_field_mid_pattern_partial():
+    """
+    Per-field partial matters for mid-pattern matches that '**' can't express:
+    'a.*.c' with partial keeps 'a.x.c' and anything below it.
+    """
+    o = {'a': {'x': {'c': {'deep': 1}}, 'y': {'c': 2}}}
+    r = dotted.unpack(o, project=[('a.*.c', True)])
+    assert r == {'a.x.c.deep': 1, 'a.y.c': 2}
+    # partial=False pins to exactly a.*.c (one leaf at that depth)
+    assert dotted.unpack(o, project='a.*.c', partial=False) == {'a.y.c': 2}
+
+
+def test_project_propagates_to_items_keys_values():
+    o = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    assert sorted(dotted.items(o, project='a')) == [('a.b', 1), ('a.c', 2)]
+    assert sorted(dotted.keys(o, project='a')) == ['a.b', 'a.c']
+    assert sorted(dotted.values(o, project='a')) == [1, 2]
+
+
+def test_project_result_packs_back():
+    """
+    A projected normal form is still valid input to pack.
+    """
+    o = {'a': {'b': 1, 'c': 2}, 'x': 9}
+    r = dotted.unpack(o, project='a')
+    assert dotted.pack(r) == {'a': {'b': 1, 'c': 2}}
+
+
 # --- AUTO tests ---
 
 def test_auto_update_dict():
