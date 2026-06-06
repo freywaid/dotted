@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.44.2]
 
 ### Added
 - `unpack(obj, project=...)` keeps only the leaf paths selected by one or
