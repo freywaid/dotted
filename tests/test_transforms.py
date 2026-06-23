@@ -4,6 +4,7 @@ Tests for built-in transforms
 import decimal
 import pytest
 import dotted
+import dotted.api
 
 
 # str transform
@@ -569,6 +570,32 @@ def test_chain_on_pattern():
     d = {'a': '1', 'b': '2', 'c': '3'}
     result = dotted.get(d, '*|int')
     assert result == (1, 2, 3)
+
+
+# transform with a dict argument — regression for unhashable params
+
+def test_transform_dict_arg_path_is_hashable():
+    """
+    A transform with a dict argument must not make the parsed path
+    unhashable. parse() hashes the ops for template detection, so a dict
+    param used to raise TypeError before the transform ever ran.
+    """
+    ops = dotted.parse('code|lookup:{"a": 1, "b": 2}')
+    assert hash(ops) == hash(dotted.parse('code|lookup:{"a": 1, "b": 2}'))
+
+
+def test_transform_dict_arg_applies():
+    """
+    A transform receives a dict container argument and runs end to end.
+    """
+    @dotted.transform('lookup_dictarg_test')
+    def lookup(val, table):
+        return table.get(val)
+    try:
+        assert dotted.get({'code': 'a'}, 'code|lookup_dictarg_test:{"a": 1, "b": 2}') == 1
+        assert dotted.get({'code': 'z'}, 'code|lookup_dictarg_test:{"a": 1, "b": 2}') is None
+    finally:
+        dotted.api.registry().pop('lookup_dictarg_test', None)
 
 
 # list transform

@@ -272,8 +272,8 @@ class Transform(Op):
         try:
             return hash(('transform', self.name, self.params))
         except TypeError:
-            return hash(('transform', self.name,
-                         tuple(tuple(p) if isinstance(p, list) else p for p in self.params)))
+            from .results import Dotted
+            return hash(('transform', self.name, Dotted._hashable(self.params)))
 
     def __eq__(self, other):
         return (isinstance(other, Transform)

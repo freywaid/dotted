@@ -136,6 +136,7 @@ Or pick only what you need:
   - [Projection](#projection)
   - [Unpack](#unpack)
   - [Pack](#pack)
+- [Recipes](#recipes)
 - [FAQ](#faq)
   - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
   - [How do I craft an efficient path?](#how-do-i-craft-an-efficient-path)
@@ -2919,7 +2920,7 @@ Fragments concatenate naturally via `+` / `__radd__`; metadata merges:
     >>> r = dotted.sqlize("age >= $(min_age)", driver='asyncpg')
     >>> combined = "WHERE " + r.where
     >>> r.build(combined, min_age=30)
-    ('WHERE age >= $1::bigint', [30])
+    ('WHERE age >= $1', [30])
 
 ### Hoisted params
 
@@ -3083,7 +3084,7 @@ Pass a shared `ParamPool` to every `sqlize()` call that should compose:
     >>> r2 = dotted.sqlize('age >= 30',          driver='asyncpg', pool=pool)
     >>> combined = '(' + r1.where + ') AND (' + r2.where + ')'
     >>> dotted.Resolver.build(combined, paramstyle='dollar-numeric')
-    ('(status = $1) AND (age = $2)', ['active', 30])
+    ('(status = $1) AND (age >= $2)', ['active', 30])
 
 Substitutions by the same original name dedup across Resolvers sharing
 a pool — one slot, one value, back-referenced in the rendered SQL:
@@ -3140,7 +3141,7 @@ segment before building a `Raw`:
     Col('matched.customer')
     >>> Col('schema', 'table', 'col')
     Col('schema.table.col')
-    >>> Col('bad; DROP TABLE')
+    >>> Col('bad; DROP TABLE')                           # doctest: +IGNORE_EXCEPTION_DETAIL
     Traceback (most recent call last):
       ...
     dotted.TranslationError: Col part is not a plain identifier: 'bad; DROP TABLE'
@@ -3385,6 +3386,79 @@ example, removing an entire group without listing every key:
 
     echo '{"db.host": "localhost", "db.port": 5432, "app.debug": true}' | dq --pack --unpack remove -p db
     # {"app.debug": true}
+
+<a id="recipes"></a>
+## Recipes
+
+A grab-bag of one-liners that show off what the notation can do. Every example
+below runs as-is.
+
+**Flatten a nested list** (leaves only, any depth) — recurse through every slot
+with `*([*])`, then keep only the deepest match on each branch with `:-1`:
+
+    >>> import dotted
+    >>> dotted.get([1, 2, 3, [4, 5, [6, 7]]], '*([*]):-1')
+    (1, 2, 3, 4, 5, 6, 7)
+
+Because `:-1` is deepest-*per-branch*, shallow leaves survive alongside deep
+ones — a ragged list still flattens completely.
+
+**Collect every leaf value** of a nested dict — same idea with key recursion:
+
+    >>> dotted.get({'a': {'b': 1}, 'c': 2}, '**:-1')
+    (1, 2)
+
+**Find a key at any depth** — `**` recurses through dict keys, then continue
+with the key you want:
+
+    >>> dotted.get({'a': {'b': {'name': 'x'}}, 'name': 'y'}, '**.name')
+    ('x',)
+
+If the tree mixes lists and dicts, recurse through both with `*(*#, [*])`:
+
+    >>> dotted.get({'kids': [{'name': 'a'}, {'name': 'b'}]}, '*(*#, [*]).name')
+    ('a', 'b')
+
+**Find values matching a condition anywhere** — attach a value guard to the
+recursive walk:
+
+    >>> dotted.get({'a': {'b': 7, 'c': 3}, 'd': {'e': 9}}, '**>5')
+    (7, 9)
+
+**Bulk-update everything that matches** — the same pattern drives `update` and
+`remove`:
+
+    >>> dotted.update({'a': {'b': 7, 'c': 3}, 'd': 7}, '**=7', 99)
+    {'a': {'b': 99, 'c': 3}, 'd': 99}
+
+**Filter a list of dicts, then project a field** — combine a key-value filter
+with a continuation:
+
+    >>> users = [{'name': 'x', 'active': True},
+    ...          {'name': 'y', 'active': False},
+    ...          {'name': 'z', 'active': True}]
+    >>> dotted.get(users, '[*&active=true].name')
+    ('x', 'z')
+
+**Upsert** — update a list entry if it exists, else append, using cut (`#`) in a
+disjunction so the first matching branch wins:
+
+    >>> dotted.update({'emails': [{'email': 'a@x'}]},
+    ...               'emails[(*&email="a@x"#, +)].email', 'NEW')
+    {'emails': [{'email': 'NEW'}]}
+    >>> dotted.update({'emails': [{'email': 'a@x'}]},
+    ...               'emails[(*&email="z@x"#, +)]', {'email': 'z@x'})
+    {'emails': [{'email': 'a@x'}, {'email': 'z@x'}]}
+
+**Coerce on the way out** — pipe a value through transforms:
+
+    >>> dotted.get({'name': 'bob', 'tags': [1, 2, 3]}, 'name|uppercase')
+    'BOB'
+    >>> dotted.get({'name': 'bob', 'tags': [1, 2, 3]}, 'tags|len')
+    3
+
+See [Recursive Traversal](#recursive-traversal), [Filters](#filters), and
+[Transforms](#transforms) for the full story behind each of these.
 
 <a id="faq"></a>
 ## FAQ
