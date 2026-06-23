@@ -3,6 +3,14 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.3]
+
+### Fixed
+- Transforms with a dict (or other nested-container) argument, e.g.
+  `code|lookup:{"a": 1}`, no longer raise `TypeError: unhashable type: 'dict'`
+  when the path is parsed. `Transform.__hash__` now freezes container params
+  recursively.
+
 ## [0.44.2]
 
 ### Added
