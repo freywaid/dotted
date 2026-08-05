@@ -10,6 +10,7 @@ import pyparsing as pp
 
 from . import base
 from .base import MatchOp
+from .utils import lazyprop
 from .utypes import ANY
 
 
@@ -19,8 +20,11 @@ _MISSING = object()
 class Const(MatchOp):
     _match_from = ('Const',)
 
-    @property
+    @lazyprop
     def value(self):
+        """
+        The literal value; computed once and cached on the instance.
+        """
         return self.args[0]
     def matches(self, vals):
         return (v for v in vals if self.value == v)
@@ -32,8 +36,11 @@ class Numeric(Const):
             return str(self.args[0]) == str(int(self.args[0]))
         except (ValueError, TypeError):
             return False
-    @property
+    @lazyprop
     def value(self):
+        """
+        The numeric value (int when possible); computed once and cached.
+        """
         return int(self.args[0]) if self.is_int() else float(self.args[0])
     def __repr__(self):
         return f'{self.value}'

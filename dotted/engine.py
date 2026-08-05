@@ -48,6 +48,48 @@ def build(ops, node, deepcopy=True, **kwargs):
     return built or build_default([cur]+ops)
 
 
+SIMPLE_BAIL = object()
+
+
+def simple_get(chain, node, strict=False):
+    """
+    Fast path for simple paths (see Dotted.simple_chain): follow literal
+    keys with direct dict/list/attr access, skipping walk() entirely.
+    Returns the found value, base.marker when the path misses, or
+    SIMPLE_BAIL when a node's type falls outside the fast path — the
+    caller then falls back to the full traversal.
+    """
+    for kind, key in chain:
+        if kind == 'attr':
+            node = getattr(node, key, base.marker)
+            if node is base.marker:
+                return base.marker
+            continue
+        t = type(node)
+        if t is dict:
+            # strict: Slot never coerces to dict keys
+            if strict and kind == 'slot':
+                return base.marker
+            node = node.get(key, base.marker)
+            if node is base.marker:
+                return base.marker
+            continue
+        if t is list or t is tuple:
+            # strict: Key never coerces to sequence indices
+            if strict and kind == 'key':
+                return base.marker
+            if type(key) is not int:
+                return base.marker
+            try:
+                node = node[key]
+            except IndexError:
+                return base.marker
+            continue
+        # dict subclasses, custom containers, None, etc: full traversal
+        return SIMPLE_BAIL
+    return node
+
+
 def iter_until_cut(gen):
     """
     Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.

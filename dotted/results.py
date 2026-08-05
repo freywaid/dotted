@@ -5,7 +5,9 @@ import itertools
 
 from . import predicates
 from . import utils
-from .access import Invert
+from .access import Attr, Invert, Key, Slot
+from .matchers import Const
+from .utils import lazyprop
 
 
 class rdoc(str):
@@ -35,6 +37,7 @@ class Dotted:
         else:
             self.guard = None
             self.guard_op = predicates.EQ
+        self._hash = None
 
     @property
     def guard_negate(self):
@@ -72,10 +75,12 @@ class Dotted:
             return tuple(sorted((k, Dotted._hashable(v)) for k, v in iterable))
         return obj
     def __hash__(self):
-        try:
-            return hash((self.ops, self.transforms, self.guard, self.guard_op))
-        except TypeError:
-            return hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_op))
+        if self._hash is None:
+            try:
+                self._hash = hash((self.ops, self.transforms, self.guard, self.guard_op))
+            except TypeError:
+                self._hash = hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_op))
+        return self._hash
     def __len__(self):
         return len(self.ops)
     def __iter__(self):
@@ -104,6 +109,28 @@ class Dotted:
 
     def apply(self, val):
         return apply_transforms(val, self.transforms)
+
+    @lazyprop
+    def simple_chain(self):
+        """
+        Tuple of (kind, key) pairs when this path is simple — a plain chain
+        of concrete Key/Attr/Slot accesses with no patterns, substitutions,
+        references, guards, transforms, or filters — else None. Computed
+        once and cached; drives the fast path in get() that skips walk().
+        kind is 'key', 'attr', or 'slot'.
+        """
+        if self.transforms or self.guard is not None:
+            return None
+        chain = []
+        for op in self.ops:
+            # exact types: subclasses like SlotSpecial have different semantics
+            if type(op) not in (Key, Attr, Slot):
+                return None
+            if not isinstance(op.op, Const):
+                return None
+            kind = 'attr' if isinstance(op, Attr) else 'slot' if isinstance(op, Slot) else 'key'
+            chain.append((kind, op.op.value))
+        return tuple(chain)
 
 Dotted.registry.__doc__ = rdoc()
 

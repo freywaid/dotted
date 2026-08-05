@@ -69,6 +69,32 @@ class ParseError(Exception):
 
 _parse_lock = threading.Lock()
 
+_SIMPLE_FASTPATH = True
+
+
+def set_simple_fastpath(enable=True):
+    """
+    Enable/disable the simple-path fast path in get() (escape hatch: when
+    off, every lookup goes through the full walk() traversal). On by
+    default. Returns the previous setting.
+    """
+    global _SIMPLE_FASTPATH
+    prev = _SIMPLE_FASTPATH
+    _SIMPLE_FASTPATH = bool(enable)
+    return prev
+
+
+def set_parse_cache(size=CACHE_SIZE):
+    """
+    Resize the LRU cache behind parse(). 0 disables caching (every path
+    string is re-parsed from scratch); None makes it unbounded. Resizing
+    discards currently cached parses. Returns the previous size.
+    """
+    global _parse
+    prev = _parse.cache_info().maxsize
+    _parse = functools.lru_cache(size)(_parse.__wrapped__)
+    return prev
+
 
 @functools.lru_cache(CACHE_SIZE)
 def _parse(ops):
@@ -234,16 +260,6 @@ def is_indeterminate(path):
     return _is_template(parsed) or _is_reference(parsed)
 
 
-@functools.lru_cache(CACHE_SIZE)
-def _is_simple(ops):
-    for op in ops:
-        if not isinstance(op, (access.Key, access.Attr, access.Slot)):
-            return False
-        if not isinstance(op.op, matchers.Const):
-            return False
-    return True
-
-
 def is_simple(path):
     """
     True if the path is a plain chain of access ops (Key, Attr, Slot)
@@ -271,9 +287,7 @@ def is_simple(path):
     False
     """
     parsed = path if isinstance(path, results.Dotted) else parse(path)
-    if parsed.transforms:
-        return False
-    return _is_simple(parsed)
+    return parsed.simple_chain is not None
 
 
 def is_inverted(path):
@@ -433,6 +447,11 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
     (7,)
     """
     ops = parse(path, bindings=bindings, partial=False)
+    chain = ops.simple_chain if _SIMPLE_FASTPATH else None
+    if chain is not None:
+        val = engine.simple_get(chain, obj, strict=strict)
+        if val is not engine.SIMPLE_BAIL:
+            return default if val is base.marker else val
     vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )

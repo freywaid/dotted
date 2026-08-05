@@ -2,6 +2,25 @@
 Shared type-checking helpers (duck-typing).
 """
 
+class lazyprop:
+    """
+    Non-data descriptor: compute once on first access, cache the result
+    in the instance __dict__ (which then shadows the descriptor). Like
+    functools.cached_property but lock-free and available on 3.6+.
+    """
+    def __init__(self, fn):
+        self.fn = fn
+        self.name = fn.__name__
+        self.__doc__ = fn.__doc__
+
+    def __get__(self, obj, owner=None):
+        if obj is None:
+            return self
+        val = self.fn(obj)
+        obj.__dict__[self.name] = val
+        return val
+
+
 try:
     import dataclasses as _dc
 except ImportError:

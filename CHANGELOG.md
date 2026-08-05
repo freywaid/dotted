@@ -3,6 +3,26 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.4]
+
+### Added
+- Module-level escape hatches: `dotted.set_simple_fastpath(False)` disables
+  the get() fast path (everything goes through walk()), and
+  `dotted.set_parse_cache(size)` resizes the LRU cache behind parse()
+  (0 disables, None unbounded). Both return the previous setting.
+
+### Performance
+- `get()` fast path for simple paths (#58): a plain chain of literal
+  Key/Attr/Slot accesses (`a.b`, `a[0].b`, `a@x`) resolves with direct
+  dict/list/attr lookups, skipping the walk() machinery entirely. The
+  chain is computed once at parse time and cached on the `Dotted`
+  (`simple_chain`); unusual containers (dict subclasses, custom
+  mappings) fall back to the full traversal.
+- `Const.value`/`Numeric.value` are now computed once and cached on the
+  instance instead of recomputed per property access.
+- `Dotted.__hash__` is cached, making repeated cache lookups keyed on a
+  pre-parsed `Dotted` (e.g. `get(obj, parsed)`) much cheaper.
+
 ## [0.44.3]
 
 ### Fixed

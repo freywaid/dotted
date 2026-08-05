@@ -58,6 +58,7 @@ For full documentation including all options and flags:
 from .api import \
     parse, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
     is_inverted, is_mutable, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
+    set_simple_fastpath, set_parse_cache, \
     register, transform, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -87,6 +88,7 @@ __all__ = [
     'is_pattern', 'is_template', 'is_reference',
     'is_indeterminate', 'is_simple',
     'is_inverted', 'is_mutable', 'mutable',
+    'set_simple_fastpath', 'set_parse_cache',
     # SQL
     'sqlize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
     # Constants
