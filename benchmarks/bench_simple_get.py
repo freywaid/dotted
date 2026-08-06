@@ -25,6 +25,7 @@ PATHS = [
     'journal',
     'references.venmo.transaction_id',
     'references.venmo.missing',
+    'amount.value|int',
 ]
 
 

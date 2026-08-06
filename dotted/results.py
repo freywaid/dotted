@@ -113,13 +113,14 @@ class Dotted:
     @lazyprop
     def simple_chain(self):
         """
-        Tuple of (kind, key) pairs when this path is simple — a plain chain
-        of concrete Key/Attr/Slot accesses with no patterns, substitutions,
-        references, guards, transforms, or filters — else None. Computed
-        once and cached; drives the fast path in get() that skips walk().
+        Tuple of (kind, key) pairs when the access chain is simple — a plain
+        chain of concrete Key/Attr/Slot accesses with no patterns,
+        substitutions, references, guards, or filters — else None. Transforms
+        are permitted (they apply after the lookup). Computed once and
+        cached; drives the fast path in get() that skips walk().
         kind is 'key', 'attr', or 'slot'.
         """
-        if self.transforms or self.guard is not None:
+        if self.guard is not None:
             return None
         chain = []
         for op in self.ops:

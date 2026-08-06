@@ -287,6 +287,8 @@ def is_simple(path):
     False
     """
     parsed = path if isinstance(path, results.Dotted) else parse(path)
+    if parsed.transforms:
+        return False
     return parsed.simple_chain is not None
 
 
@@ -451,7 +453,11 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
     if chain is not None:
         val = engine.simple_get(chain, obj, strict=strict)
         if val is not engine.SIMPLE_BAIL:
-            return default if val is base.marker else val
+            if val is base.marker:
+                return default
+            if apply_transforms and ops.transforms:
+                return ops.apply(val)
+            return val
     vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
     if apply_transforms:
         vals = ( ops.apply(v) for v in vals )

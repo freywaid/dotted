@@ -3,6 +3,14 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Performance
+- Transforms no longer disqualify the get() fast path: `a.b|int`
+  resolves via the direct-lookup chain and applies transforms on the
+  hit (~7x faster than walk). Plain paths are unaffected; `is_simple()`
+  semantics unchanged (still requires no transforms).
+
 ## [0.44.4]
 
 ### Added

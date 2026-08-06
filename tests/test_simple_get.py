@@ -8,6 +8,8 @@ walk(). These tests pin fast-path/walk parity.
 import collections
 import types
 
+import pytest
+
 import dotted
 from dotted import engine
 from dotted.api import parse
@@ -21,9 +23,15 @@ def test_simple_chain_kinds():
     assert parse('a@attr').simple_chain == (('key', 'a'), ('attr', 'attr'))
 
 
+def test_simple_chain_allows_transforms():
+    # transforms apply after the lookup, so they don't disqualify the chain
+    assert parse('a.b|int').simple_chain == (('key', 'a'), ('key', 'b'))
+    # ...but is_simple still requires no transforms
+    assert dotted.is_simple('a.b|int') is False
+
+
 def test_simple_chain_none_for_non_simple():
     assert parse('a.*.b').simple_chain is None
-    assert parse('a|int').simple_chain is None
     assert parse('a.$(x)').simple_chain is None
     assert parse('a.$$(b)').simple_chain is None
     assert parse('a[x=1]').simple_chain is None
@@ -109,6 +117,23 @@ def test_get_simple_dict_subclass_falls_back_to_walk():
 def test_get_simple_none_mid_chain():
     d = {'a': None}
     assert dotted.get(d, 'a.b', default='missing') == 'missing'
+
+
+def test_get_simple_transforms():
+    d = {'a': {'b': '42'}}
+    assert dotted.get(d, 'a.b|int') == 42
+    assert dotted.get(d, 'a.b|int', apply_transforms=False) == '42'
+    # transforms never apply to the default on a miss
+    assert dotted.get(d, 'a.x|int', default='missing') == 'missing'
+
+
+def test_get_simple_transform_errors_propagate():
+    d = {'a': {'b': 'nope'}}
+    # |int is lenient by default: returns the value unchanged
+    assert dotted.get(d, 'a.b|int') == 'nope'
+    # ::raises mode propagates, same as the walk path
+    with pytest.raises(ValueError):
+        dotted.get(d, 'a.b|int::raises')
 
 
 def test_get_simple_preparsed():
