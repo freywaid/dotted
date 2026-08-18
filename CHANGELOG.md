@@ -3,6 +3,25 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.7]
+
+### Fixed
+- `groups='patterns'` capture positions for variadic patterns: literals
+  are now correctly excluded when the pattern contains a group or
+  recursive op, so `translate`'s `$N` numbering counts pattern segments
+  only, as documented. Previously `a.(x,y).*` numbered `$0='a'` (a
+  literal), and `**.c` captured the literal `c`.
+
+### Changed
+- A group is one pattern segment: it captures the path segments its
+  matching branch consumed as a single group, keeping `$N` positions
+  stable across branches of different lengths. `x.(a.b,c)` matching
+  `x.a.b` now captures `('x', 'a.b')` instead of `('x', 'a', 'b')`.
+  Parentheses thereby act as a regex-like capture group: `x.(a.b)`
+  captures `'a.b'` as one group where `x.a.b` captures `'a', 'b'`.
+  Nested patterns inside a branch fold into the group's capture, as
+  with `**`.
+
 ## [0.44.6]
 
 ### Added
