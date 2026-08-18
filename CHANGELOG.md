@@ -3,6 +3,30 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.6]
+
+### Added
+- `match()` supports op groups: disjunction `(a,b)`, first-match `(a,b)?`,
+  conjunction `(a&b)`, and negation `(!a)` now match paths instead of
+  raising `AttributeError`. A path matches a group if it matches any
+  branch followed by the rest of the pattern (a concrete path is only
+  ever one branch's output, so Or/First/And all reduce to this);
+  negation matches one segment its inner pattern does not.
+  Multi-segment branches, nested groups, recursive ops inside branches,
+  cut markers, and `groups=True` captures all supported.
+
+### Fixed
+- Wrapped variadic patterns in `match()`: `~(a,b)` (nop-wrapped group)
+  silently matched nothing and `**=7` (value-guarded recursive) raised
+  `AttributeError`; both now match.
+
+### Changed
+- Path matching is polymorphic: `base.match_ops()` dispatches to each
+  op's `do_match`, which decides how many path segments it consumes
+  (single-segment default; backtracking on `Recursive`; branch
+  expansion on groups; `Wrap` delegates to variadic inners). The api
+  layer no longer special-cases op types.
+
 ## [0.44.5]
 
 ### Performance
