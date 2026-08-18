@@ -64,6 +64,9 @@ class Recursive(BaseOp):
     def is_recursive(self):
         return True
 
+    def is_variadic(self):
+        return True
+
     def operator(self, top=False):
         if self.accessors is not None:
             s = f'*({self._render_accessors()})'
@@ -113,6 +116,25 @@ class Recursive(BaseOp):
 
     def match(self, op, specials=False):
         return self.inner.matchable(op, specials=specials)
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        Match by consuming 1..N path segments via backtracking.  Each
+        consumed segment must match the inner pattern (chain-following);
+        stop extending once a segment fails.
+        """
+        from . import results
+        for n in range(1, len(path_ops) + 1):
+            kop = path_ops[n - 1]
+            seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
+            if not any(True for _ in self.inner.matches((seg_val,))):
+                return None
+            rest = base.match_ops(rest_pats, path_ops[n:], partial)
+            if rest is None:
+                continue
+            combined = results.assemble(path_ops[:n])
+            return [combined] + rest
+        return None
 
     def _effective_branches(self):
         """

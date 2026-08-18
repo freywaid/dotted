@@ -722,51 +722,6 @@ def remove_multi(obj, iterable, paths_only=True, mutable=True, strict=False, bin
     return remove_if_multi(obj, iterable, paths_only=False, pred=None, mutable=mutable, strict=strict, bindings=bindings)
 
 
-def _match_ops(pats, path_ops, partial):
-    """
-    Recursive match of pattern ops against path ops.
-    Returns list of match values on success, None on failure.
-    Handles Recursive ops which can consume variable-length path segments.
-    """
-    if not pats:
-        if not path_ops:
-            return []
-        if partial:
-            return []
-        return None
-
-    pop = pats[0]
-    rest_pats = pats[1:]
-
-    # Non-recursive op: consume exactly one path segment
-    if not pop.is_recursive():
-        if not path_ops:
-            return None
-        kop = path_ops[0]
-        m = pop.match(kop, specials=True)
-        if not m:
-            return None
-        rest_result = _match_ops(rest_pats, path_ops[1:], partial)
-        if rest_result is None:
-            return None
-        if isinstance(m, (tuple, list)):
-            return [_m.val for _m in m] + rest_result
-        return [m.val] + rest_result
-
-    # Recursive op: try consuming 1, 2, ... N path segments via backtracking
-    for n in range(1, len(path_ops) + 1):
-        kop = path_ops[n - 1]
-        seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
-        matched = any(True for _ in pop.inner.matches((seg_val,)))
-        if not matched:
-            break  # chain-following: stop extending once a segment fails
-        rest_result = _match_ops(rest_pats, path_ops[n:], partial)
-        if rest_result is not None:
-            combined = results.assemble(path_ops[:n])
-            return [combined] + rest_result
-    return None
-
-
 def match(pattern, path, groups=False, partial=True, strict=False):
     """
     Returns `path` if `pattern` matches; otherwise `None`
@@ -791,6 +746,22 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     >>> match('hello.*', 'hello.there.bye', groups='patterns')
     ('hello.there.bye', ('there.bye',))
 
+    Group patterns match if any branch matches:
+    >>> match('(a,b)', 'a')
+    'a'
+    >>> match('(a,b)', 'c')
+    >>> match('x.(a,b)', 'x.b')
+    'x.b'
+    >>> match('(a.b,c)', 'a.b')
+    'a.b'
+    >>> match('(a,b)?', 'b')
+    'b'
+    >>> match('x(.a&.b)', 'x.a')
+    'x.a'
+    >>> match('(!a)', 'b')
+    'b'
+    >>> match('(!a)', 'a')
+
     Recursive patterns:
     >>> match('**.c', 'a.b.c')
     'a.b.c'
@@ -812,14 +783,13 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     pats = parse(pattern)
     path_ops = parse(path)
 
-    # Check if any pattern op is Recursive — use new recursive matcher
-    has_recursive = any(op.is_recursive() for op in pats)
-
-    if has_recursive:
-        result = _match_ops(list(pats), list(path_ops), partial)
+    # Variadic ops (recursive, groups) consume variable-length path
+    # segments — use the recursive matcher
+    if any(op.is_variadic() for op in pats):
+        result = base.match_ops(list(pats), list(path_ops), partial)
         if result is None:
             return returns(None, [])
-        # TODO: pattern-only filtering for recursive matches
+        # TODO: pattern-only filtering for variadic matches
         return returns(path, result)
 
     # Original non-recursive match logic

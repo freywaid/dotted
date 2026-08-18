@@ -92,3 +92,77 @@ def test_recursive_groups_with_continuation():
 def test_recursive_groups_deep():
     r = dotted.match('**.x', 'a.b.c.x', groups=True)
     assert r == ('a.b.c.x', ('a.b.c', 'x'))
+
+
+def test_group_or():
+    assert dotted.match('(a,b)', 'a') == 'a'
+    assert dotted.match('(a,b)', 'b') == 'b'
+    assert dotted.match('(a,b)', 'c') is None
+
+
+def test_group_first():
+    assert dotted.match('(a,b)?', 'a') == 'a'
+    assert dotted.match('(a,b)?', 'b') == 'b'
+    assert dotted.match('(a,b)?', 'c') is None
+
+
+def test_group_and():
+    assert dotted.match('(a&b)', 'a') == 'a'
+    assert dotted.match('(a&b)', 'b') == 'b'
+    assert dotted.match('(a&b)', 'c') is None
+    assert dotted.match('x(.a&.b)', 'x.a') == 'x.a'
+
+
+def test_group_not():
+    assert dotted.match('(!a)', 'b') == 'b'
+    assert dotted.match('(!a)', 'a') is None
+    assert dotted.match('(!a).y', 'b.y') == 'b.y'
+    assert dotted.match('(!a).y', 'a.y') is None
+
+
+def test_group_mid_path():
+    assert dotted.match('x.(a,b)', 'x.a') == 'x.a'
+    assert dotted.match('x.(a,b)', 'x.c') is None
+    assert dotted.match('(a,b).y', 'a.y') == 'a.y'
+    assert dotted.match('(a,b).y', 'a.z') is None
+
+
+def test_group_multi_segment_branch():
+    assert dotted.match('(a.b,c)', 'a.b') == 'a.b'
+    assert dotted.match('(a.b,c)', 'c') == 'c'
+    assert dotted.match('(a.b,c)', 'a') is None
+
+
+def test_group_nested():
+    assert dotted.match('((a,b),c)', 'b') == 'b'
+
+
+def test_group_cuts_ignored():
+    assert dotted.match('(a#,b)', 'b') == 'b'
+    assert dotted.match('(a##,b)', 'b') == 'b'
+
+
+def test_group_recursive_branch():
+    assert dotted.match('(*b,c)', 'b.b') == 'b.b'
+    assert dotted.match('(*b,c)', 'c') == 'c'
+    assert dotted.match('(*b,c)', 'a') is None
+
+
+def test_group_partial():
+    assert dotted.match('(a,b)', 'a.x') == 'a.x'
+    assert dotted.match('(a,b)', 'a.x', partial=False) is None
+
+
+def test_group_groups():
+    assert dotted.match('(a,b)', 'a', groups=True) == ('a', ('a',))
+    assert dotted.match('(!a)', 'b', groups=True) == ('b', ('b',))
+    assert dotted.match('x.(a.b,c)', 'x.a.b', groups=True) == ('x.a.b', ('x', 'a', 'b'))
+
+
+def test_group_wrapped():
+    assert dotted.match('~(a,b)', 'a') == 'a'
+    assert dotted.match('~(a,b)', 'c') is None
+
+
+def test_recursive_wrapped_value_guard():
+    assert dotted.match('**=7', 'a.b') == 'a.b'

@@ -72,6 +72,18 @@ class Wrap(base.TraversalOp):
         except TypeError:
             return self.inner.match(op)
 
+    def is_variadic(self):
+        return self.inner.is_variadic() if hasattr(self.inner, 'is_variadic') else False
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        Variadic inners (recursive ops, groups) decide their own segment
+        consumption; otherwise match one segment via this wrap's match.
+        """
+        if self.is_variadic():
+            return self.inner.do_match(rest_pats, path_ops, partial)
+        return super().do_match(rest_pats, path_ops, partial)
+
     def concrete(self, val):
         return self.inner.concrete(val)
 

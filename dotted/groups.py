@@ -32,6 +32,9 @@ class OpGroup(base.TraversalOp):
     def is_pattern(self):
         return True
 
+    def is_variadic(self):
+        return True
+
     def is_template(self):
         """
         True if any branch contains a template op.
@@ -98,6 +101,20 @@ class OpGroup(base.TraversalOp):
 
     def operator(self, top=False):
         return self._render(top)
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        Match a concrete path against this group: the path matches if it
+        matches any branch followed by the remaining pattern ops.  A single
+        concrete path can only be produced by one branch at a time, so
+        disjunction, first-match, and conjunction all reduce to "any branch
+        matches"; cut markers don't constrain matching either.
+        """
+        for branch in base.branches_only(self.branches):
+            result = base.match_ops(list(branch) + list(rest_pats), path_ops, partial)
+            if result is not None:
+                return result
+        return None
 
     def _render(self, top=True):
         """
@@ -517,6 +534,25 @@ class OpGroupNot(OpGroup):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
             stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
         return ()
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        Match one path segment NOT matched by the inner pattern's first op,
+        then continue with the rest of the inner branch and remaining ops.
+        """
+        inner = self.inner
+        if not inner:
+            return None
+        if not path_ops:
+            return None
+        kop = path_ops[0]
+        if base.match_ops([inner[0]], [kop], False) is not None:
+            return None
+        rest = base.match_ops(list(inner[1:]) + list(rest_pats), path_ops[1:], partial)
+        if rest is None:
+            return None
+        seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
+        return [seg_val] + rest
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         inner = self.inner

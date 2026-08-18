@@ -42,6 +42,22 @@ def has_any(gen):
     return any(True for _ in gen)
 
 
+def match_ops(pats, path_ops, partial):
+    """
+    Match a list of pattern ops against a list of path ops.
+    Returns a list of match values on success, None on failure.
+    Dispatches to each op's do_match, which decides how many path
+    segments it consumes.
+    """
+    if pats:
+        return pats[0].do_match(pats[1:], path_ops, partial)
+    if not path_ops:
+        return []
+    if partial:
+        return []
+    return None
+
+
 class MatchResult:
     def __init__(self, val):
         self.val = val
@@ -74,6 +90,12 @@ class Op:
     def is_recursive(self):
         return False
     def is_slice(self):
+        return False
+    def is_variadic(self):
+        """
+        True if this op can consume a variable number of path segments when
+        matching a path (recursive ops, groups).
+        """
         return False
 
 
@@ -184,6 +206,24 @@ class TraversalOp(Op):
         True if this op contains an internal reference.
         """
         return False
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        Match this op against exactly one path segment, then continue with
+        the remaining pattern ops.  Variadic ops (recursive, groups)
+        override to consume a variable number of segments.
+        """
+        if not path_ops:
+            return None
+        m = self.match(path_ops[0], specials=True)
+        if not m:
+            return None
+        rest = match_ops(rest_pats, path_ops[1:], partial)
+        if rest is None:
+            return None
+        if isinstance(m, (tuple, list)):
+            return [_m.val for _m in m] + rest
+        return [m.val] + rest
 
 
 class MatchOp(Op):
