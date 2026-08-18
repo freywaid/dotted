@@ -109,11 +109,23 @@ class OpGroup(base.TraversalOp):
         concrete path can only be produced by one branch at a time, so
         disjunction, first-match, and conjunction all reduce to "any branch
         matches"; cut markers don't constrain matching either.
+
+        The group is one pattern segment: it contributes a single capture —
+        the path segments its branch consumed, assembled — flagged as a
+        pattern match (like Recursive).
         """
+        from . import results
         for branch in base.branches_only(self.branches):
-            result = base.match_ops(list(branch) + list(rest_pats), path_ops, partial)
-            if result is not None:
-                return result
+            branch_ops = list(branch)
+            for n in range(len(path_ops) + 1):
+                consumed = base.match_ops(branch_ops, path_ops[:n], False)
+                if consumed is None:
+                    continue
+                rest = base.match_ops(list(rest_pats), path_ops[n:], partial)
+                if rest is None:
+                    continue
+                combined = results.assemble(path_ops[:n])
+                return [(combined, True)] + rest
         return None
 
     def _render(self, top=True):
@@ -552,7 +564,7 @@ class OpGroupNot(OpGroup):
         if rest is None:
             return None
         seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
-        return [seg_val] + rest
+        return [(seg_val, True)] + rest
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         inner = self.inner

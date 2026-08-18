@@ -133,7 +133,7 @@ class Recursive(BaseOp):
             if rest is None:
                 continue
             combined = results.assemble(path_ops[:n])
-            return [combined] + rest
+            return [(combined, True)] + rest
         return None
 
     def _effective_branches(self):

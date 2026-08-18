@@ -468,6 +468,17 @@ excluding literals:
     >>> dotted.match('hello.*', 'hello.there.bye', groups=GroupMode.patterns)
     ('hello.there.bye', ('there.bye',))
 
+Op groups match like regex alternation, and parentheses act as a capture
+group: a group captures the segments its matching branch consumed as a
+single group, and counts as one pattern position:
+
+    >>> dotted.match('a.(x,y).*', 'a.x.z', groups=GroupMode.patterns, partial=False)
+    ('a.x.z', ('x', 'z'))
+    >>> dotted.match('x.(a.b,c)', 'x.a.b', groups=True)
+    ('x.a.b', ('x', 'a.b'))
+    >>> dotted.match('x.(a.b)', 'x.a.b', groups=True)
+    ('x.a.b', ('x', 'a.b'))
+
 <a id="replace"></a>
 ### Replace
 

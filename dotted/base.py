@@ -45,9 +45,9 @@ def has_any(gen):
 def match_ops(pats, path_ops, partial):
     """
     Match a list of pattern ops against a list of path ops.
-    Returns a list of match values on success, None on failure.
-    Dispatches to each op's do_match, which decides how many path
-    segments it consumes.
+    Returns a list of (value, is_pattern) capture pairs on success, None
+    on failure.  Dispatches to each op's do_match, which decides how
+    many path segments it consumes.
     """
     if pats:
         return pats[0].do_match(pats[1:], path_ops, partial)
@@ -221,9 +221,10 @@ class TraversalOp(Op):
         rest = match_ops(rest_pats, path_ops[1:], partial)
         if rest is None:
             return None
+        is_pat = self.is_pattern()
         if isinstance(m, (tuple, list)):
-            return [_m.val for _m in m] + rest
-        return [m.val] + rest
+            return [(_m.val, is_pat) for _m in m] + rest
+        return [(m.val, is_pat)] + rest
 
 
 class MatchOp(Op):

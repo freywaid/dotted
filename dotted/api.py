@@ -762,6 +762,13 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     'b'
     >>> match('(!a)', 'a')
 
+    A group is one pattern segment: it captures the segments its branch
+    consumed as a single group, and counts as one pattern position:
+    >>> match('x.(a.b,c)', 'x.a.b', groups=True)
+    ('x.a.b', ('x', 'a.b'))
+    >>> match('a.(x,y).*', 'a.x.z', groups='patterns', partial=False)
+    ('a.x.z', ('x', 'z'))
+
     Recursive patterns:
     >>> match('**.c', 'a.b.c')
     'a.b.c'
@@ -789,8 +796,7 @@ def match(pattern, path, groups=False, partial=True, strict=False):
         result = base.match_ops(list(pats), list(path_ops), partial)
         if result is None:
             return returns(None, [])
-        # TODO: pattern-only filtering for variadic matches
-        return returns(path, result)
+        return returns(path, [v for v, _ in result], [p for _, p in result])
 
     # Original non-recursive match logic
     _matches = []

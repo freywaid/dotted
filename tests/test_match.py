@@ -156,7 +156,23 @@ def test_group_partial():
 def test_group_groups():
     assert dotted.match('(a,b)', 'a', groups=True) == ('a', ('a',))
     assert dotted.match('(!a)', 'b', groups=True) == ('b', ('b',))
-    assert dotted.match('x.(a.b,c)', 'x.a.b', groups=True) == ('x.a.b', ('x', 'a', 'b'))
+    assert dotted.match('x.(a.b,c)', 'x.a.b', groups=True) == ('x.a.b', ('x', 'a.b'))
+
+
+def test_group_groups_patterns_only():
+    m, g = dotted.match('a.(x,y).*', 'a.x.z', groups='patterns', partial=False)
+    assert m == 'a.x.z'
+    assert g == ('x', 'z')
+
+    m, g = dotted.match('x.(a.b,c)', 'x.a.b', groups='patterns')
+    assert m == 'x.a.b'
+    assert g == ('a.b',)
+
+
+def test_recursive_groups_patterns_only():
+    m, g = dotted.match('**.c', 'a.b.c', groups='patterns')
+    assert m == 'a.b.c'
+    assert g == ('a.b',)
 
 
 def test_group_wrapped():
