@@ -775,6 +775,33 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     >>> match('*b', 'b.b.b')
     'b.b.b'
     >>> match('*b', 'a.b.c')
+
+    A group on the *path* side denotes all its expansions; the pattern
+    must cover every branch (subsumption).  The group captures as one
+    segment: itself.
+    >>> match('references.*', 'references.(a,b)')
+    'references.(a,b)'
+    >>> match('references.*', 'references.(a,b)', groups=True)
+    ('references.(a,b)', ('references', '(a,b)'))
+    >>> match('**.z', '(a.b,c).z', groups=True)
+    ('(a.b,c).z', ('(a.b,c)', 'z'))
+    >>> match('*', '(a.b,c)')
+    '(a.b,c)'
+    >>> match('*', '(a.b,c)', partial=False)
+    >>> match('*.*', '(a.b,c)')
+    >>> match('(a,b)', '(a.b,c)')
+    >>> match('(a,b)', '(a.b,b)')
+    '(a.b,b)'
+    >>> match('**.z', '(a.b,c).z')
+    '(a.b,c).z'
+
+    A recursive op on the path side is covered only by a recursive
+    pattern that subsumes it:
+    >>> match('**', 'a.**')
+    'a.**'
+    >>> match('**', '*b')
+    '*b'
+    >>> match('*', '**')
     """
     # groups can be a bool, a GroupMode member, or its string value.
     _patterns_only = (groups == GroupMode.patterns
@@ -791,8 +818,9 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     path_ops = parse(path)
 
     # Variadic ops (recursive, groups) consume variable-length path
-    # segments — use the recursive matcher
-    if any(op.is_variadic() for op in pats):
+    # segments — use the recursive matcher.  On the path side they make
+    # the path denote multiple expansions, which likewise needs it.
+    if any(op.is_variadic() for op in pats) or any(op.is_variadic() for op in path_ops):
         result = base.match_ops(list(pats), list(path_ops), partial)
         if result is None:
             return returns(None, [])

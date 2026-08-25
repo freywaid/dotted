@@ -84,6 +84,21 @@ class Wrap(base.TraversalOp):
             return self.inner.do_match(rest_pats, path_ops, partial)
         return super().do_match(rest_pats, path_ops, partial)
 
+    def do_match_path(self, pats, rest_path, partial):
+        """
+        Delegate path-side matching to the wrapped op (only reached for
+        variadic inners, via is_variadic).
+        """
+        return self.inner.do_match_path(pats, rest_path, partial)
+
+    def covered_by(self, matcher):
+        """
+        Delegate segment coverage to the wrapped op.
+        """
+        if hasattr(self.inner, 'covered_by'):
+            return self.inner.covered_by(matcher)
+        return super().covered_by(matcher)
+
     def concrete(self, val):
         return self.inner.concrete(val)
 

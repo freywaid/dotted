@@ -125,9 +125,7 @@ class Recursive(BaseOp):
         """
         from . import results
         for n in range(1, len(path_ops) + 1):
-            kop = path_ops[n - 1]
-            seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
-            if not any(True for _ in self.inner.matches((seg_val,))):
+            if not path_ops[n - 1].covered_by(self.inner):
                 return None
             rest = base.match_ops(rest_pats, path_ops[n:], partial)
             if rest is None:
@@ -135,6 +133,54 @@ class Recursive(BaseOp):
             combined = results.assemble(path_ops[:n])
             return [(combined, True)] + rest
         return None
+
+    def do_match_path(self, pats, rest_path, partial):
+        """
+        Match when this recursive op appears on the *path* side.  It
+        denotes unboundedly many expansions, so only a pattern segment
+        that itself covers arbitrary depth can subsume it: a recursive
+        whose inner pattern covers this op's chain segments.  The
+        subsuming pattern op is tried both consumed and retained, since
+        a recursive pattern may keep covering segments after the group.
+        """
+        from . import results
+        if not pats:
+            return [] if partial else None
+        head = pats[0]
+        if not isinstance(head, Recursive):
+            return None
+        if not self._subsumed_by(head):
+            return None
+        rest = base.match_ops(pats[1:], rest_path, partial)
+        if rest is None:
+            rest = base.match_ops(pats, rest_path, partial)
+        if rest is None:
+            return None
+        return [(results.assemble([self]), True)] + rest
+
+    def _subsumed_by(self, pat):
+        """
+        True if recursive pattern op *pat* covers every expansion of
+        this path op.  Identical recursives cover; otherwise an
+        unsliced recursive with the same accessors whose inner matcher
+        covers every chain segment this op can produce.
+        """
+        if pat == self:
+            return True
+        if pat.depth_start is not None or pat.depth_stop is not None or pat.depth_step is not None:
+            return False
+        if pat.accessors != self.accessors:
+            return False
+        return self.covered_by(pat.inner)
+
+    def covered_by(self, matcher):
+        """
+        A recursive path op denotes unboundedly many segments; only a
+        wildcard, or this op's own inner matcher, covers them all.
+        """
+        if isinstance(matcher, matchers.Wildcard):
+            return True
+        return matcher == self.inner
 
     def _effective_branches(self):
         """

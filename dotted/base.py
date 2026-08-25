@@ -46,9 +46,13 @@ def match_ops(pats, path_ops, partial):
     """
     Match a list of pattern ops against a list of path ops.
     Returns a list of (value, is_pattern) capture pairs on success, None
-    on failure.  Dispatches to each op's do_match, which decides how
-    many path segments it consumes.
+    on failure.  Dispatch is per-op on both sides: a variadic op at the
+    head of the path (group, recursive) decides how the pattern must
+    cover it via do_match_path; otherwise the head pattern op decides
+    how many path segments it consumes via do_match.
     """
+    if path_ops and path_ops[0].is_variadic():
+        return path_ops[0].do_match_path(list(pats), list(path_ops[1:]), partial)
     if pats:
         return pats[0].do_match(pats[1:], path_ops, partial)
     if not path_ops:
@@ -206,6 +210,15 @@ class TraversalOp(Op):
         True if this op contains an internal reference.
         """
         return False
+
+    def covered_by(self, matcher):
+        """
+        True if *matcher* (a match op) matches every segment this op
+        denotes when it appears on the path side.  Simple ops denote a
+        single concrete segment; variadic ops override.
+        """
+        val = getattr(getattr(self, 'op', self), 'value', self)
+        return has_any(matcher.matches((val,)))
 
     def do_match(self, rest_pats, path_ops, partial):
         """

@@ -128,6 +128,85 @@ class OpGroup(base.TraversalOp):
                 return [(combined, True)] + rest
         return None
 
+    def do_match_path(self, pats, rest_path, partial):
+        """
+        Match when this group appears on the *path* side.  The path
+        denotes every expansion of the group's branches, so the pattern
+        must cover all of them (subsumption): each branch is spliced
+        into the path in the group's place and matched; one failing
+        branch fails the whole match.
+
+        The group captures as itself — one capture — via an aligned
+        decomposition (a pattern prefix covering every branch), or
+        assembled into a variadic pattern segment's capture when the
+        pattern crosses the group boundary; only when neither
+        decomposition exists do captures fall back to the first
+        branch's expansion.
+        """
+        fallback = self._verify_covered(pats, rest_path, partial)
+        if fallback is None:
+            return None
+        r = self._aligned_captures(pats, rest_path, partial)
+        if r is not None:
+            return r
+        if pats and pats[0].is_variadic():
+            r = pats[0].do_match(pats[1:], [self] + list(rest_path), partial)
+            if r is not None:
+                return r
+        return fallback
+
+    def _verify_covered(self, pats, rest_path, partial):
+        """
+        Subsumption check over expansions: splice each branch into the
+        path and match.  Returns the first branch's result (the capture
+        fallback) or None when any branch is uncovered.
+        """
+        first = base.marker
+        for branch in base.branches_only(self.branches):
+            r = base.match_ops(pats, list(branch) + list(rest_path), partial)
+            if r is None:
+                return None
+            if first is base.marker:
+                first = r
+        if first is base.marker:
+            return base.match_ops(pats, list(rest_path), partial)
+        return first
+
+    def _aligned_captures(self, pats, rest_path, partial):
+        """
+        Group-as-itself captures: find a pattern prefix that covers the
+        branch set exactly (or up to a partial tail when the pattern
+        ends inside the group); the group then captures as one segment
+        and the remaining pattern matches the remaining path.
+        """
+        from . import results
+        for k in range(1, len(pats) + 1):
+            head = list(pats[:k])
+            tail_partial = partial and k == len(pats) and not rest_path
+            if not self._covers_branches(head, tail_partial):
+                continue
+            rest = base.match_ops(list(pats[k:]), list(rest_path), partial)
+            if rest is None:
+                continue
+            is_pat = any(p.is_pattern() for p in head)
+            return [(results.assemble([self]), is_pat)] + rest
+        return None
+
+    def _covers_branches(self, head_pats, tail_partial=False):
+        """
+        True if head_pats covers every branch of this group.
+        """
+        return all(base.match_ops(head_pats, list(b), tail_partial) is not None
+                   for b in base.branches_only(self.branches))
+
+    def covered_by(self, matcher):
+        """
+        A group path op is covered when every segment of every branch is.
+        """
+        return all(op.covered_by(matcher)
+                   for branch in base.branches_only(self.branches)
+                   for op in branch)
+
     def _render(self, top=True):
         """
         Render the group as a string. Subclasses override this.
@@ -429,6 +508,25 @@ class OpGroupAnd(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
+    def _verify_covered(self, pats, rest_path, partial):
+        """
+        A conjunction's expansions are the intersection of its
+        branches', so a pattern covering any single branch covers the
+        whole (sufficient, conservatively incomplete).
+        """
+        for branch in base.branches_only(self.branches):
+            r = base.match_ops(pats, list(branch) + list(rest_path), partial)
+            if r is not None:
+                return r
+        return None
+
+    def _covers_branches(self, head_pats, tail_partial=False):
+        """
+        Any single covered branch suffices for a conjunction.
+        """
+        return any(base.match_ops(head_pats, list(b), tail_partial) is not None
+                   for b in base.branches_only(self.branches))
+
     def push_children(self, stack, frame, paths):
         """
         All branches must match. Collect results per branch;
@@ -565,6 +663,42 @@ class OpGroupNot(OpGroup):
             return None
         seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
         return [(seg_val, True)] + rest
+
+    def do_match_path(self, pats, rest_path, partial):
+        """
+        Match when this negation appears on the *path* side.  It denotes
+        every segment its inner pattern excludes — an open set — so it
+        is covered only by an identical negation or by a bare wildcard
+        segment.
+        """
+        from . import results
+        if not pats:
+            return [] if partial else None
+        head = pats[0]
+        if head != self and not self._wildcard_covers(head):
+            return None
+        rest = base.match_ops(pats[1:], rest_path, partial)
+        if rest is None:
+            return None
+        return [(results.assemble([self]), True)] + rest
+
+    def _wildcard_covers(self, head):
+        """
+        True if pattern op *head* is a bare single-segment wildcard and
+        this negation excludes only single segments.
+        """
+        from . import matchers
+        if any(len(b) != 1 for b in base.branches_only(self.branches)):
+            return False
+        return isinstance(getattr(head, 'op', None), matchers.Wildcard)
+
+    def covered_by(self, matcher):
+        """
+        A negation denotes an open set of segments; only a wildcard
+        covers them all.
+        """
+        from . import matchers
+        return isinstance(matcher, matchers.Wildcard)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         inner = self.inner
