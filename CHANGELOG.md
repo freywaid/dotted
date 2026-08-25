@@ -3,6 +3,34 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.8]
+
+### Added
+- `match()` supports variadic ops on the *path* side. A group or
+  recursive op in the path used to fall through to `None` (or match by
+  accident, as `**` did); the path is now treated as the set of paths it
+  denotes, and the pattern must *subsume* it — cover every expansion.
+  Every branch of a path-side group must match, so
+  `match('references.*', 'references.(a,b)')` matches while
+  `match('*.*', '(a.b,c)')` does not (branch `c` is a segment short).
+  Groups on both sides compose the two rules: some pattern branch must
+  cover every path branch. A path-side recursive is covered only by a
+  recursive pattern that subsumes it — `match('**', '*b')` matches,
+  `match('*', '**')` does not. Conjunctions match on any branch (their
+  expansions are the intersection); negations, denoting an open set,
+  only by an identical negation or a bare wildcard.
+
+### Changed
+- A path-side group captures as one segment: itself, e.g.
+  `match('references.*', 'references.(a,b)', groups=True)` gives
+  `('references.(a,b)', ('references', '(a,b)'))`. When a variadic
+  pattern consumes across the group boundary the group folds into that
+  segment's capture, as nested patterns already do.
+- Match dispatch is now per-op on both sides: variadic path ops
+  implement `do_match_path` (the mirror of `do_match`), and segment
+  coverage moved onto ops as `covered_by`, replacing the ad-hoc value
+  extraction `Recursive.do_match` used to do.
+
 ## [0.44.7]
 
 ### Fixed

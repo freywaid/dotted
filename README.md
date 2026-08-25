@@ -479,6 +479,47 @@ single group, and counts as one pattern position:
     >>> dotted.match('x.(a.b)', 'x.a.b', groups=True)
     ('x.a.b', ('x', 'a.b'))
 
+The path may itself be a pattern, in which case `match` asks whether the
+pattern *subsumes* it — covers everything the path denotes:
+
+    >>> dotted.match('*', '*.*')
+    '*.*'
+    >>> dotted.match('*.*', '*')
+
+A group on the path side denotes all of its expansions, so every branch
+must be covered. It captures as a single segment: itself.
+
+    >>> dotted.match('references.*', 'references.(a,b)')
+    'references.(a,b)'
+    >>> dotted.match('references.*', 'references.(a,b)', groups=True)
+    ('references.(a,b)', ('references', '(a,b)'))
+
+A branch that outruns the pattern is only covered when partial matching
+is on, and never when the pattern needs more segments than the branch
+has:
+
+    >>> dotted.match('*', '(a.b,c)')
+    '(a.b,c)'
+    >>> dotted.match('*', '(a.b,c)', partial=False)
+    >>> dotted.match('*.*', '(a.b,c)')
+
+Groups on both sides compose the two rules — the pattern matches if
+*some* branch of it covers *every* branch of the path:
+
+    >>> dotted.match('(a,b)', '(a.b,b)')
+    '(a.b,b)'
+    >>> dotted.match('(a,b)', '(a.b,b)', partial=False)
+    >>> dotted.match('(a,b)', '(a.b,c)')
+
+A recursive op on the path side denotes unboundedly many expansions, so
+only a recursive pattern that subsumes it will match:
+
+    >>> dotted.match('**', 'a.**')
+    'a.**'
+    >>> dotted.match('**', '*b')
+    '*b'
+    >>> dotted.match('*', '**')
+
 <a id="replace"></a>
 ### Replace
 
