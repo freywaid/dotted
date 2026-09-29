@@ -3,6 +3,36 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.10]
+
+### Performance
+- `build()` and `build_multi()` keep the parsed paths they expand
+  instead of assembling each one to a string and parsing it again. A
+  pattern matching more paths than the parse cache holds (300) used to
+  miss on every one; `build` over 1000 matches is about 35x faster.
+
+### Changed
+- Three edge cases of `build()` change with the string round trip gone:
+  with `strict=True`, a trailing `[]` or `[:]` now creates the empty
+  list where it was a no-op, and raises `TypeError` on a list root; a
+  wildcard over keys that cannot be written as a path, such as `None` or
+  `True`, now succeeds where it raised `AttributeError`.
+
+### Added
+- Benchmark suite: `python -m benchmarks` or `make bench`. Times reads
+  and writes at two data sizes, and the copying cases under both
+  `copy.deepcopy` and copium. Results can be saved and compared.
+
+### Fixed
+- `make` targets failed because the install rule depended on
+  `setup.py`, removed in the move to `pyproject.toml`.
+
+### Documentation
+- README caveat for the `copium` extra: copium 0.1.0 gets slower at
+  copying small objects once it has copied a large one in the same
+  process. Reported upstream as
+  [copium#54](https://github.com/percolab/copium/issues/54).
+
 ## [0.44.9]
 
 ### Performance
