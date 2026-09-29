@@ -1,7 +1,6 @@
 """
 Main api
 """
-import copy
 import enum
 import functools
 import itertools
@@ -14,6 +13,7 @@ from . import transforms
 from . import base
 from . import access
 from . import matchers
+from . import utils
 from . import utypes
 
 
@@ -544,7 +544,7 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     if obj is AUTO:
         obj = _auto_root_from_path(path)
     if not mutable and _is_mutable_container(obj):
-        obj = copy.deepcopy(obj)
+        obj = utils.deepcopy(obj)
         mutable = True
 
     if pred is not None and not pred(val):
@@ -562,7 +562,7 @@ def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, 
     {'a': 1, 'c': 3}
     """
     if not mutable and _is_mutable_container(obj):
-        obj = copy.deepcopy(obj)
+        obj = utils.deepcopy(obj)
         mutable = True
     for item in items:
         path, val, *rest = item
@@ -646,7 +646,7 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     if obj is AUTO:
         obj = _auto_root_from_path(path)
     if not mutable and _is_mutable_container(obj):
-        obj = copy.deepcopy(obj)
+        obj = utils.deepcopy(obj)
         mutable = True
 
     if pred is not None and not pred(path):
@@ -663,7 +663,7 @@ def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not N
     {}
     """
     if not mutable and _is_mutable_container(obj):
-        obj = copy.deepcopy(obj)
+        obj = utils.deepcopy(obj)
         mutable = True
 
     if paths_only:

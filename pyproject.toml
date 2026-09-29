@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dotted_notation"
-version = "0.44.8"
+version = "0.44.9"
 description = "Dotted notation for safe nested data traversal with optional chaining, pattern matching, and transforms"
 readme = "README.md"
 requires-python = ">=3.6"
@@ -44,8 +44,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+copium = ['copium>=0.1.0;python_version>="3.10" and platform_python_implementation=="CPython"']
 yaml = ["PyYAML>=5.0"]
 toml = ['tomli>=1.0;python_version<"3.11"', "tomli_w>=1.0"]
+formats = [
+    "PyYAML>=5.0",
+    'tomli>=1.0;python_version<"3.11"',
+    "tomli_w>=1.0",
+]
+# DEPRECATED: legacy alias for formats, to be removed in a future release
 all  = [
     "PyYAML>=5.0",
     'tomli>=1.0;python_version<"3.11"',

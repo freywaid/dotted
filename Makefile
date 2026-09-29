@@ -14,7 +14,7 @@ install: $(VENV_BIN)/pytest
 $(VENV_BIN)/pytest: requirements-integration.txt setup.py
 	$(PYTHON) -m venv $(VENV)
 	$(VENV_BIN)/pip install --upgrade pip
-	$(VENV_BIN)/pip install -e '.[all]'
+	$(VENV_BIN)/pip install -e '.[formats,copium]'
 	$(VENV_BIN)/pip install pytest
 	$(VENV_BIN)/pip install -r requirements-integration.txt
 	@touch $(VENV_BIN)/pytest

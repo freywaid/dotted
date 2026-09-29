@@ -1,6 +1,12 @@
 """
 Shared type-checking helpers (duck-typing).
 """
+try:
+    # C implementation of copy.deepcopy with identical semantics;
+    # installed by the [copium] extra.
+    from copium import deepcopy
+except ImportError:
+    from copy import deepcopy
 
 class lazyprop:
     """

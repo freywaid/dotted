@@ -3,6 +3,27 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.9]
+
+### Performance
+- Optional [copium](https://github.com/Bobronium/copium) support: a C
+  implementation of `copy.deepcopy` with the same semantics. When
+  installed, the copies made by `mutable=False` updates and removes and
+  by `build()` use it (roughly 5-20x faster on plain nested data);
+  otherwise dotted falls back to `copy.deepcopy`. Install with
+  `pip install dotted-notation[copium]` (CPython 3.10+).
+
+### Added
+- `copium` extra, and a `formats` extra bundling YAML and TOML support.
+
+### Deprecated
+- The `all` extra. It is an alias for `formats` and will be removed in
+  a future release.
+
+### Changed
+- When copium is installed the test suite runs every test function
+  under both deepcopy implementations.
+
 ## [0.44.8]
 
 ### Added

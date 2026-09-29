@@ -21,11 +21,21 @@ Since this package includes the [**`dq`** command-line tool](#cli-dq), several d
 
 To install optional format support:
 
-    pip install dotted-notation[all]
+    pip install dotted-notation[formats]
 
 Or pick only what you need:
 
     pip install dotted-notation[yaml,toml]
+
+> **Deprecated:** the `all` extra is an alias for `formats` and will be removed
+> in a future release. Use `formats` instead.
+
+For faster `mutable=False` updates and removes, install the
+[copium](https://github.com/Bobronium/copium) extra, a C implementation of
+`copy.deepcopy` (CPython 3.10+). Dotted uses it when present and falls back to
+`copy.deepcopy` otherwise:
+
+    pip install dotted-notation[copium]
 
 ## Table of Contents
 

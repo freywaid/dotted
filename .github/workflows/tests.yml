@@ -17,7 +17,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[all]"
+          pip install -e ".[formats,copium]"
           pip install pytest
       - name: Run tests
         run: pytest
