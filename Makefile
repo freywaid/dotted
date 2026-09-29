@@ -5,14 +5,14 @@ VENV_BIN := $(VENV)/bin
 # Extra args passed to pytest. e.g.:  make test PYTEST_ARGS=-x
 PYTEST_ARGS ?=
 
-.PHONY: install test test.integration test.all clean
+.PHONY: install test test.integration test.all bench clean
 
 # Create the local venv and install dotted (with all optional extras),
 # pytest, and integration-test deps. Other targets depend on this.
 install: $(VENV_BIN)/pytest
 
-$(VENV_BIN)/pytest: requirements-integration.txt setup.py
-	$(PYTHON) -m venv $(VENV)
+$(VENV_BIN)/pytest: requirements-integration.txt pyproject.toml
+	test -d $(VENV) || $(PYTHON) -m venv $(VENV)
 	$(VENV_BIN)/pip install --upgrade pip
 	$(VENV_BIN)/pip install -e '.[formats,copium]'
 	$(VENV_BIN)/pip install pytest
@@ -31,6 +31,10 @@ test.integration: install
 # Everything: unit + integration.
 test.all: install
 	$(VENV_BIN)/pytest --all $(PYTEST_ARGS)
+
+# Benchmarks. e.g.:  make bench BENCH_ARGS='update --save base.json'
+bench: install
+	$(VENV_BIN)/python -m benchmarks $(BENCH_ARGS)
 
 clean:
 	rm -rf $(VENV) .pytest_cache *.egg-info build dist
