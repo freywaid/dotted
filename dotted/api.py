@@ -396,6 +396,23 @@ _mutable = mutable
 is_mutable = mutable
 
 
+def _pluck_parsed(obj, ops, strict=False):
+    """
+    Yield deduped (parsed path, value) pairs from obj matching `ops`.
+    Like pluck_multi, but the paths stay parsed so callers that hand them
+    straight back to dotted skip the assemble and re-parse.
+    """
+    seen = set()
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict):
+        if path is utypes.CUT_SENTINEL:
+            break
+        found = results.Dotted({'ops': path, 'transforms': ops.transforms})
+        if found in seen:
+            continue
+        seen.add(found)
+        yield (found, val)
+
+
 def build_multi(obj, paths, strict=False, bindings=None):
     """
     Build a subset/default obj based on concrete path fields
@@ -406,8 +423,9 @@ def build_multi(obj, paths, strict=False, bindings=None):
     if obj is AUTO:
         obj = _auto_root(((p, None) for p in paths))
     for path in paths:
-        built = engine.build(parse(path, bindings=bindings, partial=False), obj, strict=strict)
-        obj = update_multi(obj, pluck_multi(built, (path,), strict=strict), strict=strict)
+        ops = parse(path, bindings=bindings, partial=False)
+        built = engine.build(ops, obj, strict=strict)
+        obj = update_multi(obj, _pluck_parsed(built, ops, strict=strict), strict=strict)
     return obj
 
 
