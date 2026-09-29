@@ -47,19 +47,19 @@ def fmt(seconds):
     return f'{seconds:.2f}s'
 
 
-def ratio(base, other):
+def saved(base, other):
     """
-    How many times faster `other` is than `base`.
+    Percent of `base`'s time that `other` saves; negative when it is slower.
     """
     if base is None or other is None:
         return '-'
-    return f'{base / other:.2f}x'
+    return f'{(base - other) / base * 100:+.1f}%'
 
 
 def header(width, names, baseline):
     head = f'{"case":{width}}' + ''.join(f'{n:>12}' for n in names)
     if len(names) > 1:
-        head += f'{"speedup":>10}'
+        head += f'{"time saved":>12}'
     if baseline is not None:
         head += ''.join(f'{"vs " + n:>12}' for n in names)
     return head
@@ -69,11 +69,11 @@ def row(case, times, width, names, baseline):
     cols = [times.get(n) for n in names]
     line = f'{case.id:{width}}' + ''.join(f'{fmt(t):>12}' for t in cols)
     if len(names) > 1:
-        line += f'{ratio(cols[0], cols[-1]):>10}'
+        line += f'{saved(cols[0], cols[-1]):>12}'
     if baseline is None:
         return line
     return line + ''.join(
-        f'{ratio(baseline.get(n, {}).get(case.id), t):>12}'
+        f'{saved(baseline.get(n, {}).get(case.id), t):>12}'
         for n, t in zip(names, cols))
 
 
@@ -93,7 +93,7 @@ def main():
     parser.add_argument('filters', nargs='*', help='run cases whose id contains any of these')
     parser.add_argument('--copier', choices=sorted(harness.copiers()), help='time one deepcopy implementation')
     parser.add_argument('--save', metavar='FILE', help='write results as JSON')
-    parser.add_argument('--compare', metavar='FILE', help='show speedup against saved results')
+    parser.add_argument('--compare', metavar='FILE', help='show percent time saved against recorded results')
     args = parser.parse_args()
 
     names = [args.copier] if args.copier else list(harness.copiers())

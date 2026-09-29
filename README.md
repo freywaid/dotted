@@ -37,6 +37,12 @@ For faster `mutable=False` updates and removes, install the
 
     pip install dotted-notation[copium]
 
+> **Caveat (copium 0.1.0):** after copium copies a large object, its copies of
+> small objects in the same process become slower than `copy.deepcopy` and stay
+> that way. Copying whole documents is 3-9x faster, but a long-running process
+> that mixes one large copy with many small ones can come out slower overall.
+> Tracked upstream in [copium#54](https://github.com/percolab/copium/issues/54).
+
 ## Table of Contents
 
 - [Safe Traversal (Optional Chaining)](#safe-traversal-optional-chaining)
