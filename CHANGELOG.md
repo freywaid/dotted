@@ -3,6 +3,16 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.44.11]
+
+### Changed
+- `build()` copies its leaves with the standard library's
+  `copy.deepcopy` even when copium is installed. copium 0.1.0 gets slow
+  at small copies once it has copied something large in the same
+  process ([copium#54](https://github.com/percolab/copium/issues/54)),
+  which made `build` slower with the extra than without it. copium is
+  still used for the whole-object copy made by `mutable=False`.
+
 ## [0.44.10]
 
 ### Performance
