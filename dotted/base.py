@@ -311,6 +311,14 @@ class MatchOp(Op):
         """
         return repr(self)
 
+    def quote_top(self):
+        """
+        quote() for the first segment of a path. A path that starts with '-'
+        is inverted, so a key that would be written with a leading '-' has
+        to be written another way there.
+        """
+        return self.quote()
+
     def to_branches(self):
         from .access import Key
         return [tuple([Key(self)])]

@@ -312,10 +312,9 @@ class Key(AccessOp):
         return cls(matchers.Word(val))
 
     def operator(self, top=False):
-        q = self.op.quote()
         if top:
-            return q
-        return '.' + q
+            return self.op.quote_top()
+        return '.' + self.op.quote()
 
     def _items(self, node, keys, filtered=True):
         curkey = None

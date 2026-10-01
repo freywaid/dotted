@@ -1098,17 +1098,26 @@ def pluck_multi(obj, patterns, default=None, strict=False, bindings=None):
     >>> list(pluck_multi(d, ('hello', 'a.b')))
     [('hello', 7), ('a.b', 'seven')]
     """
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, strict=strict, bindings=bindings))
+
+
+def _pluck_written(obj, patterns, strict=False, bindings=None):
+    """
+    Yield deduped (field, parsed field, value) triples from obj matching any
+    of `patterns`: what pluck_multi yields, plus each field already parsed,
+    so a caller that needs the field as a path does not parse the string.
+    """
     seen = {}
     for pattern in patterns:
         ops = parse(pattern, bindings=bindings, partial=False)
         for path, val in engine.walk(ops, obj, paths=True, strict=strict):
             if path is utypes.CUT_SENTINEL:
                 break
-            field = results.Dotted({'ops': path, 'transforms': ops.transforms}).assemble()
+            field, parsed = results.Dotted({'ops': path, 'transforms': ops.transforms}).written()
             if field in seen:
                 continue
             seen[field] = None
-            yield (field, val)
+            yield (field, parsed, val)
 
 
 def pluck(obj, pattern, default=None, strict=False, bindings=None):
@@ -1220,9 +1229,10 @@ def unpack(obj, attrs=None, project=None, partial=True):
         extra = ', @/(?!__).*/'
     else:
         extra = ', @/__.*/'
-    result = dict(pluck(obj, f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})'))
+    pattern = f'*(*#, [*]:!(str, bytes){extra}):-2(.*, []{extra})##, (*, []{extra})'
     if project is None:
-        return result
+        return dict(pluck(obj, pattern))
+    leaves = list(_pluck_written(obj, (pattern,)))
     if isinstance(project, str):
         project = [project]
     # Normalize each entry to (pattern, partial); bare patterns inherit the
@@ -1230,22 +1240,19 @@ def unpack(obj, attrs=None, project=None, partial=True):
     specs = [(p, partial) if isinstance(p, str) else tuple(p) for p in project]
     compiled = [None] * len(specs)
 
-    def selected(k):
+    def selected(field, path_ops):
         """
-        True if leaf path k matches any projection. Each pattern is compiled
-        when first reached, and k once.
+        True if a leaf matches any projection. Each pattern is compiled when
+        first reached; the leaf's path comes parsed from the walk.
         """
-        path_ops = None
         for i, (pat, pp) in enumerate(specs):
             if compiled[i] is None:
                 compiled[i] = parse(pat)
-            if path_ops is None:
-                path_ops = parse(k)
-            if _match_parsed(compiled[i], path_ops, k, False, pp):
+            if _match_parsed(compiled[i], path_ops, field, False, pp):
                 return True
         return False
 
-    return {k: v for k, v in result.items() if selected(k)}
+    return {field: val for field, path_ops, val in leaves if selected(field, path_ops)}
 
 
 def items(obj, attrs=None, project=None, partial=True):

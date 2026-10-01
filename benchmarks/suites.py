@@ -39,11 +39,10 @@ add('pluck', 'users.*.score',
     lambda d: dotted.pluck(d, 'users.*.score'))
 add('expand', 'users.*.score',
     lambda d: dotted.expand(d, 'users.*.score'))
-# unpack grows with the square of the leaf count: the large size takes minutes
 add('unpack', 'whole document',
-    lambda d: dotted.unpack(d), sizes=SIZES[:1])
+    lambda d: dotted.unpack(d))
 add('unpack', 'project=users.*.address',
-    lambda d: dotted.unpack(d, project='users.*.address'), sizes=SIZES[:1])
+    lambda d: dotted.unpack(d, project='users.*.address'))
 
 # -- paths only: these never touch the data, so one size is enough
 

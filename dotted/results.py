@@ -56,6 +56,19 @@ class Dotted:
 
     def assemble(self, start=0, pedantic=False):
         return assemble(self, start, pedantic=pedantic, transforms=self.transforms)
+
+    def written(self):
+        """
+        This path as assemble() writes it, both as the string and parsed.
+        The parsed form leaves out a trailing [] that assemble() drops, so
+        it is what the string says without having to parse it.
+        """
+        parts, dropped = render(self.ops)
+        for t in self.transforms:
+            parts.append('|' + t.operator())
+        if not dropped:
+            return ''.join(parts), self
+        return ''.join(parts), Dotted({'ops': self.ops[:-1], 'transforms': self.transforms})
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
     @staticmethod
@@ -147,6 +160,23 @@ def apply_transforms(val, transforms):
     return val
 
 
+def render(ops, start=0, pedantic=False):
+    """
+    The text of each op from `start` on, and whether a redundant trailing []
+    was dropped (see assemble).
+    """
+    parts = []
+    top = True
+    for op in itertools.islice(ops, start, None):
+        parts.append(op.operator(top))
+        if not isinstance(op, Invert):
+            top = False
+    dropped = not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]'
+    if dropped:
+        parts.pop()
+    return parts, dropped
+
+
 def assemble(ops, start=0, pedantic=False, transforms=()):
     """
     Reassemble ops into a dotted notation string.
@@ -155,14 +185,7 @@ def assemble(ops, start=0, pedantic=False, transforms=()):
     unless it follows another [] (hello[][] is preserved as-is).
     Set pedantic=True to always preserve trailing [].
     """
-    parts = []
-    top = True
-    for op in itertools.islice(ops, start, None):
-        parts.append(op.operator(top))
-        if not isinstance(op, Invert):
-            top = False
-    if not pedantic and not top and len(parts) > 1 and parts[-1] == '[]' and parts[-2] != '[]':
-        parts.pop()
+    parts, _ = render(ops, start, pedantic)
     for t in transforms:
         parts.append('|' + t.operator())
     return ''.join(parts)

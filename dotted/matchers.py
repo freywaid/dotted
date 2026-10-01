@@ -62,6 +62,14 @@ class Numeric(Const):
         return int(self.args[0]) if self.is_int() else float(self.args[0])
     def __repr__(self):
         return f'{self.value}'
+    def quote_top(self):
+        """
+        A negative number leading a path is written in its quoted form.
+        """
+        q = self.quote()
+        if q.startswith('-'):
+            return f"#'{self.value}'"
+        return q
 
 
 class NumericExtended(Numeric):
@@ -115,6 +123,15 @@ class Word(Const):
         if utils.needs_quoting(v):
             return utils.quote_str(v)
         return v
+
+    def quote_top(self):
+        """
+        A word starting with '-' is quoted when it leads a path.
+        """
+        q = self.quote()
+        if isinstance(q, str) and q.startswith('-'):
+            return utils.quote_str(q)
+        return q
 
 
 class String(Const):
