@@ -3,6 +3,17 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.45.1]
+
+### Changed
+- The extras no longer carry environment markers of their own. A marker
+  ahead of the extra condition made pypistats list `copium` and `tomli`
+  as hard requirements; only `pyparsing` is one. Two consequences:
+  `pip install dotted-notation[copium]` now fails where copium cannot be
+  installed (below CPython 3.10) instead of skipping it, and the `toml`,
+  `formats` and `all` extras install `tomli` on Python 3.11+ as well,
+  where it goes unused in favor of the standard library's `tomllib`.
+
 ## [0.45.0]
 
 A performance release. Figures compare against 0.44.11 on a document of
