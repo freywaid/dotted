@@ -35,6 +35,10 @@ add('get', 'users./u1.*/.score',
     lambda d: dotted.get(d, 'users./u1.*/.score'))
 add('get', '**.lat',
     lambda d: dotted.get(d, '**.lat'))
+add('get', 'rows[*&active=True].id',
+    lambda d: dotted.get(d, 'rows[*&active=True].id'))
+add('get', 'users.*&score>100.name',
+    lambda d: dotted.get(d, 'users.*&score>100.name'))
 add('pluck', 'users.*.score',
     lambda d: dotted.pluck(d, 'users.*.score'))
 add('expand', 'users.*.score',

@@ -3,6 +3,7 @@
 from . import base
 from . import engine
 from . import matchers
+from . import results
 from . import utils
 from .access import BaseOp, Key, Attr
 
@@ -125,7 +126,6 @@ class Recursive(BaseOp):
         consumed segment must match the inner pattern (chain-following);
         stop extending once a segment fails.
         """
-        from . import results
         for n in range(1, len(path_ops) + 1):
             if not path_ops[n - 1].covered_by(self.inner):
                 return None
@@ -145,7 +145,6 @@ class Recursive(BaseOp):
         subsuming pattern op is tried both consumed and retained, since
         a recursive pattern may keep covering segments after the group.
         """
-        from . import results
         if not pats:
             return [] if partial else None
         head = pats[0]

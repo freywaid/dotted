@@ -197,10 +197,9 @@ class FilterKeyValue(FilterOp):
             self.key = items[0]
             self.val = items[-1]
             # Middle items are Transform objects
-            from .base import Transform
             self.transforms = tuple(
                 item for item in items[1:-1]
-                if isinstance(item, Transform)
+                if isinstance(item, base.Transform)
             )
         else:
             self.key = self.args[0]

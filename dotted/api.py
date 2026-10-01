@@ -318,8 +318,7 @@ def _is_mutable_container(obj):
     if hasattr(obj, '_fields') and hasattr(obj, '_replace'):
         return False
     # Frozen dataclasses (no-op on Python 3.6 — no dataclasses module)
-    from .utils import is_dataclass
-    if is_dataclass(obj) and obj.__dataclass_fields__:
+    if utils.is_dataclass(obj) and obj.__dataclass_fields__:
         # Check if frozen
         try:
             # Try to detect frozen - frozen dataclasses raise FrozenInstanceError

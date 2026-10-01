@@ -2,10 +2,12 @@
 """
 import functools
 import itertools
+import numbers
 import types
 
 from . import base
 from . import matchers
+from . import utils
 
 
 def itemof(node, val):
@@ -306,7 +308,6 @@ class Key(AccessOp):
     @classmethod
     @functools.lru_cache()
     def _concrete_cached(cls, _type, val):
-        import numbers
         if isinstance(val, numbers.Number):
             return cls(matchers.NumericQuoted(val))
         return cls(matchers.Word(val))
@@ -567,9 +568,8 @@ class Attr(Key):
         if hasattr(node, '_replace'):
             return node._replace(**{key: val})
         # Try dataclasses.replace for frozen dataclass (skipped on 3.6)
-        from .utils import is_dataclass, dataclass_replace
-        if is_dataclass(node):
-            return dataclass_replace(node, **{key: val})
+        if utils.is_dataclass(node):
+            return utils.dataclass_replace(node, **{key: val})
         raise AttributeError(f"Cannot set attribute '{key}' on {type(node).__name__}")
     def upsert(self, node, val):
         if not self.is_pattern():
@@ -589,9 +589,8 @@ class Attr(Key):
         updates = {k: val for k in keys}
         if hasattr(node, '_replace'):
             return node._replace(**updates)
-        from .utils import is_dataclass, dataclass_replace
-        if is_dataclass(node):
-            return dataclass_replace(node, **updates)
+        if utils.is_dataclass(node):
+            return utils.dataclass_replace(node, **updates)
         raise AttributeError(f"Cannot set attributes on {type(node).__name__}")
 
     def pop(self, node, key):
@@ -619,7 +618,6 @@ class Slot(Key):
     @classmethod
     @functools.lru_cache()
     def _concrete_cached(cls, _type, val):
-        import numbers
         if isinstance(val, numbers.Number):
             return cls(matchers.Numeric(val))
         return cls(matchers.String(val))

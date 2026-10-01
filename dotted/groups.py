@@ -6,6 +6,7 @@ from . import base
 from . import matchers
 from . import wrappers
 from . import engine
+from . import results
 from .access import AccessOp, Key, Attr, Slot, SlotSpecial, Invert
 
 
@@ -178,7 +179,6 @@ class OpGroup(base.TraversalOp):
         the path segments its branch consumed, assembled — flagged as a
         pattern match (like Recursive).
         """
-        from . import results
         for branch in base.branches_only(self.branches):
             branch_ops = list(branch)
             for n in range(len(path_ops) + 1):
@@ -243,7 +243,6 @@ class OpGroup(base.TraversalOp):
         ends inside the group); the group then captures as one segment
         and the remaining pattern matches the remaining path.
         """
-        from . import results
         for k in range(1, len(pats) + 1):
             head = list(pats[:k])
             tail_partial = partial and k == len(pats) and not rest_path
@@ -735,7 +734,6 @@ class OpGroupNot(OpGroup):
         is covered only by an identical negation or by a bare wildcard
         segment.
         """
-        from . import results
         if not pats:
             return [] if partial else None
         head = pats[0]
@@ -751,7 +749,6 @@ class OpGroupNot(OpGroup):
         True if pattern op *head* is a bare single-segment wildcard and
         this negation excludes only single segments.
         """
-        from . import matchers
         if any(len(b) != 1 for b in base.branches_only(self.branches)):
             return False
         return isinstance(getattr(head, 'op', None), matchers.Wildcard)
@@ -761,7 +758,6 @@ class OpGroupNot(OpGroup):
         A negation denotes an open set of segments; only a wildcard
         covers them all.
         """
-        from . import matchers
         return isinstance(matcher, matchers.Wildcard)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
