@@ -3,6 +3,58 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.45.0]
+
+A performance release. Figures compare against 0.44.11 on a document of
+1000 records, using `python -m benchmarks`.
+
+### Performance
+- `unpack()` no longer grows with the square of the leaf count. A soft
+  cut compared every new path against every path already yielded; those
+  paths are now indexed by their leading keys. A recursive op with a
+  negative depth also recomputed each node's depth-to-leaf for every
+  ancestor; a traversal now remembers it. 16,000 leaves: 382s to 0.21s.
+- `unpack(project=...)` matches projections against the paths the walk
+  already has instead of parsing each leaf path it generated.
+- A concrete key is no longer found by comparing it against every key
+  of the node: an absent key matches without a scan and a present one
+  stops at the first match. `update()` looks each level up once, not
+  twice. Concrete `update` and `remove` into a 1000-key dict take about
+  70% less time.
+- Writing paths out is cheaper: quoting no longer imports per call,
+  tests for an integer by catching an exception, or scans characters in
+  a Python loop. `pluck()` and `expand()` take about 40% less time.
+- `setdefault`, `update` and `remove` with `AUTO`, `pluck`, `translate`,
+  `match_multi` and `unpack` compile each path once per call.
+- Pattern reads shed per-match layers that did nothing without filters
+  or transforms: wildcard and recursive `get` take 15-21% less time,
+  pattern `update` 30-40%.
+- `build()` takes about 60% less time, `match_multi` 40%.
+- Imports that ran inside hot functions are now at module level.
+
+### Added
+- `compile()`, an alias for `parse()`. Every API that takes a path also
+  takes the compiled result.
+- Benchmark cases for `unpack`, `translate`, `match_multi`,
+  `setdefault`, filters, a late key and an absent key.
+
+### Fixed
+- A top-level key starting with `-` was written out bare, so it read
+  back as an inverted path and `pack(unpack(obj))` lost it. Such a key
+  is now quoted when it leads a path: `'-n'` with quotes, `#'-1'` for a
+  negative number.
+
+### Changed
+- Paths returned by `pluck`, `expand`, `unpack` and `walk` quote a
+  leading `-` key as above, and so do `match()` captures that begin
+  with one. Keys elsewhere in a path are unchanged.
+- A dict-like whose `in` disagrees with its `keys()` can see a present
+  key reported as absent, since a concrete key is now tested for
+  membership before the keys are scanned.
+- `match()` without `groups` no longer assembles the unmatched tail of
+  a partial match, so a hand-built path containing an op that cannot be
+  written as text no longer raises there.
+
 ## [0.44.11]
 
 ### Changed
