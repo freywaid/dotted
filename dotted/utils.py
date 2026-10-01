@@ -1,6 +1,8 @@
 """
 Shared type-checking helpers (duck-typing).
 """
+import re
+
 try:
     # C implementation of copy.deepcopy with identical semantics;
     # installed by the [copium] extra.
@@ -51,6 +53,58 @@ def dataclass_replace(obj, **changes):
     if _dc is None:
         raise RuntimeError('dataclasses module is unavailable')
     return _dc.replace(obj, **changes)
+
+
+# ---- quoting utilities ----
+
+_RESERVED = frozenset('.[]*:|+?/=,@&()!~#{}$<>')
+_NEEDS_QUOTE = _RESERVED | frozenset(' \t\n\r')
+
+_NUMERIC_RE = re.compile(
+    r'[-]?0[xX][0-9a-fA-F]+$'           # hex
+    r'|[-]?0[oO][0-7]+$'                # octal
+    r'|[-]?0[bB][01]+$'                 # binary
+    r'|[-]?[0-9][0-9_]*[eE][+-]?[0-9]+$' # scientific notation
+    r'|[-]?[0-9]+(?:_[0-9]+)+$'         # underscore separators
+    r'|[-]?[0-9]+$'                     # plain integers
+)
+
+
+def needs_quoting(s):
+    """
+    Return True if a string key must be quoted in dotted notation.
+    """
+    if not s:
+        return True
+    # Numeric forms (integers, scientific notation, underscore separators)
+    # are handled by the grammar and don't need quoting, even if they
+    # contain reserved characters like '+' in '1e+10'.
+    if s[0].isdigit() or (len(s) > 1 and s[0] == '-' and s[1].isdigit()):
+        return not _NUMERIC_RE.match(s)
+    return not _NEEDS_QUOTE.isdisjoint(s)
+
+
+def is_numeric_str(s):
+    """
+    Return True if s is a string that parses as an integer.
+    """
+    # int() cannot accept a string that starts with a letter; answering
+    # here avoids raising and catching for every ordinary key
+    if type(s) is str and s[:1].isalpha():
+        return False
+    try:
+        int(s)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
+def quote_str(s):
+    """
+    Wrap a string in single quotes, escaping backslashes and single quotes.
+    """
+    s = s.replace('\\', '\\\\').replace("'", "\\'")
+    return f"'{s}'"
 
 
 def first_equal(vals, value):

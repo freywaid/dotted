@@ -131,6 +131,9 @@ def parse(path, bindings=None, partial=True):
     return ops
 
 
+compile = parse
+
+
 def quote(key, as_key=True):
     """
     Quote a key for use in a dotted path.  Idempotent: quote(quote(x)) == quote(x).
@@ -522,12 +525,13 @@ def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=Non
     >>> setdefault({}, 'a.b.c', 7)
     7
     """
+    ops = parse(path, bindings=bindings, partial=False)
     if obj is AUTO:
-        obj = _auto_root_from_path(path)
-    if has(obj, path, strict=strict, bindings=bindings):
-        return  get(obj, path, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
-    obj = update(obj, path, val, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
-    return get(obj, path, apply_transforms=False, strict=strict, bindings=bindings)
+        obj = _auto_root_from_path(ops)
+    if has(obj, ops, strict=strict):
+        return get(obj, ops, apply_transforms=apply_transforms, strict=strict)
+    obj = update(obj, ops, val, apply_transforms=apply_transforms, strict=strict)
+    return get(obj, ops, apply_transforms=False, strict=strict)
 
 
 def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindings=None):
@@ -559,8 +563,10 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     >>> update_if({}, 'a', '', pred=bool)
     {}
     """
+    parsed = path
     if obj is AUTO:
-        obj = _auto_root_from_path(path)
+        parsed = parse(path)
+        obj = _auto_root_from_path(parsed)
     if not mutable and _is_mutable_container(obj):
         obj = utils.deepcopy(obj)
         mutable = True
@@ -568,7 +574,7 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     if pred is not None and not pred(val):
         return obj
 
-    ops = parse(path, bindings=bindings, partial=False)
+    ops = parse(parsed, bindings=bindings, partial=False)
     return engine.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
 
 
@@ -661,8 +667,10 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     >>> remove_if({'a': 1}, None)
     {'a': 1}
     """
+    parsed = path
     if obj is AUTO:
-        obj = _auto_root_from_path(path)
+        parsed = parse(path)
+        obj = _auto_root_from_path(parsed)
     if not mutable and _is_mutable_container(obj):
         obj = utils.deepcopy(obj)
         mutable = True
@@ -670,7 +678,7 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     if pred is not None and not pred(path):
         return obj
 
-    return engine.removes(parse(path, bindings=bindings, partial=False), obj, val, strict=strict)
+    return engine.removes(parse(parsed, bindings=bindings, partial=False), obj, val, strict=strict)
 
 
 def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not None, mutable=True, strict=False, bindings=None):
@@ -821,6 +829,13 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     '*b'
     >>> match('*', '**')
     """
+    return _match_parsed(parse(pattern), parse(path), path, groups, partial)
+
+
+def _match_parsed(pats, path_ops, path, groups, partial):
+    """
+    match() on parsed arguments. `path` is what a successful match returns.
+    """
     # groups can be a bool, a GroupMode member, or its string value.
     _patterns_only = (groups == GroupMode.patterns
                       or groups == GroupMode.patterns.value)
@@ -831,9 +846,6 @@ def match(pattern, path, groups=False, partial=True, strict=False):
         if _patterns_only and is_pat is not None:
             matches = [m for m, ip in zip(matches, is_pat) if ip]
         return (r, tuple(matches))
-
-    pats = parse(pattern)
-    path_ops = parse(path)
 
     # Variadic ops (recursive, groups) consume variable-length path
     # segments — use the recursive matcher.  On the path side they make
@@ -891,7 +903,14 @@ def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
     >>> list(match_multi('/h.*/', ['hello', 'there', 'hi']))
     ['hello', 'hi']
     """
-    matches = (match(pattern, p, groups=groups, partial=partial, strict=strict) for p in iterable)
+    def _matches():
+        pats = None
+        for p in iterable:
+            if pats is None:
+                pats = parse(pattern)
+            yield _match_parsed(pats, parse(p), p, groups, partial)
+
+    matches = _matches()
     if groups:
         return (m for m in matches if m[0])
     return (m for m in matches if m)
@@ -925,8 +944,12 @@ def translate(path, pattern_map):
     True
     """
     map_items = pattern_map.items() if hasattr(pattern_map, 'items') else pattern_map
+    path_ops = None
     for pattern, template in map_items:
-        (r, groups) = match(pattern, path, groups=GroupMode.patterns, partial=False)
+        pats = parse(pattern)
+        if path_ops is None:
+            path_ops = parse(path)
+        (r, groups) = _match_parsed(pats, path_ops, path, GroupMode.patterns, False)
         if not r:
             continue
         try:
@@ -1097,10 +1120,11 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None):
     >>> pluck(d, 'a.b')
     ('a.b', 'seven')
     """
-    out = tuple(pluck_multi(obj, (pattern,), default=default, strict=strict, bindings=bindings))
+    parsed = parse(pattern)
+    out = tuple(pluck_multi(obj, (parsed,), default=default, strict=strict, bindings=bindings))
     if not out:
         return ()
-    if is_pattern(pattern):
+    if is_pattern(parsed):
         return out
     return out[0]
 
@@ -1204,8 +1228,24 @@ def unpack(obj, attrs=None, project=None, partial=True):
     # Normalize each entry to (pattern, partial); bare patterns inherit the
     # global `partial`, (pattern, partial) tuples override it per-field.
     specs = [(p, partial) if isinstance(p, str) else tuple(p) for p in project]
-    return {k: v for k, v in result.items()
-            if any(match(pat, k, partial=pp) for pat, pp in specs)}
+    compiled = [None] * len(specs)
+
+    def selected(k):
+        """
+        True if leaf path k matches any projection. Each pattern is compiled
+        when first reached, and k once.
+        """
+        path_ops = None
+        for i, (pat, pp) in enumerate(specs):
+            if compiled[i] is None:
+                compiled[i] = parse(pat)
+            if path_ops is None:
+                path_ops = parse(k)
+            if _match_parsed(compiled[i], path_ops, k, False, pp):
+                return True
+        return False
+
+    return {k: v for k, v in result.items() if selected(k)}
 
 
 def items(obj, attrs=None, project=None, partial=True):

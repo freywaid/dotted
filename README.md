@@ -1410,6 +1410,13 @@ When `partial=True` (the default for `parse()`), unresolved substitutions are
 allowed through. When `partial=False` (the default for traversal APIs),
 unresolved templates raise `TypeError`.
 
+`compile()` is an alias for `parse()`. Every API that takes a path also takes
+the parsed result, so a path used many times can be compiled once:
+
+    >>> ops = dotted.compile('a.b')
+    >>> dotted.get({'a': {'b': 1}}, ops)
+    1
+
 <a id="references"></a>
 ### References
 

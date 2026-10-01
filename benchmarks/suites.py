@@ -39,8 +39,35 @@ add('pluck', 'users.*.score',
     lambda d: dotted.pluck(d, 'users.*.score'))
 add('expand', 'users.*.score',
     lambda d: dotted.expand(d, 'users.*.score'))
+# unpack grows with the square of the leaf count: the large size takes minutes
+add('unpack', 'whole document',
+    lambda d: dotted.unpack(d), sizes=SIZES[:1])
+add('unpack', 'project=users.*.address',
+    lambda d: dotted.unpack(d, project='users.*.address'), sizes=SIZES[:1])
+
+# -- paths only: these never touch the data, so one size is enough
+
+TRANSLATIONS = {
+    'rows[*].id': 'ids.$0',
+    'meta.*': 'info.$0',
+    'users.*.score': 'scores.$0',
+    'users.*.tags[*]': 'tags.$0.$1',
+    'users.*.address.city': 'cities.$0',
+    'users.*.address.geo.*': 'geo.$0.$1',
+}
+PATHS = [f'users.u{i}.address.geo.lat' for i in range(100)]
+
+add('translate', '6 patterns, last matches',
+    lambda d: dotted.translate('users.u5.address.geo.lat', TRANSLATIONS), sizes=SIZES[:1])
+add('match_multi', '1 pattern, 100 paths',
+    lambda d: list(dotted.match_multi('users.*.address.geo.*', PATHS)), sizes=SIZES[:1])
 
 # -- writes in place
+
+add('setdefault', 'users.u5.address.geo.lat, present',
+    lambda d: dotted.setdefault(d, 'users.u5.address.geo.lat', 0))
+add('setdefault', 'users.u5.address.geo.alt, absent',
+    lambda d: dotted.setdefault(d, 'users.u5.address.geo.alt', 0), fresh=True)
 
 add('update', 'users.u5.address.geo.lat',
     lambda d: dotted.update(d, 'users.u5.address.geo.lat', 0))

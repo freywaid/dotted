@@ -9,8 +9,9 @@ from collections import namedtuple
 import pyparsing as pp
 
 from . import base
+from . import utils
 from .base import MatchOp
-from .utils import first_equal, lazyprop
+from .utils import lazyprop
 from .utypes import ANY
 
 
@@ -44,7 +45,7 @@ class Const(MatchOp):
         except TypeError:
             # unhashable constant
             return self.matches(node.keys())
-        return first_equal(node.keys(), value)
+        return utils.first_equal(node.keys(), value)
 
 
 class Numeric(Const):
@@ -108,12 +109,11 @@ class Word(Const):
         """
         Return the dotted notation form of this word.
         """
-        from .access import _needs_quoting, _quote_str, _is_numeric_str
         v = self.value
-        if _is_numeric_str(v):
-            return _quote_str(v)
-        if _needs_quoting(v):
-            return _quote_str(v)
+        if utils.is_numeric_str(v):
+            return utils.quote_str(v)
+        if utils.needs_quoting(v):
+            return utils.quote_str(v)
         return v
 
 
@@ -125,8 +125,7 @@ class String(Const):
         """
         Return the dotted notation form of this quoted string.
         """
-        from .access import _quote_str
-        return _quote_str(self.value)
+        return utils.quote_str(self.value)
 
 
 class Bytes(Const):
