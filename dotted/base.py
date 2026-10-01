@@ -183,6 +183,15 @@ class TraversalOp(Op):
     Base class for ops that participate in stack-based traversal.
     Subclasses must implement push_children(stack, frame, paths).
     """
+    def update_items(self, node, **kwargs):
+        """
+        The items do_update should update in node, or None if this op finds
+        node empty.
+        """
+        if self.is_empty(node):
+            return None
+        return self.items(node, **kwargs)
+
     @property
     def most_inner(self):
         """

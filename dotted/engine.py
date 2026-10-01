@@ -9,6 +9,7 @@ from . import base
 from . import matchers
 from . import wrappers
 from .access import Attr, Slot
+from . import results
 from .results import Dotted
 
 
@@ -16,13 +17,11 @@ def _needs_parents(ops):
     """
     True if any op in the chain is a relative reference with depth >= 2
     (parent or higher), requiring _parents tracking during traversal.
+    A parsed path remembers the answer.
     """
-    for op in ops:
-        inner = op.most_inner
-        if (hasattr(inner, 'is_reference') and inner.is_reference()
-                and inner.op.depth >= 2):
-            return True
-    return False
+    if isinstance(ops, Dotted):
+        return ops.needs_parents
+    return results.needs_parents(ops)
 
 
 def build_default(ops):

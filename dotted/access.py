@@ -48,17 +48,20 @@ class BaseOp(base.TraversalOp):
             if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
                 return node
             return self.upsert(node, val)
-        if self.is_empty(node) and not has_defaults:
-            if nop or isinstance(ops[0], wrappers.NopWrap):
-                return node
-            built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, **kwargs)
-            return self.upsert(node, built)
+        items = self.update_items(node, **kwargs)
+        if items is None:
+            if not has_defaults:
+                if nop or isinstance(ops[0], wrappers.NopWrap):
+                    return node
+                built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, **kwargs)
+                return self.upsert(node, built)
+            items = self.items(node, **kwargs)
         inner_kwargs = kwargs
         if kwargs.get('_parents') is not None:
             inner_kwargs = dict(kwargs)
             inner_kwargs['_parents'] = (node,) + kwargs['_parents']
         pass_nop = nop and not nop_from_unwrap
-        for k, v in self.items(node, **kwargs):
+        for k, v in items:
             if v is None:
                 v = engine.build_default(ops)
             node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **inner_kwargs))
@@ -289,6 +292,21 @@ class AccessOp(SimpleOp):
 
     def is_empty(self, node):
         return not any(True for _ in self.keys(node))
+
+    def update_items(self, node, **kwargs):
+        """
+        One lookup, not two: is_empty() above asks whether items() yields
+        anything, so take the first item and keep the rest. Only when the
+        two would see the same items: is_empty() ignores strict, and a
+        subclass may define emptiness differently.
+        """
+        if kwargs.get('strict') or type(self).is_empty is not AccessOp.is_empty:
+            return super().update_items(node, **kwargs)
+        items = iter(self.items(node, **kwargs))
+        first = next(items, base.marker)
+        if first is base.marker:
+            return None
+        return itertools.chain((first,), items)
 
 
 class Key(AccessOp):

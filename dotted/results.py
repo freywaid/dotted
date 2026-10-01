@@ -124,6 +124,14 @@ class Dotted:
         return apply_transforms(val, self.transforms)
 
     @lazyprop
+    def needs_parents(self):
+        """
+        True if any op is a relative reference to a parent or higher, so a
+        traversal has to track parents. Computed once per parsed path.
+        """
+        return needs_parents(self.ops)
+
+    @lazyprop
     def simple_chain(self):
         """
         Tuple of (kind, key) pairs when the access chain is simple — a plain
@@ -147,6 +155,19 @@ class Dotted:
         return tuple(chain)
 
 Dotted.registry.__doc__ = rdoc()
+
+
+def needs_parents(ops):
+    """
+    True if any op in the chain is a relative reference with depth >= 2
+    (parent or higher), requiring _parents tracking during traversal.
+    """
+    for op in ops:
+        inner = op.most_inner
+        if (hasattr(inner, 'is_reference') and inner.is_reference()
+                and inner.op.depth >= 2):
+            return True
+    return False
 
 
 def apply_transforms(val, transforms):
