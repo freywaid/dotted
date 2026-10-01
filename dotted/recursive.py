@@ -1,6 +1,7 @@
 """
 """
 from . import base
+from . import engine
 from . import matchers
 from .access import BaseOp, Key, Attr
 
@@ -342,7 +343,6 @@ class Recursive(BaseOp):
         return node
 
     def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
-        from . import engine
         node_id = id(node)
         if node_id in seen:
             return node
@@ -372,7 +372,6 @@ class Recursive(BaseOp):
         return self._update_recursive(ops, node, val, has_defaults, _path, nop, **kwargs)
 
     def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
-        from . import engine
         node_id = id(node)
         if node_id in seen:
             return node

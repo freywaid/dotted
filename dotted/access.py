@@ -92,8 +92,6 @@ class BaseOp(base.TraversalOp):
         return (v for _, v in self.items(node, **kwargs))
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        from . import engine
-        from . import wrappers
         if not ops:
             if nop:
                 return node
@@ -117,7 +115,6 @@ class BaseOp(base.TraversalOp):
         return node
 
     def do_remove(self, ops, node, val, nop, **kwargs):
-        from . import engine
         if not ops:
             if nop:
                 return node
@@ -399,7 +396,7 @@ class Key(AccessOp):
                 for r in self._resolved(node=node, **kwargs))
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
-            keys = self.op.matches(node.keys()) if filtered else node.keys()
+            keys = self.op.match_keys(node) if filtered else node.keys()
             return self._items(node, keys, filtered)
         # In strict mode, numeric keys never coerce to list indices
         if kwargs.get('strict'):
@@ -433,7 +430,6 @@ class Key(AccessOp):
         return {self.op.value: None}
 
     def match(self, op, specials=False):
-        from . import wrappers
         if isinstance(op, wrappers.FilterWrap):
             op = op.inner
         if not isinstance(op, Key):
@@ -1092,10 +1088,14 @@ class Invert(SimpleOp):
         yield node
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        from . import engine
         return engine.removes(ops, node, val, **kwargs)
 
     def do_remove(self, ops, node, val, nop, **kwargs):
-        from . import engine
         assert val is not base.ANY, 'Value required'
         return engine.updates(ops, node, val, **kwargs)
+
+
+# engine and wrappers both import this module, so they can only be bound
+# once the classes above exist.
+from . import engine  # noqa: E402
+from . import wrappers  # noqa: E402

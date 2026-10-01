@@ -91,6 +91,11 @@ class Op:
         return self
     def scrub(self, node):
         return node
+    def match_keys(self, node):
+        """
+        Keys of dict-like `node` that this op matches.
+        """
+        return self.matches(node.keys())
     def is_recursive(self):
         return False
     def is_slice(self):
@@ -117,6 +122,9 @@ class NOP(metaclass=MetaNOP):
         return False
     @classmethod
     def matches(cls, vals):
+        return ()
+    @classmethod
+    def match_keys(cls, node):
         return ()
     def is_slice(self):
         return False

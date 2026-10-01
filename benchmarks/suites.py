@@ -44,6 +44,11 @@ add('expand', 'users.*.score',
 
 add('update', 'users.u5.address.geo.lat',
     lambda d: dotted.update(d, 'users.u5.address.geo.lat', 0))
+# a late key and an absent one: a concrete key's cost depends on where it sits
+add('update', 'users.u995.address.geo.lat',
+    lambda d: dotted.update(d, 'users.u995.address.geo.lat', 0), sizes=SIZES[1:])
+add('remove', 'users.absent.address.geo.lat',
+    lambda d: dotted.remove(d, 'users.absent.address.geo.lat'), sizes=SIZES[1:])
 add('update', 'users.*.score',
     lambda d: dotted.update(d, 'users.*.score', 0))
 add('update', 'rows[*].address.city',

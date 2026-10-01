@@ -10,7 +10,7 @@ import pyparsing as pp
 
 from . import base
 from .base import MatchOp
-from .utils import lazyprop
+from .utils import first_equal, lazyprop
 from .utypes import ANY
 
 
@@ -28,6 +28,23 @@ class Const(MatchOp):
         return self.args[0]
     def matches(self, vals):
         return (v for v in vals if self.value == v)
+    def match_keys(self, node):
+        """
+        Same keys as matches(node.keys()), but a node that can answer
+        membership is not scanned to the end: a constant that is absent
+        matches nothing, and one that is present matches one key, the
+        node's own.
+        """
+        if not hasattr(node, '__contains__'):
+            return self.matches(node.keys())
+        value = self.value
+        try:
+            if value not in node:
+                return iter(())
+        except TypeError:
+            # unhashable constant
+            return self.matches(node.keys())
+        return first_equal(node.keys(), value)
 
 
 class Numeric(Const):
@@ -143,6 +160,11 @@ class NoneValue(Const):
         return None
     def matches(self, vals):
         return (v for v in vals if v is None)
+    def match_keys(self, node):
+        """
+        Matches by identity, not equality, so always go through matches().
+        """
+        return self.matches(node.keys())
     def __repr__(self):
         return 'None'
 

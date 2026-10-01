@@ -53,6 +53,16 @@ def dataclass_replace(obj, **changes):
     return _dc.replace(obj, **changes)
 
 
+def first_equal(vals, value):
+    """
+    Yield the first of `vals` equal to `value`, if any.
+    """
+    for v in vals:
+        if value == v:
+            yield v
+            return
+
+
 def is_dict_like(node):
     """
     True if node is dict-like: has .keys() and __getitem__.
