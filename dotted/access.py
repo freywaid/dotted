@@ -317,6 +317,18 @@ class Key(AccessOp):
         return '.' + self.op.quote()
 
     def _items(self, node, keys, filtered=True):
+        if not filtered or not self.filters:
+            # nothing to filter: one generator, not two threaded through a filter
+            def _unfiltered():
+                for k in keys:
+                    try:
+                        v = node[k]
+                    except (TypeError, KeyError, IndexError):
+                        continue
+                    yield (k, v)
+
+            return _unfiltered()
+
         curkey = None
 
         def _values():
@@ -446,6 +458,18 @@ class Attr(Key):
         return '@' + self.op.quote()
 
     def _items(self, node, keys, filtered=True):
+        if not filtered or not self.filters:
+            # nothing to filter: one generator, not two threaded through a filter
+            def _unfiltered():
+                for k in keys:
+                    try:
+                        v = getattr(node, k)
+                    except AttributeError:
+                        continue
+                    yield (k, v)
+
+            return _unfiltered()
+
         curkey = None
 
         def _values():

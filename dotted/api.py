@@ -479,8 +479,8 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
             if apply_transforms and ops.transforms:
                 return ops.apply(val)
             return val
-    vals = engine.iter_until_cut(engine.gets(ops, obj, strict=strict))
-    if apply_transforms:
+    vals = engine.values(ops, obj, strict=strict)
+    if apply_transforms and ops.transforms:
         vals = ( ops.apply(v) for v in vals )
     if ops.guard is not None:
         vals = (v for v in vals if ops.guard_matches(v))
@@ -1072,7 +1072,7 @@ def apply_multi(obj, patterns, strict=False, bindings=None):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(engine.iter_until_cut(engine.gets(ops, obj, strict=strict)), _marker)
+            first = next(engine.values(ops, obj, strict=strict), _marker)
             if first is _marker:
                 continue
             val = ops.apply(first)

@@ -3,6 +3,7 @@
 from . import base
 from . import engine
 from . import matchers
+from . import utils
 from .access import BaseOp, Key, Attr
 
 
@@ -190,6 +191,14 @@ class Recursive(BaseOp):
         """
         if self.accessors is not None:
             return self.accessors
+        return self.default_branches
+
+    @utils.lazyprop
+    def default_branches(self):
+        """
+        The single dict-key branch used when no accessors are given; built
+        once, not for every node visited.
+        """
         return ((Key(self.inner),),)
 
     def _iter_node(self, node, **kwargs):
@@ -310,7 +319,7 @@ class Recursive(BaseOp):
 
         for acc, k, v in items:
             cp = prefix + (acc.concrete(k),) if paths else prefix
-            if not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,))):
                 yield from self._collect_matches(v, paths, depth + 1, cp, seen,
                                                  _below_match=_below_match, **kwargs)
                 continue
@@ -355,7 +364,7 @@ class Recursive(BaseOp):
             # Recurse first (bottom-up)
             v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, **kwargs)
             node = self._assign(acc, node, k, v)
-            if not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,))):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
@@ -385,7 +394,7 @@ class Recursive(BaseOp):
             # Recurse first (bottom-up)
             v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen, **kwargs)
             node = self._assign(acc, node, k, v)
-            if not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,))):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):

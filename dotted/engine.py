@@ -92,6 +92,17 @@ def simple_get(chain, node, strict=False):
     return node
 
 
+def values(ops, node, **kwargs):
+    """
+    Yield the value of every match, stopping at a cut. The same values as
+    iter_until_cut(gets(...)), through one generator.
+    """
+    for path, val in walk(ops, node, paths=False, **kwargs):
+        if path is base.CUT_SENTINEL:
+            return
+        yield val
+
+
 def iter_until_cut(gen):
     """
     Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.
