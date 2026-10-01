@@ -3,9 +3,73 @@
 import pyparsing as pp
 
 from . import base
+from . import matchers
 from . import wrappers
 from . import engine
-from .access import Key, Attr, Slot, SlotSpecial, Invert
+from .access import AccessOp, Key, Attr, Slot, SlotSpecial, Invert
+
+
+def leading_keys(path):
+    """
+    The keys of the plain constant accesses that path starts with, as a
+    hashable tuple. Stops at the first segment that is anything else.
+    """
+    keys = []
+    for op in path:
+        if not isinstance(op, AccessOp) or not isinstance(op.op, matchers.Const):
+            break
+        key = op.op.value
+        try:
+            hash(key)
+        except TypeError:
+            break
+        keys.append(key)
+    return tuple(keys)
+
+
+class SoftcutPaths:
+    """
+    The paths yielded by soft-cut branches, answering whether a later path
+    overlaps any of them (one is a prefix of the other).
+
+    Overlap is decided by base.path_overlaps. To avoid comparing against
+    every stored path, each path is indexed by its leading keys (see
+    leading_keys). Two paths can only overlap if, over the leading keys they
+    both have, the keys are equal. So a few lookups find the candidates and
+    path_overlaps confirms them.
+    """
+    def __init__(self):
+        self.count = 0
+        # leading keys -> paths with exactly those leading keys
+        self.by_keys = {}
+        # keys -> paths whose leading keys extend them
+        self.by_prefix = {}
+
+    def __len__(self):
+        return self.count
+
+    def add(self, path):
+        self.count += 1
+        keys = leading_keys(path)
+        self.by_keys.setdefault(keys, []).append(path)
+        for n in range(len(keys)):
+            self.by_prefix.setdefault(keys[:n], []).append(path)
+
+    def extend(self, paths):
+        for path in paths:
+            self.add(path)
+
+    def overlaps(self, path):
+        keys = leading_keys(path)
+        # stored paths with no more leading keys than this one
+        for n in range(len(keys) + 1):
+            found = self.by_keys.get(keys[:n])
+            if found and base.path_overlaps(found, path):
+                return True
+        # stored paths with more
+        found = self.by_prefix.get(keys)
+        return bool(found) and base.path_overlaps(found, path)
+
 
 class OpGroup(base.TraversalOp):
     """
@@ -297,7 +361,7 @@ class OpGroupOr(OpGroup):
         Handles cut, softcut, and path overlap filtering.
         """
         br = self.branches
-        softcut_paths = []
+        softcut_paths = SoftcutPaths()
         results = []
         for i in range(len(br)):
             item = br[i]
@@ -315,11 +379,11 @@ class OpGroupOr(OpGroup):
             for path, val in engine.process(stack, use_paths):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
+                if softcut_paths and path and softcut_paths.overlaps(path):
                     continue
                 found = True
                 if is_softcut and path:
-                    softcut_paths.append(path)
+                    softcut_paths.add(path)
                 results.append((path if paths else None, val))
             stack.pop_level()
             if not found:
@@ -332,7 +396,7 @@ class OpGroupOr(OpGroup):
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
         matched_any = False
         br = self.branches
-        softcut_paths = []
+        softcut_paths = SoftcutPaths()
         for i in range(len(br)):
             item = br[i]
             if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
@@ -345,7 +409,7 @@ class OpGroupOr(OpGroup):
             for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
+                if softcut_paths and path and softcut_paths.overlaps(path):
                     continue
                 paths.append(path)
             if not paths:
@@ -367,7 +431,7 @@ class OpGroupOr(OpGroup):
 
     def do_remove(self, ops, node, val, nop, **kwargs):
         br = self.branches
-        softcut_paths = []
+        softcut_paths = SoftcutPaths()
         for i in range(len(br)):
             item = br[i]
             if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
@@ -380,7 +444,7 @@ class OpGroupOr(OpGroup):
             for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
                 if path is base.CUT_SENTINEL:
                     break
-                if softcut_paths and path and base.path_overlaps(softcut_paths, path):
+                if softcut_paths and path and softcut_paths.overlaps(path):
                     continue
                 paths.append(path)
             if not paths:

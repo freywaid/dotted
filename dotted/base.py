@@ -279,12 +279,10 @@ class MatchOp(Op):
             return isinstance(op, type(self))
         accept = self._match_from
         if any(isinstance(t, str) for t in accept):
-            from . import matchers
             accept = resolve_types(vars(matchers), accept)
             type(self)._match_from = accept
         if any(isinstance(op, t) for t in accept):
-            from .matchers import Const
-            if isinstance(op, Const):
+            if isinstance(op, matchers.Const):
                 return True
             return specials
         return False
@@ -366,3 +364,8 @@ class Transform(Op):
         if all(np is op for np, op in zip(new_params, self.params)):
             return self
         return Transform(self.name, *new_params)
+
+
+# matchers imports this module, so it can only be bound once the classes
+# above exist.
+from . import matchers  # noqa: E402
