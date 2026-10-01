@@ -427,7 +427,9 @@ def build_multi(obj, paths, strict=False, bindings=None):
     for path in paths:
         ops = parse(path, bindings=bindings, partial=False)
         built = engine.build(ops, obj, strict=strict)
-        obj = update_multi(obj, _pluck_parsed(built, ops, strict=strict), strict=strict)
+        # walked paths are concrete: nothing for update() to resolve or check
+        for found, val in _pluck_parsed(built, ops, strict=strict):
+            obj = engine.updates(found, obj, found.apply(val), strict=strict)
     return obj
 
 
@@ -849,13 +851,14 @@ def _match_parsed(pats, path_ops, path, groups, partial):
     # Variadic ops (recursive, groups) consume variable-length path
     # segments — use the recursive matcher.  On the path side they make
     # the path denote multiple expansions, which likewise needs it.
-    if any(op.is_variadic() for op in pats) or any(op.is_variadic() for op in path_ops):
+    if pats.variadic or path_ops.variadic:
         result = base.match_ops(list(pats), list(path_ops), partial)
         if result is None:
             return returns(None, [])
         return returns(path, [v for v, _ in result], [p for _, p in result])
 
     # Original non-recursive match logic
+    collect = bool(groups)
     _matches = []
     _is_pat = []
     for idx,(pop,kop) in enumerate(zip(pats, path_ops)):
@@ -867,12 +870,17 @@ def _match_parsed(pats, path_ops, path, groups, partial):
         m = pop.match(kop, specials=True)
         if not m:
             return returns(None, [], [])
+        if not collect:
+            # captures are only returned with groups
+            continue
+        is_pat = pop.is_pattern()
         if isinstance(m, (tuple, list)):
-            _matches.extend(_m.val for _m in m)
-            _is_pat.extend(pop.is_pattern() for _ in m)
+            for _m in m:
+                _matches.append(_m.val)
+                _is_pat.append(is_pat)
         else:
             _matches.append(m.val)
-            _is_pat.append(pop.is_pattern())
+            _is_pat.append(is_pat)
 
     # we've completed matching but the last item in match groups is treated 'greedily'
     assert kop is not None          # sanity
@@ -886,6 +894,8 @@ def _match_parsed(pats, path_ops, path, groups, partial):
         return returns(None, [], [])
 
     # otherwise inexact (partial) match
+    if not collect:
+        return path
     # assemble remaining segments
     rpath = path_ops.assemble(start=idx)
     if pop is None:

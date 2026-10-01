@@ -124,6 +124,14 @@ class Dotted:
         return apply_transforms(val, self.transforms)
 
     @lazyprop
+    def variadic(self):
+        """
+        True if any op can consume a variable number of path segments when
+        matching (recursive ops, groups). Computed once per parsed path.
+        """
+        return any(op.is_variadic() for op in self.ops)
+
+    @lazyprop
     def needs_parents(self):
         """
         True if any op is a relative reference to a parent or higher, so a

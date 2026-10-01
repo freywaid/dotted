@@ -275,23 +275,43 @@ class Recursive(BaseOp):
             return eff_start <= depth <= stop
         return depth >= eff_start
 
-    def _max_depth_to_leaf(self, node, seen=frozenset(), **kwargs):
+    def _max_depth_to_leaf(self, node, seen=frozenset(), depths=None, **kwargs):
         """
         Compute max depth to leaf from this node (structural, ignores filters/depth range).
         Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
+
+        Pass a dict as `depths` to remember answers for the rest of a
+        traversal, so a node is not walked again for each of its ancestors.
+        """
+        return self._depth_to_leaf(node, seen, depths, kwargs)[0]
+
+    def _depth_to_leaf(self, node, seen, depths, kwargs):
+        """
+        (depth, whole) for _max_depth_to_leaf. `whole` is False when the walk
+        was cut short by `seen`: that answer depends on where the walk came
+        from, so it is not remembered. Remembered nodes are kept alive, so
+        an id cannot be reused by another object mid-traversal.
         """
         node_id = id(node)
         if node_id in seen:
-            return 0
+            return 0, False
+        if depths is not None:
+            known = depths.get(node_id)
+            if known is not None:
+                return known[0], True
         seen = seen | {node_id}
-        items = list(self._iter_node(node, **kwargs))
-        if not items:
-            return 0
-        child_depths = [self._max_depth_to_leaf(v, seen, **kwargs) for _, _, v in items]
-        return max(child_depths) + 1 if child_depths else 0
+        depth = 0
+        whole = True
+        for _, _, v in list(self._iter_node(node, **kwargs)):
+            child, child_whole = self._depth_to_leaf(v, seen, depths, kwargs)
+            depth = max(depth, child + 1)
+            whole = whole and child_whole
+        if whole and depths is not None:
+            depths[node_id] = (depth, node)
+        return depth, whole
 
     def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset(),
-                         _below_match=False, **kwargs):
+                         _below_match=False, _depths=None, **kwargs):
         """
         Yield (prefix, value, terminal) for all nodes matching the recursive
         pattern.
@@ -320,22 +340,23 @@ class Recursive(BaseOp):
             cp = prefix + (acc.concrete(k),) if paths else prefix
             if self.filters and not any(True for _ in self.filtered((v,))):
                 yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                                 _below_match=_below_match, **kwargs)
+                                                 _below_match=_below_match, _depths=_depths, **kwargs)
                 continue
-            max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), **kwargs) if self._has_negative_depth() else 0
+            max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), depths=_depths, **kwargs) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
                 if self._has_negative_depth() and max_dtl == 0 and not _below_match and depth > 0:
                     yield (cp, v, True)
                 else:
                     yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                                     _below_match=_below_match, **kwargs)
+                                                     _below_match=_below_match, _depths=_depths, **kwargs)
                 continue
             yield (cp, v, False)
             yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                             _below_match=True, **kwargs)
+                                             _below_match=True, _depths=_depths, **kwargs)
 
     def push_children(self, stack, frame, paths):
-        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})))
+        depths = {} if self._has_negative_depth() else None
+        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, _depths=depths, **(frame.kwargs or {})))
         for cp, v, terminal in reversed(matches):
             ops = () if terminal else frame.ops
             stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
