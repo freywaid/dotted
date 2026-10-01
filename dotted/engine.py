@@ -3,10 +3,10 @@ Traversal engine for dotted path operations.
 
 Core traversal functions (walk, gets, updates, removes, expands).
 """
+import copy
 
 from . import base
 from . import matchers
-from . import utils
 from . import wrappers
 from .access import Attr, Slot
 from .results import Dotted
@@ -42,7 +42,9 @@ def build(ops, node, deepcopy=True, **kwargs):
     built = node.__class__()
     for k,v in cur.items(node, **kwargs):
         if not ops:
-            built = cur.update(built, k, utils.deepcopy(v) if deepcopy else v)
+            # stdlib copy, not utils.deepcopy: copium gets slow at small
+            # copies like these after a large one (percolab/copium#54)
+            built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
         else:
             built = cur.update(built, k, build(ops, v, deepcopy=deepcopy, **kwargs))
     return built or build_default([cur]+ops)

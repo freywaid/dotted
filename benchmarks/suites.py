@@ -74,6 +74,8 @@ add('remove mutable=False', 'users.u5.address.geo.lat',
 add('remove mutable=False', 'users.*.score',
     lambda d: dotted.remove(d, 'users.*.score', mutable=False),
     copies=True)
+
+# -- build copies its leaves with the stdlib, whichever copier is installed
+
 add('build', 'users.*.address',
-    lambda d: dotted.build(d, 'users.*.address'),
-    copies=True)
+    lambda d: dotted.build(d, 'users.*.address'))
