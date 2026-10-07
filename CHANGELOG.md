@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.46.0]
 
 ### Added
 - The engine compiles to C. Wheels for CPython 3.11-3.14 on Linux
@@ -14,6 +14,10 @@ the ones listed are omitted — browse git history for earlier entries.
   `dotted.native.active()` says which is loaded. Wildcard reads are
   about 2.9x faster than 0.45.1 compiled and writes about 3.5x; pure
   Python is faster too, writes by about a third.
+- For development: `make test` and `make bench` run both engines,
+  `test.python`/`test.native` and `bench.python`/`bench.native` one;
+  `make test.wheel` runs the suite against a wheel built from the
+  source distribution.
 
 ### Changed
 - The `all` extra now means all of them: `formats` and `copium`. It was
