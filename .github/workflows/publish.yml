@@ -36,26 +36,62 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[formats,copium]"
+          pip install -e ".[all]"
           pip install pytest
       - name: Run tests
         if: steps.check.outputs.skip != 'true'
-        run: pytest
+        run: DOTTED_NATIVE=0 pytest
 
-  publish:
+  # The source distribution and the universal wheel: the pure-Python
+  # engine, for every Python the compiled wheels don't cover.
+  pure:
     needs: test
     runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build distributions
+      - name: Build sdist and pure wheel
         run: |
           python -m pip install --upgrade pip build
-          python -m build
+          python -m build --sdist
+          DOTTED_PURE=1 python -m build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-pure
+          path: dist/*
+
+  # Wheels with the compiled engine, one per Python version and platform
+  # (see [tool.cibuildwheel] in pyproject.toml). Each is tested on the
+  # Python it was built for.
+  wheels:
+    needs: test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v3.2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  publish:
+    needs: [pure, wheels]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: List distributions
+        run: ls -l dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,3 +1,4 @@
 include CHANGELOG.md
 recursive-include dotted *.pxd
+recursive-exclude dotted *.c *.so *.pyd
 prune tests

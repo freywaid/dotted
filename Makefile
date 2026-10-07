@@ -5,7 +5,7 @@ VENV_BIN := $(VENV)/bin
 # Extra args passed to pytest. e.g.:  make test PYTEST_ARGS=-x
 PYTEST_ARGS ?=
 
-.PHONY: install test test.python test.native test.integration bench bench.python bench.native native native.clean clean
+.PHONY: install test test.python test.native test.wheel test.integration bench bench.python bench.native native native.clean clean
 
 # Create the local venv and install dotted (with all optional extras),
 # pytest, and integration-test deps. Other targets depend on this.
@@ -15,7 +15,7 @@ $(VENV_BIN)/pytest: requirements-integration.txt pyproject.toml
 	test -d $(VENV) || $(PYTHON) -m venv $(VENV)
 	$(VENV_BIN)/pip install --upgrade pip
 	$(VENV_BIN)/pip install -e '.[formats,copium]'
-	$(VENV_BIN)/pip install pytest
+	$(VENV_BIN)/pip install pytest build
 	$(VENV_BIN)/pip install -r requirements-integration.txt
 	@touch $(VENV_BIN)/pytest
 
@@ -30,6 +30,18 @@ test.python: install
 # On the compiled engine, building it first.
 test.native: native
 	DOTTED_NATIVE=1 $(VENV_BIN)/pytest $(PYTEST_ARGS)
+
+# The suite against a wheel built the way pip builds one from the source
+# distribution, installed into a throwaway venv: what a user gets.
+# (--import-mode=importlib keeps pytest from importing this checkout.)
+test.wheel: install
+	rm -rf build/wheel && mkdir -p build/wheel
+	$(VENV_BIN)/python -m build --sdist --outdir build/wheel .
+	$(VENV_BIN)/pip wheel build/wheel/*.tar.gz --no-deps -w build/wheel -q
+	$(VENV_BIN)/python -m venv build/wheel/venv
+	build/wheel/venv/bin/pip install -q build/wheel/*.whl pytest PyYAML
+	cd build/wheel && venv/bin/python -c "import dotted; print('engine:', 'native' if dotted.native.active() else 'python', dotted.__file__)"
+	cd build/wheel && venv/bin/pytest $(CURDIR)/tests -q -p no:cacheprovider --import-mode=importlib $(PYTEST_ARGS)
 
 # Integration tests only (requires a live Postgres reachable via
 # DOTTED_TEST_DSN, defaults to postgres://postgres:postgres@localhost:5432/postgres).

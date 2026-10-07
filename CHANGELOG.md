@@ -5,6 +5,16 @@ the ones listed are omitted — browse git history for earlier entries.
 
 ## [Unreleased]
 
+### Added
+- The engine compiles to C. Wheels for CPython 3.11-3.14 on Linux
+  (glibc and musl, x86_64 and aarch64), macOS (x86_64 and arm64) and
+  Windows carry the compiled engine; every other Python installs the
+  same code as pure Python from the universal wheel. `DOTTED_NATIVE=0`
+  in the environment runs the Python engine regardless;
+  `dotted.native.active()` says which is loaded. Wildcard reads are
+  about 2.9x faster than 0.45.1 compiled and writes about 3.5x; pure
+  Python is faster too, writes by about a third.
+
 ### Changed
 - The `all` extra now means all of them: `formats` and `copium`. It was
   an alias for `formats`, deprecated since 0.44.9.
