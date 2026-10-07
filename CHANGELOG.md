@@ -3,6 +3,14 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.46.1]
+
+### Changed
+- Each compiled wheel is built and tested in its own CI job, so a
+  release takes minutes rather than the better part of an hour. The CLI
+  tests write their input files under pytest's `tmp_path`, which
+  Windows accepts.
+
 ## [0.46.0]
 
 ### Added
