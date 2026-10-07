@@ -23,7 +23,7 @@ jobs:
         run: DOTTED_NATIVE=0 pytest
       - name: Build the native engine
         run: |
-          pip install cython
+          pip install cython setuptools
           python setup.py build_ext --inplace
           python -c "import dotted; assert dotted.native.active(), 'the compiled engine did not load'"
       - name: Run tests on the native engine

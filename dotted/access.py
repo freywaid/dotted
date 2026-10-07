@@ -375,11 +375,27 @@ class Key(AccessOp):
             r.items(node, filtered=filtered, settings=settings)
             for r in self._resolved(node=node, settings=settings))
 
+    def _const_items(self, node):
+        """
+        The items of a constant key: what _items(node, match_keys(node))
+        yields, looked up now instead of through a generator, since there is
+        at most one.
+        """
+        pairs = []
+        for k in self.op.match_keys(node):
+            try:
+                pairs.append((k, node[k]))
+            except (TypeError, KeyError, IndexError):
+                continue
+        return iter(pairs)
+
     def items(self, node, settings=base.SETTINGS, filtered=True):
         if self.is_reference():
             return self._reference_items(node, filtered, settings)
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
+            if filtered and not self.filters and isinstance(self.op, matchers.Const):
+                return self._const_items(node)
             keys = self.op.match_keys(node) if filtered else node.keys()
             return self._items(node, keys, filtered)
         # In strict mode, numeric keys never coerce to list indices

@@ -3,6 +3,18 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Changed
+- A concrete key present in a node is no longer looked for among the
+  node's keys to return the node's own key object: it matches as
+  written. Concrete writes and `expand`, `pluck` and `unpack` on a
+  concrete key cost the same wherever the key sits in a large dict
+  (`update` of the 996th key of 1000: 11.5us to 3.3us compiled). The
+  one visible difference: a rendered path shows the key as written
+  where the node spells it differently but equal, `users.1` for a key
+  `1.0`, `RED` for a `StrEnum` member.
+
 ## [0.45.1]
 
 ### Changed

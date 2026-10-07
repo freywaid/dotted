@@ -1,5 +1,6 @@
 # Type declarations for the compiler; see base.pxd.
 from . cimport base
+from . cimport matchers
 
 
 cdef class BaseOp(base.TraversalOp):
@@ -26,6 +27,7 @@ cdef class AccessOp(SimpleOp):
 
 
 cdef class Key(AccessOp):
+    cpdef _const_items(self, node)
     cpdef operator(self, top=*)
     cpdef default(self)
     cpdef match(self, op, specials=*)

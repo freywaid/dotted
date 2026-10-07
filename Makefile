@@ -53,7 +53,7 @@ bench.native: native
 # engine module run this again, or `make native.clean` to go back to the
 # source.
 native: install
-	$(VENV_BIN)/pip install cython
+	$(VENV_BIN)/pip install cython setuptools
 	$(VENV_BIN)/python setup.py build_ext --inplace
 
 # Remove what `make native` built: dotted runs from the .py files again.

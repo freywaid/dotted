@@ -32,20 +32,21 @@ class Const(MatchOp):
     def match_keys(self, node):
         """
         Same keys as matches(node.keys()), but a node that can answer
-        membership is not scanned to the end: a constant that is absent
-        matches nothing, and one that is present matches one key, the
-        node's own.
+        membership is not scanned: a constant that is absent matches
+        nothing, and one that is present matches as itself. The node's own
+        key is equal to it, so it lands in the same slot; only a rendered
+        path can tell them apart (1 for a key spelled 1.0).
         """
         if not hasattr(node, '__contains__'):
             return self.matches(node.keys())
         value = self.value
         try:
             if value not in node:
-                return iter(())
+                return ()
         except TypeError:
             # unhashable constant
             return self.matches(node.keys())
-        return utils.first_equal(node.keys(), value)
+        return (value,)
 
 
 class Numeric(Const):
