@@ -1,13 +1,11 @@
 """
 """
-import pyparsing as pp
-
 from . import base
 from . import matchers
 from . import wrappers
 from . import engine
 from . import results
-from .access import AccessOp, Key, Attr, Slot, SlotSpecial, Invert
+from .access import AccessOp, Key, Attr, Slot
 
 
 def leading_keys(path):
@@ -373,7 +371,7 @@ class OpGroupOr(OpGroup):
             is_softcut = marker is base.BRANCH_SOFTCUT
             use_paths = paths or bool(softcut_paths) or is_softcut
             stack.push_level()
-            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
+            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
             found = False
             for path, val in engine.process(stack, use_paths):
                 if path is base.CUT_SENTINEL:
@@ -392,7 +390,7 @@ class OpGroupOr(OpGroup):
                 return results
         return results
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         matched_any = False
         br = self.branches
         softcut_paths = SoftcutPaths()
@@ -405,7 +403,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
+            for path, _ in engine.walk(branch_ops, node, paths=True, settings=settings):
                 if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and softcut_paths.overlaps(path):
@@ -419,16 +417,16 @@ class OpGroupOr(OpGroup):
             if softcut_paths:
                 branch_nop = nop or any(isinstance(op, wrappers.NopWrap) for op in item)
                 for path in paths:
-                    node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, **kwargs)
+                    node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, settings=settings)
             else:
-                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
             if marker is base.BRANCH_CUT:
                 return node
         if not matched_any:
-            return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
+            return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, settings=settings)
         return node
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         br = self.branches
         softcut_paths = SoftcutPaths()
         for i in range(len(br)):
@@ -440,7 +438,7 @@ class OpGroupOr(OpGroup):
                 continue
             marker = self._next_marker(i)
             paths = []
-            for path, _ in engine.walk(branch_ops, node, paths=True, **kwargs):
+            for path, _ in engine.walk(branch_ops, node, paths=True, settings=settings):
                 if path is base.CUT_SENTINEL:
                     break
                 if softcut_paths and path and softcut_paths.overlaps(path):
@@ -452,9 +450,9 @@ class OpGroupOr(OpGroup):
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
                 for path in paths:
-                    node = engine.removes(list(path), node, val, **kwargs)
+                    node = engine.removes(list(path), node, val, settings=settings)
             else:
-                node = engine.removes(branch_ops, node, val, **kwargs)
+                node = engine.removes(branch_ops, node, val, settings=settings)
             if marker is base.BRANCH_CUT:
                 return node
         return node
@@ -508,29 +506,29 @@ class OpGroupFirst(OpGroup):
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
+            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
             for pair in engine.process(stack, paths):
                 stack.pop_level()
                 return [pair]
             stack.pop_level()
         return ()
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         for branch in base.branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base.has_any(engine.gets(branch_ops, node, **kwargs)):
-                return engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
-        return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, **kwargs)
+            if base.has_any(engine.gets(branch_ops, node, settings=settings)):
+                return engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
+        return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         for branch in base.branches_only(self.branches):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base.has_any(engine.gets(branch_ops, node, **kwargs)):
-                return engine.removes(branch_ops, node, val, **kwargs)
+            if base.has_any(engine.gets(branch_ops, node, settings=settings)):
+                return engine.removes(branch_ops, node, val, settings=settings)
         return node
 
 
@@ -601,7 +599,7 @@ class OpGroupAnd(OpGroup):
             if not branch_ops:
                 continue
             stack.push_level()
-            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, kwargs=frame.kwargs))
+            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
             branch_results = list(engine.process(stack, paths))
             stack.pop_level()
             if not branch_results:
@@ -609,7 +607,7 @@ class OpGroupAnd(OpGroup):
             all_results.extend(branch_results)
         return all_results
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
@@ -619,20 +617,20 @@ class OpGroupAnd(OpGroup):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+                node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
         return node
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if not base.has_any(engine.gets(branch_ops, node, **kwargs)):
+            if not base.has_any(engine.gets(branch_ops, node, settings=settings)):
                 return node
         for branch in self.branches:
             branch_ops = list(branch) + list(ops)
             if branch_ops:
-                node = engine.removes(branch_ops, node, val, **kwargs)
+                node = engine.removes(branch_ops, node, val, settings=settings)
         return node
 
 
@@ -680,7 +678,7 @@ class OpGroupNot(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
-    def _not_items(self, node, **kwargs):
+    def _not_items(self, node, settings=base.SETTINGS):
         """
         Yield (key, value) pairs for keys NOT excluded by the inner pattern.
 
@@ -693,7 +691,7 @@ class OpGroupNot(OpGroup):
         first_op = inner[0]
         leaf = first_op.leaf_op()
         excluded = first_op.excluded_keys(node)
-        for k, v in leaf.items(node, filtered=False, **kwargs):
+        for k, v in leaf.items(node, filtered=False, settings=settings):
             if k not in excluded:
                 yield (k, v)
 
@@ -702,10 +700,10 @@ class OpGroupNot(OpGroup):
         if not inner:
             return ()
         leaf = inner[0].leaf_op()
-        children = list(self._not_items(frame.node, **(frame.kwargs or {})))
+        children = list(self._not_items(frame.node, settings=frame.settings))
         for k, v in reversed(children):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
         return ()
 
     def do_match(self, rest_pats, path_ops, partial):
@@ -760,29 +758,29 @@ class OpGroupNot(OpGroup):
         """
         return isinstance(matcher, matchers.Wildcard)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         inner = self.inner
         if not inner:
             return node
         leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
-        for k, v in self._not_items(node, **kwargs):
+        for k, v in self._not_items(node, settings=settings):
             if remaining_ops:
-                node = leaf.update(node, k, engine.updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, **kwargs))
+                node = leaf.update(node, k, engine.updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, settings=settings))
             else:
                 node = leaf.update(node, k, val)
         return node
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         inner = self.inner
         if not inner:
             return node
         leaf = inner[0].leaf_op()
         remaining_ops = list(inner[1:]) + list(ops)
-        items = list(self._not_items(node, **kwargs))
+        items = list(self._not_items(node, settings=settings))
         for k, v in reversed(items):
             if remaining_ops:
-                node = leaf.update(node, k, engine.removes(remaining_ops, v, val, **kwargs))
+                node = leaf.update(node, k, engine.removes(remaining_ops, v, val, settings=settings))
             else:
                 node = leaf.pop(node, k)
         return node
@@ -793,125 +791,6 @@ class OpGroupNot(OpGroup):
 # =============================================================================
 
 
-def _to_branch(item):
-    """
-    Convert a parse result item (op_seq Group or OpGroup) to a branch tuple.
-    """
-    if isinstance(item, OpGroup):
-        return (item,)
-    if isinstance(item, (list, tuple, pp.ParseResults)):
-        return tuple(item)
-    return (item,)
-
-
-def inner_not_action(t):
-    """
-    Parse action for unified negation: ! atom.
-    The atom is either an OpGroup (from grouped expression) or an op_seq.
-    OpGroupNot takes a single branch as its inner pattern.
-    """
-    item = t[0]
-    branch = _to_branch(item)
-    return OpGroupNot(branch)
-
-
-def inner_and_action(t):
-    """
-    Parse action for unified conjunction: atom & atom & ...
-    """
-    branches = [_to_branch(item) for item in t]
-    return OpGroupAnd(*branches)
-
-
-def inner_or_action(t):
-    """
-    Parse action for unified disjunction: term , term , ...
-    Each term is a Group containing [inner_and_result, optional_cut_marker].
-    If there's only one term with no cut marker, pass through without wrapping.
-    """
-    terms = list(t)
-    # Single term, no cut marker — pass through (don't wrap in OpGroupOr)
-    if len(terms) == 1 and len(terms[0]) == 1:
-        return terms[0][0]
-    out = []
-    for term in terms:
-        item = term[0]
-        out.append(_to_branch(item))
-        if len(term) >= 2:
-            if term[1] == '##':
-                out.append(base.BRANCH_SOFTCUT)
-            elif term[1] == '#':
-                out.append(base.BRANCH_CUT)
-    return OpGroupOr(*out)
-
-
-def inner_to_opgroup(parsed_result):
-    """
-    Parse action: convert (inner_expr) to OpGroup.
-    Unwraps single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot,
-    since the OpGroupOr wrapper is redundant in that case.
-    Does NOT unwrap OpGroupNot or OpGroupAnd — those carry semantic meaning.
-    """
-    items = list(parsed_result)
-    if not items:
-        return OpGroupOr()
-    # If there's a single OpGroup result, use it directly
-    if len(items) == 1 and isinstance(items[0], OpGroup):
-        inner = items[0]
-        # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
-        if isinstance(inner, OpGroupOr):
-            branches = list(base.branches_only(inner.branches))
-            if (len(branches) == 1 and isinstance(branches[0], tuple)
-                    and len(branches[0]) == 1
-                    and isinstance(branches[0][0], (OpGroupAnd, OpGroupNot))):
-                return branches[0][0]
-        return inner
-    # Multiple items or single non-OpGroup: treat as a single branch (op_seq)
-    # This handles cases like (name.first) where inner_expr flattens to [name, first]
-    branch = tuple(items)
-    return OpGroupOr(branch)
-
-
-def inner_to_opgroup_first(parsed_result):
-    """
-    Parse action: convert (inner_expr)? to OpGroupFirst.
-    """
-    return OpGroupFirst(*inner_to_opgroup(parsed_result).branches)
-
-
-def slot_to_opgroup(parsed_result):
-    """
-    Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
-    Each slot item becomes a branch; # inserts base.BRANCH_CUT after that branch.
-    Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
-    """
-    _slot_types = (Slot, SlotSpecial, wrappers.NopWrap, wrappers.FilterWrap)
-    out = []
-    for item in parsed_result:
-        if isinstance(item, _slot_types):
-            out.append((item,))
-            continue
-        if not (isinstance(item, (list, tuple, pp.ParseResults)) and len(item) >= 1):
-            continue
-        first = item[0]
-        while isinstance(first, (list, tuple, pp.ParseResults)) and len(first) == 1:
-            first = first[0]
-        if isinstance(first, _slot_types):
-            out.append((first,))
-            if len(item) >= 2 and item[1] == '##':
-                out.append(base.BRANCH_SOFTCUT)
-            elif len(item) >= 2 and item[1] == '#':
-                out.append(base.BRANCH_CUT)
-    return OpGroupOr(*out)
-
-
-def slot_to_opgroup_first(parsed_result):
-    """
-    Convert slot grouping [(*&filter, +)?] to OpGroupFirst.
-    """
-    return OpGroupFirst(*slot_to_opgroup(parsed_result).branches)
-
-
 def _attr_branch(branch):
     """
     Convert leading Key to Attr in a branch tuple.
@@ -920,21 +799,6 @@ def _attr_branch(branch):
     if isinstance(branch, tuple) and branch and type(branch[0]) is Key:
         return (Attr(*branch[0].args),) + branch[1:]
     return branch
-
-
-def as_attrs_opgroup(group):
-    """
-    Promote unresolved bare identifiers (parsed as Keys) to Attrs.
-    Used by @(group) syntax — the inner group grammar doesn't know the
-    access mode, so it produces Keys; this resolves them as Attrs.
-    """
-    if hasattr(group, 'as_attrs'):
-        return group.as_attrs()
-    # Single Key not wrapped in OpGroup (e.g. @(a) with single item)
-    if type(group) is Key:
-        return Attr(*group.args)
-    return group
-
 
 
 def _is_concrete_path(branch_ops):
@@ -967,7 +831,7 @@ def _can_update_conjunctive_branch(branch_ops, node):
     return True
 
 
-def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwargs):
+def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
     """
     When nothing matches in disjunction: update first concrete path (last to first).
     """
@@ -976,5 +840,5 @@ def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, **kwarg
         if not branch_ops:
             continue
         if _is_concrete_path(branch_ops):
-            return engine.updates(branch_ops, node, val, has_defaults, _path, nop, **kwargs)
+            return engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
     return node

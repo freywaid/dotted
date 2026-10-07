@@ -19,8 +19,6 @@ class Wrap(base.TraversalOp):
     Provides default delegation for all access-op methods.
     """
 
-    inner = None  # subclasses set in __init__
-
     @property
     def most_inner(self):
         """
@@ -52,11 +50,11 @@ class Wrap(base.TraversalOp):
     def upsert(self, node, val):
         return self.inner.upsert(node, val) if hasattr(self.inner, 'upsert') else val
 
-    def items(self, node, **kwargs):
-        return self.inner.items(node, **kwargs) if hasattr(self.inner, 'items') else iter(())
+    def items(self, node, settings=base.SETTINGS):
+        return self.inner.items(node, settings=settings) if hasattr(self.inner, 'items') else iter(())
 
-    def values(self, node, **kwargs):
-        return self.inner.values(node, **kwargs) if hasattr(self.inner, 'values') else iter(())
+    def values(self, node, settings=base.SETTINGS):
+        return self.inner.values(node, settings=settings) if hasattr(self.inner, 'values') else iter(())
 
     def is_empty(self, node):
         return self.inner.is_empty(node) if hasattr(self.inner, 'is_empty') else True
@@ -105,8 +103,8 @@ class Wrap(base.TraversalOp):
     def pop(self, node, key):
         return self.inner.pop(node, key)
 
-    def remove(self, node, val, **kwargs):
-        return self.inner.remove(node, val, **kwargs)
+    def remove(self, node, val, settings=base.SETTINGS):
+        return self.inner.remove(node, val, settings=settings)
 
     def push_children(self, stack, frame, paths):
         return self.inner.push_children(stack, frame, paths)
@@ -156,11 +154,11 @@ class NopWrap(Wrap):
             return self
         return NopWrap(new_inner)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, **kwargs)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        return self.inner.do_remove(ops, node, val, nop=True, **kwargs)
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        return self.inner.do_remove(ops, node, val, nop=True, settings=settings)
 
 
 def _guard_repr(guard):
@@ -266,14 +264,14 @@ class ValueGuard(Wrap):
     def is_empty(self, node):
         return self.inner.is_empty(node)
 
-    def values(self, node, **kwargs):
-        return (v for v in self.inner.values(node, **kwargs) if self._guard_matches(v))
+    def values(self, node, settings=base.SETTINGS):
+        return (v for v in self.inner.values(node, settings=settings) if self._guard_matches(v))
 
-    def items(self, node, **kwargs):
-        return ((k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
+    def items(self, node, settings=base.SETTINGS):
+        return ((k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v))
 
-    def keys(self, node, **kwargs):
-        return (k for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v))
+    def keys(self, node, settings=base.SETTINGS):
+        return (k for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v))
 
     def upsert(self, node, val):
         # Only update entries where guard matches
@@ -288,9 +286,9 @@ class ValueGuard(Wrap):
     def update(self, node, key, val):
         return self.inner.update(node, key, val)
 
-    def remove(self, node, val, **kwargs):
+    def remove(self, node, val, settings=base.SETTINGS):
         # Only remove entries where guard matches
-        to_remove = [(k, v) for k, v in self.inner.items(node, **kwargs) if self._guard_matches(v)]
+        to_remove = [(k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v)]
         for k, v in reversed(to_remove):
             if val is base.ANY or v == val:
                 node = self.inner.pop(node, k)
@@ -315,16 +313,16 @@ class ValueGuard(Wrap):
         Recursive: collect matches from inner, filter by guard, push survivors.
         """
         if not self.inner.is_recursive():
-            children = list(self.items(frame.node, **(frame.kwargs or {})))
+            children = list(self.items(frame.node, settings=frame.settings))
             for k, v in reversed(children):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+                stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
             return ()
         matches = [(cp, v, terminal) for cp, v, terminal in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})) if self._guard_matches(v)]
+            frame.node, paths, prefix=frame.prefix, settings=frame.settings) if self._guard_matches(v)]
         for cp, v, terminal in reversed(matches):
             ops = () if terminal else frame.ops
-            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(ops, v, cp, settings=frame.settings))
         return ()
 
     def resolve(self, bindings, partial=False):
@@ -340,17 +338,17 @@ class ValueGuard(Wrap):
             return self
         return ValueGuard(new_inner, new_guard, pred_op=self.pred_op, transforms=new_transforms)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
         if self.inner.is_recursive():
             return self.inner._update_recursive(
-                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches, **kwargs)
-        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)
+                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches, settings=settings)
+        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         if self.inner.is_recursive():
             return self.inner._remove_recursive(
-                ops, node, val, nop, guard=self._guard_matches, **kwargs)
-        return access.BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
+                ops, node, val, nop, guard=self._guard_matches, settings=settings)
+        return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)
 
 
 class TypeRestriction(Wrap):
@@ -410,20 +408,20 @@ class TypeRestriction(Wrap):
     def operator(self, top=False):
         return self.inner.operator(top) + self._type_suffix()
 
-    def items(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS):
         if not self.allows(node):
             return ()
-        return self.inner.items(node, **kwargs)
+        return self.inner.items(node, settings=settings)
 
-    def values(self, node, **kwargs):
+    def values(self, node, settings=base.SETTINGS):
         if not self.allows(node):
             return ()
-        return self.inner.values(node, **kwargs)
+        return self.inner.values(node, settings=settings)
 
-    def keys(self, node, **kwargs):
+    def keys(self, node, settings=base.SETTINGS):
         if not self.allows(node):
             return ()
-        return self.inner.keys(node, **kwargs)
+        return self.inner.keys(node, settings=settings)
 
     def push_children(self, stack, frame, paths):
         """
@@ -433,15 +431,15 @@ class TypeRestriction(Wrap):
             return ()
         return self.inner.push_children(stack, frame, paths)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
         if not self.allows(node):
             return node
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         if not self.allows(node):
             return node
-        return self.inner.do_remove(ops, node, val, nop, **kwargs)
+        return self.inner.do_remove(ops, node, val, nop, settings=settings)
 
 
 class FilterWrap(Wrap):
@@ -512,12 +510,12 @@ class FilterWrap(Wrap):
             return d
         return d
 
-    def items(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS):
         """
         Apply filters to the inner items stream, preserving stream
         semantics (e.g. first-match filters only yield the first hit).
         """
-        pairs = list(self.inner.items(node, **kwargs))
+        pairs = list(self.inner.items(node, settings=settings))
         for f in self.filters:
             vals = [v for _, v in pairs]
             filtered_vals = list(f.filtered(iter(vals)))
@@ -536,11 +534,11 @@ class FilterWrap(Wrap):
             pairs = new_pairs
         return iter(pairs)
 
-    def values(self, node, **kwargs):
-        return (v for _, v in self.items(node, **kwargs))
+    def values(self, node, settings=base.SETTINGS):
+        return (v for _, v in self.items(node, settings=settings))
 
-    def keys(self, node, **kwargs):
-        return (k for k, _ in self.items(node, **kwargs))
+    def keys(self, node, settings=base.SETTINGS):
+        return (k for k, _ in self.items(node, settings=settings))
 
     def is_empty(self, node):
         return not any(True for _ in self.items(node))
@@ -553,8 +551,8 @@ class FilterWrap(Wrap):
             node = self.inner.update(node, k, val)
         return node
 
-    def remove(self, node, val, **kwargs):
-        to_remove = list(self.items(node, **kwargs))
+    def remove(self, node, val, settings=base.SETTINGS):
+        to_remove = list(self.items(node, settings=settings))
         for k, v in reversed(to_remove):
             if val is base.ANY or v == val:
                 node = self.inner.pop(node, k)
@@ -564,10 +562,10 @@ class FilterWrap(Wrap):
         """
         Push only children that pass the filter.
         """
-        children = list(self.items(frame.node, **(frame.kwargs or {})))
+        children = list(self.items(frame.node, settings=frame.settings))
         for k, v in reversed(children):
             cp = frame.prefix + (self.inner.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
         return ()
 
     def resolve(self, bindings, partial=False):
@@ -583,11 +581,11 @@ class FilterWrap(Wrap):
             return self
         return FilterWrap(new_inner, new_filters)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
-        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
+        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        return access.BaseOp.do_remove(self, ops, node, val, nop, **kwargs)
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)
 
     def match(self, op, specials=False):
         """

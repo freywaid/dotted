@@ -4,6 +4,11 @@ __pycache__/
 *$py.class
 *.pyc
 
+# Compiled engine (make native)
+*.so
+*.pyd
+dotted/*.c
+
 # Distribution / packaging
 build/
 dist/

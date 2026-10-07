@@ -372,6 +372,7 @@ def mutable(obj, path, strict=False, bindings=None):
         return False
 
     # Walk the path - if we find any mutable container, mutation will occur
+    settings = base.Settings(obj, strict)
     current = obj
     for op in ops:
         if isinstance(op, access.Invert):
@@ -382,7 +383,7 @@ def mutable(obj, path, strict=False, bindings=None):
 
         # Traverse to next level (consume only first value)
         _marker = object()
-        first = next(op.values(current, strict=strict), _marker)
+        first = next(op.values(current, settings=settings), _marker)
         if first is _marker:
             # Path doesn't exist - would be created, but parent is immutable
             return False

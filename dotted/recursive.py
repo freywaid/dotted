@@ -200,7 +200,7 @@ class Recursive(BaseOp):
         """
         return ((Key(self.inner),),)
 
-    def _iter_node(self, node, **kwargs):
+    def _iter_node(self, node, settings=base.SETTINGS):
         """
         Yield (accessor, key, value) for all matching accessors on this node.
         Respects hard cuts: if a cut-marked branch matched, stop.
@@ -214,7 +214,7 @@ class Recursive(BaseOp):
                 continue
             acc = item[0]
             matched = False
-            for k, v in acc.items(node, **kwargs):
+            for k, v in acc.items(node, settings=settings):
                 matched = True
                 yield acc, k, v
             if matched and i + 1 < len(branches) and branches[i + 1] is base.BRANCH_CUT:
@@ -275,7 +275,7 @@ class Recursive(BaseOp):
             return eff_start <= depth <= stop
         return depth >= eff_start
 
-    def _max_depth_to_leaf(self, node, seen=frozenset(), depths=None, **kwargs):
+    def _max_depth_to_leaf(self, node, seen=frozenset(), depths=None, settings=base.SETTINGS):
         """
         Compute max depth to leaf from this node (structural, ignores filters/depth range).
         Uses seen (frozenset of ids) to prevent infinite recursion on self-similar values.
@@ -283,9 +283,9 @@ class Recursive(BaseOp):
         Pass a dict as `depths` to remember answers for the rest of a
         traversal, so a node is not walked again for each of its ancestors.
         """
-        return self._depth_to_leaf(node, seen, depths, kwargs)[0]
+        return self._depth_to_leaf(node, seen, depths, settings)[0]
 
-    def _depth_to_leaf(self, node, seen, depths, kwargs):
+    def _depth_to_leaf(self, node, seen, depths, settings):
         """
         (depth, whole) for _max_depth_to_leaf. `whole` is False when the walk
         was cut short by `seen`: that answer depends on where the walk came
@@ -302,8 +302,8 @@ class Recursive(BaseOp):
         seen = seen | {node_id}
         depth = 0
         whole = True
-        for _, _, v in list(self._iter_node(node, **kwargs)):
-            child, child_whole = self._depth_to_leaf(v, seen, depths, kwargs)
+        for _, _, v in list(self._iter_node(node, settings=settings)):
+            child, child_whole = self._depth_to_leaf(v, seen, depths, settings)
             depth = max(depth, child + 1)
             whole = whole and child_whole
         if whole and depths is not None:
@@ -311,7 +311,7 @@ class Recursive(BaseOp):
         return depth, whole
 
     def _collect_matches(self, node, paths, depth=0, prefix=(), seen=frozenset(),
-                         _below_match=False, _depths=None, **kwargs):
+                         _below_match=False, _depths=None, settings=base.SETTINGS):
         """
         Yield (prefix, value, terminal) for all nodes matching the recursive
         pattern.
@@ -332,7 +332,7 @@ class Recursive(BaseOp):
         if node_id in seen:
             return
         seen = seen | {node_id}
-        items = list(self._iter_node(node, **kwargs))
+        items = list(self._iter_node(node, settings=settings))
         if not items:
             return
 
@@ -340,26 +340,26 @@ class Recursive(BaseOp):
             cp = prefix + (acc.concrete(k),) if paths else prefix
             if self.filters and not any(True for _ in self.filtered((v,))):
                 yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                                 _below_match=_below_match, _depths=_depths, **kwargs)
+                                                 _below_match=_below_match, _depths=_depths, settings=settings)
                 continue
-            max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), depths=_depths, **kwargs) if self._has_negative_depth() else 0
+            max_dtl = self._max_depth_to_leaf(v, seen=frozenset(), depths=_depths, settings=settings) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
                 if self._has_negative_depth() and max_dtl == 0 and not _below_match and depth > 0:
                     yield (cp, v, True)
                 else:
                     yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                                     _below_match=_below_match, _depths=_depths, **kwargs)
+                                                     _below_match=_below_match, _depths=_depths, settings=settings)
                 continue
             yield (cp, v, False)
             yield from self._collect_matches(v, paths, depth + 1, cp, seen,
-                                             _below_match=True, _depths=_depths, **kwargs)
+                                             _below_match=True, _depths=_depths, settings=settings)
 
     def push_children(self, stack, frame, paths):
         depths = {} if self._has_negative_depth() else None
-        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, _depths=depths, **(frame.kwargs or {})))
+        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, _depths=depths, settings=frame.settings))
         for cp, v, terminal in reversed(matches):
             ops = () if terminal else frame.ops
-            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(ops, v, cp, settings=frame.settings))
         return ()
 
     def _assign(self, acc, node, k, v):
@@ -371,18 +371,18 @@ class Recursive(BaseOp):
         node[k] = v
         return node
 
-    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), settings=base.SETTINGS):
         node_id = id(node)
         if node_id in seen:
             return node
         seen = seen | {node_id}
-        items = list(self._iter_node(node, **kwargs))
+        items = list(self._iter_node(node, settings=settings))
         if not items:
             return node
 
         for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, **kwargs)
+            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, settings=settings)
             node = self._assign(acc, node, k, v)
             if self.filters and not any(True for _ in self.filtered((v,))):
                 continue
@@ -392,27 +392,27 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], nop, **kwargs))
+                node = self._assign(acc, node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], nop, settings=settings))
             elif not nop:
                 node = self._assign(acc, node, k, val)
         return node
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, **kwargs):
-        return self._update_recursive(ops, node, val, has_defaults, _path, nop, **kwargs)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings)
 
-    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), **kwargs):
+    def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), settings=base.SETTINGS):
         node_id = id(node)
         if node_id in seen:
             return node
         seen = seen | {node_id}
-        items = list(self._iter_node(node, **kwargs))
+        items = list(self._iter_node(node, settings=settings))
         if not items:
             return node
 
         to_remove = []
         for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen, **kwargs)
+            v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen, settings=settings)
             node = self._assign(acc, node, k, v)
             if self.filters and not any(True for _ in self.filtered((v,))):
                 continue
@@ -422,7 +422,7 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, engine.removes(ops, v, val, nop=False, **kwargs))
+                node = self._assign(acc, node, k, engine.removes(ops, v, val, nop=False, settings=settings))
             elif not nop and (val is base.ANY or v == val):
                 to_remove.append((acc, k))
         for acc, k in reversed(to_remove):
@@ -432,8 +432,8 @@ class Recursive(BaseOp):
                 del node[k]
         return node
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
-        return self._remove_recursive(ops, node, val, nop, **kwargs)
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        return self._remove_recursive(ops, node, val, nop, settings=settings)
 
 
 class RecursiveFirst(Recursive):
@@ -450,8 +450,8 @@ class RecursiveFirst(Recursive):
         return s + '?'
 
     def push_children(self, stack, frame, paths):
-        for cp, v, terminal in self._collect_matches(frame.node, paths, prefix=frame.prefix, **(frame.kwargs or {})):
+        for cp, v, terminal in self._collect_matches(frame.node, paths, prefix=frame.prefix, settings=frame.settings):
             ops = () if terminal else frame.ops
-            stack.push(base.Frame(ops, v, cp, kwargs=frame.kwargs))
+            stack.push(base.Frame(ops, v, cp, settings=frame.settings))
             return ()
         return ()

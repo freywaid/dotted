@@ -69,6 +69,25 @@ class MatchResult:
         return True
 
 
+# Each MatchOp class's _match_from with its forward references resolved,
+# kept here because a compiled class cannot be given a new attribute.
+_MATCH_FROM = {}
+
+
+def match_from(cls):
+    """
+    The types cls accepts as match targets; its _match_from, resolved once.
+    """
+    accept = _MATCH_FROM.get(cls)
+    if accept is not None:
+        return accept
+    accept = cls._match_from
+    if any(isinstance(t, str) for t in accept):
+        accept = resolve_types(vars(matchers), accept)
+    _MATCH_FROM[cls] = accept
+    return accept
+
+
 class Op:
     def __init__(self, *args, **kwargs):
         if len(args) == 3 and isinstance(args[2], pp.ParseResults):
@@ -130,19 +149,47 @@ class NOP(metaclass=MetaNOP):
         return False
 
 
+class Settings:
+    """
+    What holds for the whole of one traversal: the root node, the chain of
+    parents when a reference needs it, and strict. Made once by the engine
+    and passed down every call; see SETTINGS for calls made without one.
+    """
+    __slots__ = ('root', 'parents', 'strict')
+
+    def __init__(self, root, strict=False, parents=None):
+        self.root = root
+        self.parents = parents
+        self.strict = strict
+
+    def below(self, node):
+        """
+        The settings one level down: the same, with node added to the
+        parents when they are being tracked.
+        """
+        if self.parents is None:
+            return self
+        return Settings(self.root, self.strict, (node,) + self.parents)
+
+
+# For a traversal method called on its own, outside any traversal: no root,
+# not strict, parents not tracked.
+SETTINGS = Settings(None)
+
+
 class Frame:
     """
     Stack frame for the traversal engine.
     """
-    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'kwargs')
+    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'settings')
 
-    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, kwargs=None):
+    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, settings=SETTINGS):
         self.ops = ops
         self.node = node
         self.prefix = prefix
         self.depth = depth
         self.seen_paths = seen_paths
-        self.kwargs = kwargs
+        self.settings = settings
 
 
 class DepthStack:
@@ -183,14 +230,21 @@ class TraversalOp(Op):
     Base class for ops that participate in stack-based traversal.
     Subclasses must implement push_children(stack, frame, paths).
     """
-    def update_items(self, node, **kwargs):
+    def push_children(self, stack, frame, paths):
+        """
+        Push a frame for each match of this op in frame.node onto stack,
+        and return this op's own results, if any.
+        """
+        raise NotImplementedError
+
+    def update_items(self, node, settings=SETTINGS):
         """
         The items do_update should update in node, or None if this op finds
         node empty.
         """
         if self.is_empty(node):
             return None
-        return self.items(node, **kwargs)
+        return self.items(node, settings=settings)
 
     @property
     def most_inner(self):
@@ -286,10 +340,7 @@ class MatchOp(Op):
         """
         if self._match_from is None:
             return isinstance(op, type(self))
-        accept = self._match_from
-        if any(isinstance(t, str) for t in accept):
-            accept = resolve_types(vars(matchers), accept)
-            type(self)._match_from = accept
+        accept = match_from(type(self))
         if any(isinstance(op, t) for t in accept):
             if isinstance(op, matchers.Const):
                 return True

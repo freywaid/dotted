@@ -20,4 +20,11 @@ jobs:
           pip install -e ".[formats,copium]"
           pip install pytest
       - name: Run tests
+        run: DOTTED_NATIVE=0 pytest
+      - name: Build the native engine
+        run: |
+          pip install cython
+          python setup.py build_ext --inplace
+          python -c "import dotted; assert dotted.native.active(), 'the compiled engine did not load'"
+      - name: Run tests on the native engine
         run: pytest

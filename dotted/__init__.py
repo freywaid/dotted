@@ -55,6 +55,12 @@ For full documentation including all options and flags:
     $ pydoc dotted.api
     or see README.md
 """
+from . import native
+
+# before anything else of dotted's is imported: see dotted.native
+if not native.wanted():
+    native.use_source()
+
 from .api import \
     parse, compile, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
     is_inverted, is_mutable, mutable, quote, ANY, AUTO, Attrs, GroupMode, \

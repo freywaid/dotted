@@ -36,16 +36,18 @@ def build_default(ops):
     return cur.upsert(built, build_default(ops))
 
 
-def build(ops, node, deepcopy=True, **kwargs):
+def build(ops, node, deepcopy=True, strict=False, settings=None):
+    if settings is None:
+        settings = base.Settings(None, strict)
     cur, *ops = ops
     built = node.__class__()
-    for k,v in cur.items(node, **kwargs):
+    for k,v in cur.items(node, settings=settings):
         if not ops:
             # stdlib copy, not utils.deepcopy: copium gets slow at small
             # copies like these after a large one (percolab/copium#54)
             built = cur.update(built, k, copy.deepcopy(v) if deepcopy else v)
         else:
-            built = cur.update(built, k, build(ops, v, deepcopy=deepcopy, **kwargs))
+            built = cur.update(built, k, build(ops, v, deepcopy, strict, settings))
     return built or build_default([cur]+ops)
 
 
@@ -91,12 +93,12 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, **kwargs):
+def values(ops, node, strict=False, settings=None):
     """
     Yield the value of every match, stopping at a cut. The same values as
     iter_until_cut(gets(...)), through one generator.
     """
-    for path, val in walk(ops, node, paths=False, **kwargs):
+    for path, val in walk(ops, node, False, strict, settings):
         if path is base.CUT_SENTINEL:
             return
         yield val
@@ -123,29 +125,45 @@ def process(stack, paths):
         if not frame.ops:
             yield (frame.prefix if paths else None, frame.node)
             continue
-        op = frame.ops[0]
-        frame.ops = frame.ops[1:]
-        yield from op.push_children(stack, frame, paths)
+        yield from advance(frame, stack, paths)
 
 
-def walk(ops, node, paths=True, **kwargs):
+def advance(frame, stack, paths):
+    """
+    Take the first op off frame and have it push the frames for its
+    matches; the op's own results, if any.
+    """
+    op = frame.ops[0]
+    frame.ops = frame.ops[1:]
+    return op.push_children(stack, frame, paths)
+
+
+def settings_for(ops, node, strict, settings):
+    """
+    The Settings a traversal of `ops` from `node` runs under: the ones
+    passed in when this is a traversal within another, else new ones.
+    """
+    if settings is not None:
+        return settings
+    return base.Settings(node, strict, () if _needs_parents(ops) else None)
+
+
+def walk(ops, node, paths=True, strict=False, settings=None):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     """
-    kwargs.setdefault('_root', node)
-    if '_parents' not in kwargs:
-        kwargs['_parents'] = () if _needs_parents(ops) else None
+    settings = settings_for(ops, node, strict, settings)
     stack = base.DepthStack()
-    stack.push(base.Frame(tuple(ops), node, (), kwargs=kwargs or None))
+    stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
 
 
-def gets(ops, node, **kwargs):
+def gets(ops, node, strict=False, settings=None):
     """
     Yield values for all matches. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, paths=False, **kwargs):
+    for path, val in walk(ops, node, False, strict, settings):
         if path is base.CUT_SENTINEL:
             yield base.CUT_SENTINEL
         else:
@@ -186,10 +204,8 @@ def _format_path(segments):
     return ''.join(result)
 
 
-def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs):
-    kwargs.setdefault('_root', node)
-    if '_parents' not in kwargs:
-        kwargs['_parents'] = () if _needs_parents(ops) else None
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=False, settings=None):
+    settings = settings_for(ops, node, strict, settings)
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -200,22 +216,20 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False, **kwargs)
             "use a dict, list, or other container"
         )
     cur, *ops = ops
-    return cur.do_update(ops, node, val, has_defaults, _path, nop, **kwargs)
+    return cur.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
 
 
-def removes(ops, node, val=base.ANY, nop=False, **kwargs):
-    kwargs.setdefault('_root', node)
-    if '_parents' not in kwargs:
-        kwargs['_parents'] = () if _needs_parents(ops) else None
+def removes(ops, node, val=base.ANY, nop=False, strict=False, settings=None):
+    settings = settings_for(ops, node, strict, settings)
     cur, *ops = ops
-    return cur.do_remove(ops, node, val, nop, **kwargs)
+    return cur.do_remove(ops, node, val, nop, settings=settings)
 
 
-def expands(ops, node, **kwargs):
+def expands(ops, node, strict=False, settings=None):
     """
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, paths=True, **kwargs):
+    for path, val in walk(ops, node, True, strict, settings):
         if path is base.CUT_SENTINEL:
             return
         yield Dotted({'ops': path, 'transforms': ops.transforms})

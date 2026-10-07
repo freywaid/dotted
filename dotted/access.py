@@ -35,51 +35,45 @@ class BaseOp(base.TraversalOp):
             items = f.filtered(items)
         return items
 
-    def keys(self, node, **kwargs):
-        return (k for k, _ in self.items(node, **kwargs))
+    def keys(self, node, settings=base.SETTINGS):
+        return (k for k, _ in self.items(node, settings=settings))
 
-    def values(self, node, **kwargs):
-        return (v for _, v in self.items(node, **kwargs))
+    def values(self, node, settings=base.SETTINGS):
+        return (v for _, v in self.items(node, settings=settings))
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         if not ops:
             if nop:
                 return node
-            if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
+            if settings.strict and not any(True for _ in self.items(node, settings=settings)):
                 return node
             return self.upsert(node, val)
-        items = self.update_items(node, **kwargs)
+        items = self.update_items(node, settings=settings)
         if items is None:
             if not has_defaults:
                 if nop or isinstance(ops[0], wrappers.NopWrap):
                     return node
-                built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, **kwargs)
+                built = engine.updates(ops, engine.build_default(ops), val, True, _path, nop, settings=settings)
                 return self.upsert(node, built)
-            items = self.items(node, **kwargs)
-        inner_kwargs = kwargs
-        if kwargs.get('_parents') is not None:
-            inner_kwargs = dict(kwargs)
-            inner_kwargs['_parents'] = (node,) + kwargs['_parents']
+            items = self.items(node, settings=settings)
+        inner = settings.below(node)
         pass_nop = nop and not nop_from_unwrap
         for k, v in items:
             if v is None:
                 v = engine.build_default(ops)
-            node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, **inner_kwargs))
+            node = self.update(node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, settings=inner))
         return node
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         if not ops:
             if nop:
                 return node
-            if kwargs.get('strict') and not any(True for _ in self.items(node, **kwargs)):
+            if settings.strict and not any(True for _ in self.items(node, settings=settings)):
                 return node
             return self.remove(node, val)
-        inner_kwargs = kwargs
-        if kwargs.get('_parents') is not None:
-            inner_kwargs = dict(kwargs)
-            inner_kwargs['_parents'] = (node,) + kwargs['_parents']
-        for k, v in self.items(node, **kwargs):
-            node = self.update(node, k, engine.removes(ops, v, val, nop=False, **inner_kwargs))
+        inner = settings.below(node)
+        for k, v in self.items(node, settings=settings):
+            node = self.update(node, k, engine.removes(ops, v, val, nop=False, settings=inner))
         return node
 
 
@@ -89,6 +83,12 @@ class SimpleOp(BaseOp):
     Base for ops with items()/concrete() that share the standard walk pattern.
     """
 
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        """
+        (key, value) for each match of this op in node.
+        """
+        raise NotImplementedError
+
     def push_children(self, stack, frame, paths):
         """
         Push matching children onto the traversal stack.
@@ -97,18 +97,13 @@ class SimpleOp(BaseOp):
         NOTE: We tried skipping list()+reversed() for concrete (non-pattern)
         keys since they match at most one item.  Benchmarked as neutral —
         the is_pattern() check costs roughly what the single-item reversal
-        saves.  We also tried removing the ``or {}`` guard on kwargs
-        (always passing a dict instead of None).  Also neutral.  Keeping
-        the simple uniform path for clarity.
+        saves.  Keeping the simple uniform path for clarity.
         """
-        children = list(self.items(frame.node, **(frame.kwargs or {})))
-        kw = frame.kwargs
-        if kw and kw.get('_parents') is not None:
-            kw = dict(kw)
-            kw['_parents'] = (frame.node,) + kw['_parents']
+        children = list(self.items(frame.node, settings=frame.settings))
+        below = frame.settings.below(frame.node)
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, kwargs=kw))
+            stack.push(base.Frame(frame.ops, v, cp, settings=below))
         return ()
 
 
@@ -143,20 +138,24 @@ class Empty(SimpleOp):
     def operator(self, top=False):
         return self.__repr__()
 
-    def items(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
         """
-        Yield the root as a single item with empty key.
+        The root as a single item with empty key.
         """
+        return self._root_items(node)
+
+    def _root_items(self, node):
         for v in self.filtered((node,)):
             yield ('', v)
 
-    def keys(self, node, **kwargs):
+    def keys(self, node, settings=base.SETTINGS):
         """
         Yield empty string as the 'key' for root.
         """
-        return (k for k, _ in self.items(node, **kwargs))
+        items = self.items(node, settings=settings)
+        return (k for k, _ in items)
 
-    def values(self, node, **kwargs):
+    def values(self, node, settings=base.SETTINGS):
         return self.filtered((node,))
 
     def default(self):
@@ -254,14 +253,14 @@ class AccessOp(SimpleOp):
             return self
         return self.__class__(new_op)
 
-    def _resolved(self, node=None, **kwargs):
+    def _resolved(self, node=None, settings=base.SETTINGS):
         """
         Resolve a Reference against the appropriate target.  Returns a
         tuple of concrete ops (empty if the reference path is not found).
         Callers must guard with is_reference() before calling.
         """
-        root = (kwargs or {}).get('_root')
-        parents = (kwargs or {}).get('_parents', ())
+        root = settings.root
+        parents = settings.parents or ()
         try:
             val = self.op.resolve_ref(root, node=node, parents=parents)
         except KeyError:
@@ -270,39 +269,40 @@ class AccessOp(SimpleOp):
             return tuple(self.__class__(matchers.Const(v)) for v in val)
         return (self.__class__(matchers.Const(val)),)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         """
         Resolve references before updating.
         """
         if self.is_reference():
-            for r in self._resolved(node=node, **kwargs):
-                node = r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
+            for r in self._resolved(node=node, settings=settings):
+                node = r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
             return node
-        return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, **kwargs)
+        return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         """
         Resolve references before removing.
         """
         if self.is_reference():
-            for r in self._resolved(node=node, **kwargs):
-                node = r.do_remove(ops, node, val, nop, **kwargs)
+            for r in self._resolved(node=node, settings=settings):
+                node = r.do_remove(ops, node, val, nop, settings=settings)
             return node
-        return super().do_remove(ops, node, val, nop, **kwargs)
+        return super().do_remove(ops, node, val, nop, settings=settings)
 
     def is_empty(self, node):
         return not any(True for _ in self.keys(node))
 
-    def update_items(self, node, **kwargs):
+    def update_items(self, node, settings=base.SETTINGS):
         """
         One lookup, not two: is_empty() above asks whether items() yields
         anything, so take the first item and keep the rest. Only when the
         two would see the same items: is_empty() ignores strict, and a
         subclass may define emptiness differently.
         """
-        if kwargs.get('strict') or type(self).is_empty is not AccessOp.is_empty:
-            return super().update_items(node, **kwargs)
-        items = iter(self.items(node, **kwargs))
+        if settings.strict or type(self).is_empty is not AccessOp.is_empty:
+            # explicit super: the compiler gives a cpdef method no __class__ cell
+            return super(AccessOp, self).update_items(node, settings=settings)
+        items = iter(self.items(node, settings=settings))
         first = next(items, base.marker)
         if first is base.marker:
             return None
@@ -367,17 +367,23 @@ class Key(AccessOp):
 
         return _items()
 
-    def items(self, node, filtered=True, **kwargs):
+    def _reference_items(self, node, filtered, settings):
+        """
+        The items of each op this reference resolves to, chained.
+        """
+        return itertools.chain.from_iterable(
+            r.items(node, filtered=filtered, settings=settings)
+            for r in self._resolved(node=node, settings=settings))
+
+    def items(self, node, settings=base.SETTINGS, filtered=True):
         if self.is_reference():
-            return itertools.chain.from_iterable(
-                r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(node=node, **kwargs))
+            return self._reference_items(node, filtered, settings)
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
             keys = self.op.match_keys(node) if filtered else node.keys()
             return self._items(node, keys, filtered)
         # In strict mode, numeric keys never coerce to list indices
-        if kwargs.get('strict'):
+        if settings.strict:
             return ()
         # Key only handles lists with concrete numeric keys
         if not hasattr(node, '__getitem__'):
@@ -415,7 +421,8 @@ class Key(AccessOp):
         if not self.op.matchable(op.op, specials):
             return None
 
-        results = super().match(op)
+        # explicit super: the compiler gives a cpdef method no __class__ cell
+        results = super(Key, self).match(op)
         if results is None:
             return None
 
@@ -460,8 +467,8 @@ class Key(AccessOp):
         except TypeError:
             pass
         return type(node)((k, v) for k, v in node.items() if k != key)
-    def remove(self, node, val, **kwargs):
-        to_remove = [k for k, v in self.items(node, **kwargs) if val is base.ANY or v == val]
+    def remove(self, node, val, settings=base.SETTINGS):
+        to_remove = [k for k, v in self.items(node, settings=settings) if val is base.ANY or v == val]
         for k in to_remove:
             node = self.pop(node, k)
         return node
@@ -556,11 +563,9 @@ class Attr(Key):
             return
         yield (key, v)
 
-    def items(self, node, filtered=True, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
         if self.is_reference():
-            return itertools.chain.from_iterable(
-                r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(node=node, **kwargs))
+            return self._reference_items(node, filtered, settings)
         all_keys = self._all_keys(node)
         keys = self.op.matches(all_keys) if filtered else all_keys
         result = self._items(node, keys, filtered)
@@ -618,8 +623,8 @@ class Attr(Key):
             pass
         return node
 
-    def remove(self, node, val, **kwargs):
-        to_remove = [k for k, v in self.items(node, **kwargs) if val is base.ANY or v == val]
+    def remove(self, node, val, settings=base.SETTINGS):
+        to_remove = [k for k, v in self.items(node, settings=settings) if val is base.ANY or v == val]
         for k in to_remove:
             self.pop(node, k)
         return node
@@ -645,15 +650,14 @@ class Slot(Key):
             return '[]'
         return '[' + self.op.quote() + ']'
 
-    def items(self, node, filtered=True, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
         if self.is_reference():
-            return itertools.chain.from_iterable(
-                r.items(node, filtered=filtered, **kwargs)
-                for r in self._resolved(node=node, **kwargs))
+            return self._reference_items(node, filtered, settings)
         if hasattr(node, 'keys'):
-            if kwargs.get('strict'):
+            if settings.strict:
                 return ()
-            return super().items(node, filtered, **kwargs)
+            # explicit super: the compiler gives a cpdef method no __class__ cell
+            return super(Slot, self).items(node, filtered=filtered, settings=settings)
 
         if not hasattr(node, '__getitem__'):
             return ()
@@ -661,7 +665,7 @@ class Slot(Key):
         if not filtered:
             keys = range(len(node))
         elif self.is_pattern():
-            keys = self.op.matches(idx for idx, _ in enumerate(node))
+            keys = self.op.matches(utils.indices(node))
         else:
             keys = (self.op.value,)
 
@@ -670,7 +674,8 @@ class Slot(Key):
     def default(self):
         if isinstance(self.op, matchers.Numeric) and self.op.is_int():
             return []
-        return super().default()
+        # explicit super: the compiler gives a cpdef method no __class__ cell
+        return super(Slot, self).default()
 
     def update(self, node, key, val):
         if hasattr(node, 'keys'):
@@ -777,7 +782,10 @@ class SlotSpecial(Slot):
     def default(self):
         return []
 
-    def items(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        return self._last_item(node)
+
+    def _last_item(self, node):
         try:
             yield -1, node[-1]
         except (TypeError, IndexError):
@@ -869,7 +877,7 @@ class SliceFilter(BaseOp):
             return None
         return super().match(op)
 
-    def items(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS):
         for idx, v in enumerate(node):
             if any(True for _ in self.filtered((v,))):
                 yield (idx, v)
@@ -880,8 +888,8 @@ class SliceFilter(BaseOp):
     def update(self, node, key, val):
         raise RuntimeError('Updates not supported for slice filtering')
 
-    def remove(self, node, val, **kwargs):
-        removes = [idx for idx, _ in self.items(node, **kwargs)]
+    def remove(self, node, val, settings=base.SETTINGS):
+        removes = [idx for idx, _ in self.items(node, settings=settings)]
 
         if not removes:
             return node
@@ -918,7 +926,7 @@ class SliceFilter(BaseOp):
         """
         filtered = type(frame.node)(self.filtered(frame.node))
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
-        stack.push(base.Frame(frame.ops, filtered, cp, kwargs=frame.kwargs))
+        stack.push(base.Frame(frame.ops, filtered, cp, settings=frame.settings))
         return ()
 
 
@@ -980,16 +988,19 @@ class Slice(SimpleOp):
             return 1 << 64
         return max(0, int((stop - start) / step))
 
-    def keys(self, node, **kwargs):
+    def keys(self, node, settings=base.SETTINGS):
         return (self.slice(node),)
-    def items(self, node, **kwargs):
-        for k in self.keys(node, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        return self._slice_items(node, settings)
+    def _slice_items(self, node, settings):
+        for k in self.keys(node, settings=settings):
             try:
                 yield (k, node[k])
             except (TypeError, KeyError, IndexError):
                 pass
-    def values(self, node, **kwargs):
-        return (v for _, v in self.items(node, **kwargs))
+    def values(self, node, settings=base.SETTINGS):
+        items = self.items(node, settings=settings)
+        return (v for _, v in items)
     def is_empty(self, node):
         return not node[self.slice(node)]
     def default(self):
@@ -1067,19 +1078,19 @@ class Invert(SimpleOp):
         return '-'
     def match(self, op, specials=False):
         return base.MatchResult('-') if isinstance(op, Invert) else None
-    def items(self, node, **kwargs):
-        yield ('-', node)
-    def keys(self, node, **kwargs):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        return iter((('-', node),))
+    def keys(self, node, settings=base.SETTINGS):
         yield '-'
-    def values(self, node, **kwargs):
+    def values(self, node, settings=base.SETTINGS):
         yield node
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, **kwargs):
-        return engine.removes(ops, node, val, **kwargs)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return engine.removes(ops, node, val, settings=settings)
 
-    def do_remove(self, ops, node, val, nop, **kwargs):
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         assert val is not base.ANY, 'Value required'
-        return engine.updates(ops, node, val, **kwargs)
+        return engine.updates(ops, node, val, settings=settings)
 
 
 # engine and wrappers both import this module, so they can only be bound

@@ -1,2 +1,3 @@
 include CHANGELOG.md
+recursive-include dotted *.pxd
 prune tests

@@ -16,6 +16,145 @@ from . import utypes
 from . import wrappers
 from . import containers as ct
 
+# ---- parse actions that build groups ----
+#
+# These turn what the grammar matched into group ops. They run only while a
+# path is being parsed, so they live here with the parser, not in groups.py
+# with the ops the engine runs.
+
+def _to_branch(item):
+    """
+    Convert a parse result item (op_seq Group or OpGroup) to a branch tuple.
+    """
+    if isinstance(item, groups.OpGroup):
+        return (item,)
+    if isinstance(item, (list, tuple, pp.ParseResults)):
+        return tuple(item)
+    return (item,)
+
+
+def inner_not_action(t):
+    """
+    Parse action for unified negation: ! atom.
+    The atom is either an OpGroup (from grouped expression) or an op_seq.
+    OpGroupNot takes a single branch as its inner pattern.
+    """
+    item = t[0]
+    branch = _to_branch(item)
+    return groups.OpGroupNot(branch)
+
+
+def inner_and_action(t):
+    """
+    Parse action for unified conjunction: atom & atom & ...
+    """
+    branches = [_to_branch(item) for item in t]
+    return groups.OpGroupAnd(*branches)
+
+
+def inner_or_action(t):
+    """
+    Parse action for unified disjunction: term , term , ...
+    Each term is a Group containing [inner_and_result, optional_cut_marker].
+    If there's only one term with no cut marker, pass through without wrapping.
+    """
+    terms = list(t)
+    # Single term, no cut marker — pass through (don't wrap in OpGroupOr)
+    if len(terms) == 1 and len(terms[0]) == 1:
+        return terms[0][0]
+    out = []
+    for term in terms:
+        item = term[0]
+        out.append(_to_branch(item))
+        if len(term) >= 2:
+            if term[1] == '##':
+                out.append(base.BRANCH_SOFTCUT)
+            elif term[1] == '#':
+                out.append(base.BRANCH_CUT)
+    return groups.OpGroupOr(*out)
+
+
+def inner_to_opgroup(parsed_result):
+    """
+    Parse action: convert (inner_expr) to OpGroup.
+    Unwraps single-branch OpGroupOr containing a sole OpGroupAnd/OpGroupNot,
+    since the OpGroupOr wrapper is redundant in that case.
+    Does NOT unwrap OpGroupNot or OpGroupAnd — those carry semantic meaning.
+    """
+    items = list(parsed_result)
+    if not items:
+        return groups.OpGroupOr()
+    # If there's a single OpGroup result, use it directly
+    if len(items) == 1 and isinstance(items[0], groups.OpGroup):
+        inner = items[0]
+        # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
+        if isinstance(inner, groups.OpGroupOr):
+            branches = list(base.branches_only(inner.branches))
+            if (len(branches) == 1 and isinstance(branches[0], tuple)
+                    and len(branches[0]) == 1
+                    and isinstance(branches[0][0], (groups.OpGroupAnd, groups.OpGroupNot))):
+                return branches[0][0]
+        return inner
+    # Multiple items or single non-OpGroup: treat as a single branch (op_seq)
+    # This handles cases like (name.first) where inner_expr flattens to [name, first]
+    branch = tuple(items)
+    return groups.OpGroupOr(branch)
+
+
+def inner_to_opgroup_first(parsed_result):
+    """
+    Parse action: convert (inner_expr)? to OpGroupFirst.
+    """
+    return groups.OpGroupFirst(*inner_to_opgroup(parsed_result).branches)
+
+
+def slot_to_opgroup(parsed_result):
+    """
+    Convert slot grouping [(*&filter, +)] or [(*&filter#, +)] to OpGroup.
+    Each slot item becomes a branch; # inserts base.BRANCH_CUT after that branch.
+    Parse result items may be ParseResults (from Group), so unwrap to get Slot/SlotSpecial/NopWrap.
+    """
+    _slot_types = (access.Slot, access.SlotSpecial, wrappers.NopWrap, wrappers.FilterWrap)
+    out = []
+    for item in parsed_result:
+        if isinstance(item, _slot_types):
+            out.append((item,))
+            continue
+        if not (isinstance(item, (list, tuple, pp.ParseResults)) and len(item) >= 1):
+            continue
+        first = item[0]
+        while isinstance(first, (list, tuple, pp.ParseResults)) and len(first) == 1:
+            first = first[0]
+        if isinstance(first, _slot_types):
+            out.append((first,))
+            if len(item) >= 2 and item[1] == '##':
+                out.append(base.BRANCH_SOFTCUT)
+            elif len(item) >= 2 and item[1] == '#':
+                out.append(base.BRANCH_CUT)
+    return groups.OpGroupOr(*out)
+
+
+def slot_to_opgroup_first(parsed_result):
+    """
+    Convert slot grouping [(*&filter, +)?] to OpGroupFirst.
+    """
+    return groups.OpGroupFirst(*slot_to_opgroup(parsed_result).branches)
+
+
+def as_attrs_opgroup(group):
+    """
+    Promote unresolved bare identifiers (parsed as Keys) to Attrs.
+    Used by @(group) syntax — the inner group grammar doesn't know the
+    access mode, so it produces Keys; this resolves them as Attrs.
+    """
+    if hasattr(group, 'as_attrs'):
+        return group.as_attrs()
+    # Single Key not wrapped in OpGroup (e.g. @(a) with single item)
+    if type(group) is access.Key:
+        return access.Attr(*group.args)
+    return group
+
+
 def _classify_tokens(tokens):
     """
     Classify a list of parse-result tokens into (typespec, filters, transforms, nop, args).
@@ -637,8 +776,8 @@ _slot_item_nop = (tilde + _slotguts.copy()).set_parse_action(lambda t: wrappers.
 _slot_item = _slot_item_nop | _slot_item_plain | (appender_unique | appender).copy().set_parse_action(access.SlotSpecial)
 _slot_group_term = pp.Group(_slot_item + Opt(cut_marker))
 _slot_group_inner = _slot_group_term + ZM(_comma_ws + _slot_group_term)
-slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(groups.slot_to_opgroup)
-slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(groups.slot_to_opgroup_first)
+slotgroup = (lb + lparen + _slot_group_inner + rparen + rb).set_parse_action(slot_to_opgroup)
+slotgroup_first = (lb + lparen + _slot_group_inner + rparen + S('?') + rb).set_parse_action(slot_to_opgroup_first)
 
 # Unified inner expression: single precedence tower for !, &, , operators
 # Used both inside parens (inner_grouped) and at top levgroups.
@@ -655,9 +794,9 @@ def _grouped_with_type_restriction(parsed_result, first=False):
     if items and isinstance(items[-1], utypes.TypeSpec):
         tr = items.pop()
     if first:
-        grp = groups.inner_to_opgroup_first(items)
+        grp = inner_to_opgroup_first(items)
     else:
-        grp = groups.inner_to_opgroup(items)
+        grp = inner_to_opgroup(items)
     if tr:
         grp = tr.wrap(grp)
     return grp
@@ -899,11 +1038,11 @@ _dot_recursive_guarded = (dot + recursive_op_guarded).set_parse_action(lambda t:
 _dot_recursive = _dot_recursive_guarded | _dot_recursive_nonguarded
 # @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
 _at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
-    lambda t: groups.as_attrs_opgroup(t[0])
+    lambda t: as_attrs_opgroup(t[0])
 )
 _at_nop_grouped = ((at + tilde) | (tilde + at)) + (_inner_grouped_bare_first | _inner_grouped_bare)
 _at_nop_grouped = _at_nop_grouped.set_parse_action(
-    lambda t: wrappers.NopWrap(groups.as_attrs_opgroup(t[-1]))
+    lambda t: wrappers.NopWrap(as_attrs_opgroup(t[-1]))
 )
 
 # NOP (~): match but don't update
@@ -987,10 +1126,10 @@ op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_first_items)
 
 # Precedence tower (atoms are op_seqs)
 inner_atom = op_seq
-inner_not = (bang + inner_atom).set_parse_action(groups.inner_not_action) | inner_atom
-inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(groups.inner_and_action) | inner_not
+inner_not = (bang + inner_atom).set_parse_action(inner_not_action) | inner_atom
+inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(inner_and_action) | inner_not
 inner_or_term = pp.Group(inner_and + Opt(cut_marker))
-inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(groups.inner_or_action) | inner_and
+inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(inner_or_action) | inner_and
 inner_expr <<= inner_or
 
 # ---------------------------------------------------------------------------
@@ -1014,10 +1153,10 @@ _explicit_op_seq_cont_items = (
 )
 _explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
 _explicit_inner_atom = _explicit_op_seq
-_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(groups.inner_not_action) | _explicit_inner_atom
-_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(groups.inner_and_action) | _explicit_inner_not
+_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(inner_not_action) | _explicit_inner_atom
+_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(inner_and_action) | _explicit_inner_not
 _explicit_inner_or_term = pp.Group(_explicit_inner_and + Opt(cut_marker))
-_explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(groups.inner_or_action) | _explicit_inner_and
+_explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(inner_or_action) | _explicit_inner_and
 _explicit_inner_expr <<= _explicit_inner_or
 
 # Top-level: flatten op_seq Groups into flat ops list

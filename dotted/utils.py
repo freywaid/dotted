@@ -10,6 +10,14 @@ try:
 except ImportError:
     from copy import deepcopy
 
+def indices(iterable):
+    """
+    The index of each item of iterable, lazily.
+    """
+    for idx, _ in enumerate(iterable):
+        yield idx
+
+
 class lazyprop:
     """
     Non-data descriptor: compute once on first access, cache the result

@@ -237,8 +237,16 @@ def test_translate_multi_no_matches():
 
 def test_translate_multi_is_lazy():
     """
-    translate_multi returns a generator.
+    translate_multi returns a lazy iterator. Not checked against
+    types.GeneratorType: a generator from compiled code is a different type.
     """
-    import types
-    result = translate_multi(['a.b'], {'a.*': '$0'})
-    assert isinstance(result, types.GeneratorType)
+    def paths():
+        consumed.append('a.b')
+        yield 'a.b'
+
+    consumed = []
+    result = translate_multi(paths(), {'a.*': '$0'})
+    assert iter(result) is result
+    assert consumed == []
+    assert list(result) == [('a.b', 'b')]
+    assert consumed == ['a.b']

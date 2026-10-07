@@ -7,11 +7,19 @@ directory's conftest; by default they're skipped. They run when either
 When copium is installed every test function runs twice, once per
 deepcopy implementation (copium and the stdlib `copy.deepcopy` fallback).
 Doctests can't be parametrized, so they run once on the default.
+
+The engine runs compiled or from source (see dotted.native), chosen for the
+whole run by DOTTED_NATIVE; the header says which. A module loaded compiled
+has no doctests to collect from its .py file, so those are skipped then.
 """
 import copy
+import os
+import sys
 
 import pytest
 
+import dotted
+from dotted import native
 from dotted import utils
 
 
@@ -30,6 +38,24 @@ def pytest_configure(config):
         'markers',
         'integration: test requires a live Postgres connection',
     )
+
+
+def pytest_report_header(config):
+    return 'dotted engine: ' + ('native (compiled)' if native.active() else 'python source')
+
+
+def pytest_ignore_collect(collection_path, config):
+    """
+    Skip doctest collection of a dotted module that is loaded compiled.
+    """
+    if collection_path.suffix != '.py':
+        return None
+    if str(collection_path.parent) != os.path.dirname(os.path.abspath(dotted.__file__)):
+        return None
+    module = sys.modules.get('dotted.' + collection_path.stem)
+    if module is None or module.__file__.endswith(('.py', '.pyc')):
+        return None
+    return True
 
 
 def _copiers():
