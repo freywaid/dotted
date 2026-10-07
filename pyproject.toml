@@ -78,9 +78,8 @@ Changelog = "https://github.com/freywaid/dotted/blob/master/CHANGELOG.md"
 include = ["dotted*"]
 
 [tool.cibuildwheel]
-# Compiled wheels for the Pythons that get them; everything else installs
-# the pure wheel.
-build = "cp311-* cp312-* cp313-* cp314-*"
+# Compiled wheels for CPython 3.11-3.14 (the versions are listed in the
+# publish workflow, one job each); everything else installs the pure wheel.
 skip = "pp*"
 test-requires = "pytest"
 test-command = "python -c \"import dotted; assert dotted.native.active(), 'the compiled engine did not load'\" && pytest {project}/tests -q -p no:cacheprovider --import-mode=importlib"

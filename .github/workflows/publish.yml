@@ -62,22 +62,25 @@ jobs:
           name: dist-pure
           path: dist/*
 
-  # Wheels with the compiled engine, one per Python version and platform
-  # (see [tool.cibuildwheel] in pyproject.toml). Each is tested on the
-  # Python it was built for.
+  # Wheels with the compiled engine, one job per Python version and
+  # platform so they build in parallel (see [tool.cibuildwheel] in
+  # pyproject.toml). Each is tested on the Python it was built for.
   wheels:
     needs: test
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-14, windows-latest]
+        python: [cp311, cp312, cp313, cp314]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: pypa/cibuildwheel@v3.2
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-*
       - uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.os }}
+          name: dist-${{ matrix.os }}-${{ matrix.python }}
           path: wheelhouse/*.whl
 
   publish:
