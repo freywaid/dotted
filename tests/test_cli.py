@@ -2,8 +2,6 @@ import io
 import json
 import subprocess
 import sys
-import tempfile
-import os
 
 import pytest
 
@@ -225,36 +223,24 @@ def test_csv_output():
 # Path files
 # ---------------------------------------------------------------------------
 
-def test_get_path_file():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write('a\nb\n')
-        f.flush()
-        try:
-            out = dq('-pf', f.name, input_text='{"a": 1, "b": 2, "c": 3}')
-            assert json.loads(out) == {"a": 1, "b": 2}
-        finally:
-            os.unlink(f.name)
+def test_get_path_file(tmp_path):
+    path = tmp_path / 'input.txt'
+    path.write_text('a\nb\n')
+    out = dq('-pf', str(path), input_text='{"a": 1, "b": 2, "c": 3}')
+    assert json.loads(out) == {"a": 1, "b": 2}
 
-def test_update_path_file():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write('a 42\nb 43\n')
-        f.flush()
-        try:
-            out = dq('update', '-pf', f.name,
-                     input_text='{"a": 1, "b": 2, "c": 3}')
-            assert json.loads(out) == {"a": 42, "b": 43, "c": 3}
-        finally:
-            os.unlink(f.name)
+def test_update_path_file(tmp_path):
+    path = tmp_path / 'input.txt'
+    path.write_text('a 42\nb 43\n')
+    out = dq('update', '-pf', str(path),
+             input_text='{"a": 1, "b": 2, "c": 3}')
+    assert json.loads(out) == {"a": 42, "b": 43, "c": 3}
 
-def test_path_file_comments_and_blanks():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write('# comment\na\n\nb\n# another comment\n')
-        f.flush()
-        try:
-            out = dq('-pf', f.name, input_text='{"a": 1, "b": 2, "c": 3}')
-            assert json.loads(out) == {"a": 1, "b": 2}
-        finally:
-            os.unlink(f.name)
+def test_path_file_comments_and_blanks(tmp_path):
+    path = tmp_path / 'input.txt'
+    path.write_text('# comment\na\n\nb\n# another comment\n')
+    out = dq('-pf', str(path), input_text='{"a": 1, "b": 2, "c": 3}')
+    assert json.loads(out) == {"a": 1, "b": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -438,46 +424,30 @@ def test_pack_unpack_roundtrip():
 # File input
 # ---------------------------------------------------------------------------
 
-def test_file_input():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        f.write('{"a": 1, "b": 2}')
-        f.flush()
-        try:
-            out = dq('-f', f.name, '-p', 'a')
-            assert out.strip() == '1'
-        finally:
-            os.unlink(f.name)
+def test_file_input(tmp_path):
+    path = tmp_path / 'input.json'
+    path.write_text('{"a": 1, "b": 2}')
+    out = dq('-f', str(path), '-p', 'a')
+    assert out.strip() == '1'
 
-def test_file_auto_detect_yaml():
+def test_file_auto_detect_yaml(tmp_path):
     pytest.importorskip('yaml')
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-        f.write('a: 1\nb: 2\n')
-        f.flush()
-        try:
-            out = dq('-f', f.name, '-o', 'json', '-p', 'a')
-            assert out.strip() == '1'
-        finally:
-            os.unlink(f.name)
+    path = tmp_path / 'input.yaml'
+    path.write_text('a: 1\nb: 2\n')
+    out = dq('-f', str(path), '-o', 'json', '-p', 'a')
+    assert out.strip() == '1'
 
-def test_file_auto_detect_csv():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
-        f.write('name,age\nalice,30\n')
-        f.flush()
-        try:
-            out = dq('-f', f.name, '-o', 'jsonl', '-p', 'name')
-            assert json.loads(out.strip()) == 'alice'
-        finally:
-            os.unlink(f.name)
+def test_file_auto_detect_csv(tmp_path):
+    path = tmp_path / 'input.csv'
+    path.write_text('name,age\nalice,30\n')
+    out = dq('-f', str(path), '-o', 'jsonl', '-p', 'name')
+    assert json.loads(out.strip()) == 'alice'
 
-def test_file_explicit_format_overrides():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-        f.write('{"a": 1}')
-        f.flush()
-        try:
-            out = dq('-f', f.name, '-i', 'json', '-p', 'a')
-            assert out.strip() == '1'
-        finally:
-            os.unlink(f.name)
+def test_file_explicit_format_overrides(tmp_path):
+    path = tmp_path / 'input.txt'
+    path.write_text('{"a": 1}')
+    out = dq('-f', str(path), '-i', 'json', '-p', 'a')
+    assert out.strip() == '1'
 
 def test_file_not_found():
     stderr = dq('-f', '/tmp/nonexistent_dq_test.json', '-p', 'a',
