@@ -27,8 +27,9 @@ Or pick only what you need:
 
     pip install dotted-notation[yaml,toml]
 
-> **Deprecated:** the `all` extra is an alias for `formats` and will be removed
-> in a future release. Use `formats` instead.
+Or everything, formats and copium (below) alike:
+
+    pip install dotted-notation[all]
 
 For faster `mutable=False` updates and removes, install the
 [copium](https://github.com/Bobronium/copium) extra, a C implementation of

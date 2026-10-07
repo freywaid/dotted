@@ -6,6 +6,8 @@ the ones listed are omitted — browse git history for earlier entries.
 ## [Unreleased]
 
 ### Changed
+- The `all` extra now means all of them: `formats` and `copium`. It was
+  an alias for `formats`, deprecated since 0.44.9.
 - A concrete key present in a node is no longer looked for among the
   node's keys to return the node's own key object: it matches as
   written. Concrete writes and `expand`, `pluck` and `unpack` on a

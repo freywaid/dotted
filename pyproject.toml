@@ -55,8 +55,9 @@ formats = [
     "tomli>=1.0",
     "tomli_w>=1.0",
 ]
-# DEPRECATED: legacy alias for formats, to be removed in a future release
-all  = [
+# Every extra above.
+all = [
+    "copium>=0.1.0",
     "PyYAML>=5.0",
     "tomli>=1.0",
     "tomli_w>=1.0",
