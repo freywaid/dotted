@@ -15,7 +15,7 @@ the ones listed are omitted — browse git history for earlier entries.
 
 ### Added
 - The engine compiles to C. Wheels for CPython 3.11-3.14 on Linux
-  (glibc and musl, x86_64 and aarch64), macOS (x86_64 and arm64) and
+  (glibc and musl, x86_64 and aarch64), macOS (Apple Silicon) and
   Windows carry the compiled engine; every other Python installs the
   same code as pure Python from the universal wheel. `DOTTED_NATIVE=0`
   in the environment runs the Python engine regardless;
