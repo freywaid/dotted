@@ -93,12 +93,13 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, strict=False, settings=None):
+def values(ops, node, strict=False, settings=None, transforms=()):
     """
     Yield the value of every match, stopping at a cut. The same values as
-    iter_until_cut(gets(...)), through one generator.
+    iter_until_cut(gets(...)), through one generator. transforms, when
+    given, are applied to each value at its leaf (see walk).
     """
-    for path, val in walk(ops, node, False, strict, settings):
+    for path, val in walk(ops, node, False, strict, settings, transforms):
         if path is base.CUT_SENTINEL:
             return
         yield val
@@ -123,7 +124,15 @@ def process(stack, paths):
     while stack.level >= level and stack.current:
         frame = stack.pop()
         if not frame.ops:
-            yield (frame.prefix if paths else None, frame.node)
+            val = frame.node
+            if stack.transforms:
+                # at the leaf: ^ is the value, ^^ and up its tracked parents
+                try:
+                    val = results.apply_transforms(
+                        val, stack.transforms, frame.settings.root, frame.settings.parents or ())
+                except base.UnresolvedReference:
+                    continue
+            yield (frame.prefix if paths else None, val)
             continue
         yield from advance(frame, stack, paths)
 
@@ -148,13 +157,16 @@ def settings_for(ops, node, strict, settings):
     return base.Settings(node, strict, () if _needs_parents(ops) else None)
 
 
-def walk(ops, node, paths=True, strict=False, settings=None):
+def walk(ops, node, paths=True, strict=False, settings=None, transforms=()):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
+    transforms, when given, are applied to each value at its leaf, where a
+    reference in an argument sees the value's parents; a value whose
+    reference does not resolve is left out.
     """
     settings = settings_for(ops, node, strict, settings)
-    stack = base.DepthStack()
+    stack = base.DepthStack(tuple(transforms))
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
 

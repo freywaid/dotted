@@ -1,12 +1,12 @@
 # Type declarations for the compiler; see base.pxd.
-from . cimport base
-from . cimport matchers
+cimport dotted.base as base
+cimport dotted.matchers as matchers
 
 
 cdef class BaseOp(base.TraversalOp):
     cdef public tuple filters
 
-    cpdef filtered(self, items)
+    cpdef filtered(self, items, settings=*)
 
 
 cdef class SimpleOp(BaseOp):

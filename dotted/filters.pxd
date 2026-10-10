@@ -1,5 +1,5 @@
 # Type declarations for the compiler; see base.pxd.
-from . cimport base
+cimport dotted.base as base
 
 
 cdef class FilterOp(base.MatchOp):
@@ -16,8 +16,8 @@ cdef class FilterKeyValue(FilterOp):
     cdef public object val
     cdef public tuple transforms
 
-    cpdef _eq_match(self, node)
-    cpdef is_filtered(self, node)
+    cpdef _eq_match(self, node, settings=*)
+    cpdef is_filtered(self, node, settings=*)
 
 
 cdef class FilterKeyValueNot(FilterKeyValue):

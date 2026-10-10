@@ -7,6 +7,8 @@ ValueGuard     — key=value / [slot]=value direct value test
 TypeRestriction — :type / :!type node-type constraint
 FilterWrap     — &filter value-level predicate
 """
+import functools
+
 from . import base
 from . import access
 from . import predicates
@@ -204,14 +206,21 @@ class ValueGuard(Wrap):
                 and self.guard == other.guard and self.pred_op == other.pred_op
                 and self.transforms == other.transforms)
 
-    def _guard_matches(self, val):
+    def _guard_matches(self, val, settings=base.SETTINGS, node=None):
         """
-        True if val matches the guard value (after applying transforms).
+        True if val, found in node, matches the guard value after the
+        transforms. A reference in the transforms or the guard sees the
+        value as ^, node as ^^ and node's tracked parents above that; with
+        no node, only ^ resolves. One that does not resolve matches nothing.
         """
+        from . import results
+        parents = () if node is None else (node,) + (settings.parents or ())
         if self.transforms:
-            from .results import apply_transforms
-            val = apply_transforms(val, self.transforms)
-        return any(True for _ in self.pred_op.matches((val,), self.guard))
+            try:
+                val = results.apply_transforms(val, self.transforms, settings.root, parents)
+            except base.UnresolvedReference:
+                return False
+        return results.guard_passes(self.pred_op, val, self.guard, settings.root, val, parents)
 
     def _transforms_operator(self):
         """
@@ -265,13 +274,13 @@ class ValueGuard(Wrap):
         return self.inner.is_empty(node)
 
     def values(self, node, settings=base.SETTINGS):
-        return (v for v in self.inner.values(node, settings=settings) if self._guard_matches(v))
+        return (v for v in self.inner.values(node, settings=settings) if self._guard_matches(v, settings, node))
 
     def items(self, node, settings=base.SETTINGS):
-        return ((k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v))
+        return ((k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v, settings, node))
 
     def keys(self, node, settings=base.SETTINGS):
-        return (k for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v))
+        return (k for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v, settings, node))
 
     def upsert(self, node, val):
         # Only update entries where guard matches
@@ -288,7 +297,7 @@ class ValueGuard(Wrap):
 
     def remove(self, node, val, settings=base.SETTINGS):
         # Only remove entries where guard matches
-        to_remove = [(k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v)]
+        to_remove = [(k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v, settings, node)]
         for k, v in reversed(to_remove):
             if val is base.ANY or v == val:
                 node = self.inner.pop(node, k)
@@ -319,7 +328,7 @@ class ValueGuard(Wrap):
                 stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
             return ()
         matches = [(cp, v, terminal) for cp, v, terminal in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix, settings=frame.settings) if self._guard_matches(v)]
+            frame.node, paths, prefix=frame.prefix, settings=frame.settings) if self._guard_matches(v, frame.settings)]
         for cp, v, terminal in reversed(matches):
             ops = () if terminal else frame.ops
             stack.push(base.Frame(ops, v, cp, settings=frame.settings))
@@ -338,16 +347,31 @@ class ValueGuard(Wrap):
             return self
         return ValueGuard(new_inner, new_guard, pred_op=self.pred_op, transforms=new_transforms)
 
+    def _guard(self, settings):
+        """
+        The guard as the one-argument callback the recursive update and
+        remove take; the matched node is not known there, so only ^
+        resolves in its references.
+        """
+        return functools.partial(self._guard_matches, settings=settings)
+
     def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
         if self.inner.is_recursive():
             return self.inner._update_recursive(
-                ops, node, val, has_defaults, _path, nop, guard=self._guard_matches, settings=settings)
+                ops, node, val, has_defaults, _path, nop, guard=self._guard(settings), settings=settings)
+        if not ops and not nop:
+            # the leaf: upsert() has no settings, and the guard needs them
+            for k in list(self.keys(node, settings=settings)):
+                node = self.inner.update(node, k, val)
+            return node
         return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         if self.inner.is_recursive():
             return self.inner._remove_recursive(
-                ops, node, val, nop, guard=self._guard_matches, settings=settings)
+                ops, node, val, nop, guard=self._guard(settings), settings=settings)
+        if not ops and not nop:
+            return self.remove(node, val, settings=settings)
         return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)
 
 
@@ -516,9 +540,10 @@ class FilterWrap(Wrap):
         semantics (e.g. first-match filters only yield the first hit).
         """
         pairs = list(self.inner.items(node, settings=settings))
+        below = settings.below(node)
         for f in self.filters:
             vals = [v for _, v in pairs]
-            filtered_vals = list(f.filtered(iter(vals)))
+            filtered_vals = list(f.filtered(iter(vals), below))
             # Build a set of object ids that survived filtering.
             # Use a counter to handle duplicate objects correctly.
             surviving = {}

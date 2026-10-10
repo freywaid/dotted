@@ -97,6 +97,7 @@ For faster `mutable=False` updates and removes, install the
   - [Template bindings](#template-bindings)
   - [References](#references)
   - [Relative References](#relative-references)
+  - [References in transforms and guards](#references-in-transforms-and-guards)
   - [Escaping](#escaping)
 - [Type Restrictions](#type-restrictions)
   - [Positive restrictions](#positive-restrictions)
@@ -1327,6 +1328,7 @@ at replace time) and **references** (resolved during traversal).
 | `$$(path)` | Reference | Root object during traversal |
 | `$$(^path)` | Relative reference | Current node during traversal |
 | `$$(^^path)` | Relative reference | Parent node during traversal |
+| `$$(^path)` in a transform, guard or filter | Relative reference | The value under test; `^^` the node holding it |
 
 <a id="substitution"></a>
 ### Substitution
@@ -1511,6 +1513,50 @@ Relative references combine with patterns:
     ... }
     >>> dotted.get(data, 'a.$$(^config.*.field)')
     ('Alice', 30)
+
+<a id="references-in-transforms-and-guards"></a>
+### References in transforms and guards
+
+A reference can also stand in for a transform argument, a guard value or a
+filter value. It resolves when the transform or comparison runs, against the
+value under test: `$$(path)` is the root as always, `$$(^path)` is the value
+itself, `$$(^^path)` the node holding it, `$$(^^^path)` that node's parent,
+and so on:
+
+    >>> data = {'config': {'offset': 10}, 'n': 5}
+    >>> dotted.get(data, 'n|add:$$(config.offset)')
+    15
+
+    >>> data = {'items': [{'price': 100, 'rate': 1.5}, {'price': 20, 'rate': 2}]}
+    >>> dotted.get(data, 'items[*].price|mul:$$(^^rate)')
+    (150.0, 40)
+
+Each `price` is the value being transformed, so `^^rate` is the `rate` beside
+it. Guard and filter values resolve the same way:
+
+    >>> data = {'limit': 10, 'a': 5, 'b': 15}
+    >>> dotted.get(data, '*>$$(limit)')
+    (15,)
+    >>> data = {'selected': 'bob', 'users': [{'name': 'alice'}, {'name': 'bob'}]}
+    >>> dotted.get(data, 'users[*&name=$$(selected)].name')
+    ('bob',)
+
+as do the transforms before a guard:
+
+    >>> data = {'scale': 10, 'a': 1, 'b': 2}
+    >>> dotted.get(data, '*|mul:$$(scale)=20')
+    (2,)
+
+With `update`, the transforms apply to the value being set, so `^` is that
+value:
+
+    >>> dotted.update({'n': 5, 'inc': 3}, 'n|add:$$(inc)', 10)
+    {'n': 13, 'inc': 3}
+
+A reference that does not resolve matches nothing, as in an access position:
+
+    >>> dotted.get({'a': 1}, 'a|add:$$(missing)', default='fallback')
+    'fallback'
 
 <a id="escaping"></a>
 ### Escaping
@@ -2476,6 +2522,9 @@ Guard transforms compose with `update`, `remove`, and `has`:
     >>> dotted.has({'val': '7'}, 'val|int=7')
     True
 
+Both the transform arguments and the value compared with may be
+[references](#references-in-transforms-and-guards).
+
 <a id="container-filter-values"></a>
 ### Container filter values
 
@@ -2791,7 +2840,9 @@ Filter keys can include slice notation so the comparison applies to a slice of t
 You can optionally add transforms to the end of dotted notation. These will
 be applied on `get` and `update`. Transforms are separated by the `|` operator
 and multiple may be chained together. Transforms may be parameterized using
-the `:` operator.
+the `:` operator; a parameter may be a `$$(reference)`, resolved when the
+transform runs (see
+[References in transforms and guards](#references-in-transforms-and-guards)).
 
     >>> import dotted
     >>> d = [1, '2', 3]

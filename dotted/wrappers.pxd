@@ -1,5 +1,5 @@
 # Type declarations for the compiler; see base.pxd.
-from . cimport base
+cimport dotted.base as base
 
 
 cdef class Wrap(base.TraversalOp):

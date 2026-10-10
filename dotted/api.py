@@ -430,7 +430,11 @@ def build_multi(obj, paths, strict=False, bindings=None):
         built = engine.build(ops, obj, strict=strict)
         # walked paths are concrete: nothing for update() to resolve or check
         for found, val in _pluck_parsed(built, ops, strict=strict):
-            obj = engine.updates(found, obj, found.apply(val), strict=strict)
+            try:
+                val = found.apply(val, obj)
+            except base.UnresolvedReference:
+                continue
+            obj = engine.updates(found, obj, val, strict=strict)
     return obj
 
 
@@ -478,14 +482,16 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
         if val is not engine.SIMPLE_BAIL:
             if val is base.marker:
                 return default
-            if apply_transforms and ops.transforms:
-                return ops.apply(val)
-            return val
-    vals = engine.values(ops, obj, strict=strict)
-    if apply_transforms and ops.transforms:
-        vals = ( ops.apply(v) for v in vals )
+            if not (apply_transforms and ops.transforms):
+                return val
+            try:
+                return ops.apply(val, obj)
+            except base.UnresolvedReference:
+                return default
+    transforms = ops.transforms if apply_transforms else ()
+    vals = engine.values(ops, obj, strict=strict, transforms=transforms)
     if ops.guard is not None:
-        vals = (v for v in vals if ops.guard_matches(v))
+        vals = (v for v in vals if ops.guard_matches(v, obj))
     found = tuple(vals)
     if not is_pattern(ops):
         return found[0] if found else default
@@ -577,7 +583,13 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
         return obj
 
     ops = parse(parsed, bindings=bindings, partial=False)
-    return engine.updates(ops, obj, ops.apply(val) if apply_transforms else val, strict=strict)
+    if apply_transforms and ops.transforms:
+        # the value is transformed before it is placed: ^ is the value, no parents
+        try:
+            val = ops.apply(val, obj)
+        except base.UnresolvedReference:
+            return obj
+    return engine.updates(ops, obj, val, strict=strict)
 
 
 def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
@@ -1082,11 +1094,10 @@ def apply_multi(obj, patterns, strict=False, bindings=None):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(engine.values(ops, obj, strict=strict), _marker)
+            first = next(engine.values(ops, obj, strict=strict, transforms=ops.transforms), _marker)
             if first is _marker:
                 continue
-            val = ops.apply(first)
-            obj = engine.updates(ops, obj, val, strict=strict)
+            obj = engine.updates(ops, obj, first, strict=strict)
     return obj
 
 

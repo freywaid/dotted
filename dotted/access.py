@@ -30,9 +30,13 @@ class BaseOp(base.TraversalOp):
             results += (base.MatchResult(m),)
         return results
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
+        """
+        items through this op's filters, under the Settings of the items
+        (see filters.FilterOp).
+        """
         for f in self.filters:
-            items = f.filtered(items)
+            items = f.filtered(items, settings)
         return items
 
     def keys(self, node, settings=base.SETTINGS):
@@ -142,10 +146,10 @@ class Empty(SimpleOp):
         """
         The root as a single item with empty key.
         """
-        return self._root_items(node)
+        return self._root_items(node, settings)
 
-    def _root_items(self, node):
-        for v in self.filtered((node,)):
+    def _root_items(self, node, settings=base.SETTINGS):
+        for v in self.filtered((node,), settings):
             yield ('', v)
 
     def keys(self, node, settings=base.SETTINGS):
@@ -156,7 +160,7 @@ class Empty(SimpleOp):
         return (k for k, _ in items)
 
     def values(self, node, settings=base.SETTINGS):
-        return self.filtered((node,))
+        return self.filtered((node,), settings)
 
     def default(self):
         return None
@@ -335,7 +339,7 @@ class Key(AccessOp):
             return self.op.quote_top()
         return '.' + self.op.quote()
 
-    def _items(self, node, keys, filtered=True):
+    def _items(self, node, keys, filtered=True, settings=base.SETTINGS):
         if not filtered or not self.filters:
             # nothing to filter: one generator, not two threaded through a filter
             def _unfiltered():
@@ -361,7 +365,8 @@ class Key(AccessOp):
                 yield v
 
         def _items():
-            values = self.filtered(_values()) if filtered else _values()
+            # the values' own settings: node is their parent
+            values = self.filtered(_values(), settings.below(node)) if filtered else _values()
             for v in values:
                 yield (curkey, v)
 
@@ -397,7 +402,7 @@ class Key(AccessOp):
             if filtered and not self.filters and isinstance(self.op, matchers.Const):
                 return self._const_items(node)
             keys = self.op.match_keys(node) if filtered else node.keys()
-            return self._items(node, keys, filtered)
+            return self._items(node, keys, filtered, settings)
         # In strict mode, numeric keys never coerce to list indices
         if settings.strict:
             return ()
@@ -499,7 +504,7 @@ class Attr(Key):
     def operator(self, top=False):
         return '@' + self.op.quote()
 
-    def _items(self, node, keys, filtered=True):
+    def _items(self, node, keys, filtered=True, settings=base.SETTINGS):
         if not filtered or not self.filters:
             # nothing to filter: one generator, not two threaded through a filter
             def _unfiltered():
@@ -525,7 +530,8 @@ class Attr(Key):
                 yield v
 
         def _items():
-            values = self.filtered(_values()) if filtered else _values()
+            # the values' own settings: node is their parent
+            values = self.filtered(_values(), settings.below(node)) if filtered else _values()
             for v in values:
                 yield (curkey, v)
 
@@ -559,7 +565,7 @@ class Attr(Key):
                     keys.append(s)
         return keys
 
-    def _concrete_fallback(self, node, inner, filtered):
+    def _concrete_fallback(self, node, inner, filtered, settings=base.SETTINGS):
         """
         Wrap an items iterator: yield from inner, and if nothing
         was yielded, try getattr directly for concrete (non-pattern) ops.
@@ -575,7 +581,7 @@ class Attr(Key):
             v = getattr(node, key)
         except AttributeError:
             return
-        if filtered and not tuple(self.filtered(iter((v,)))):
+        if filtered and not tuple(self.filtered(iter((v,)), settings.below(node))):
             return
         yield (key, v)
 
@@ -584,9 +590,9 @@ class Attr(Key):
             return self._reference_items(node, filtered, settings)
         all_keys = self._all_keys(node)
         keys = self.op.matches(all_keys) if filtered else all_keys
-        result = self._items(node, keys, filtered)
+        result = self._items(node, keys, filtered, settings)
         if not self.is_pattern():
-            result = self._concrete_fallback(node, result, filtered)
+            result = self._concrete_fallback(node, result, filtered, settings)
         return result
 
     def default(self):
@@ -685,7 +691,7 @@ class Slot(Key):
         else:
             keys = (self.op.value,)
 
-        return self._items(node, keys, filtered)
+        return self._items(node, keys, filtered, settings)
 
     def default(self):
         if isinstance(self.op, matchers.Numeric) and self.op.is_int():
@@ -894,8 +900,9 @@ class SliceFilter(BaseOp):
         return super().match(op)
 
     def items(self, node, settings=base.SETTINGS):
+        below = settings.below(node)
         for idx, v in enumerate(node):
-            if any(True for _ in self.filtered((v,))):
+            if any(True for _ in self.filtered((v,), below)):
                 yield (idx, v)
 
     def upsert(self, node, val):
@@ -940,7 +947,7 @@ class SliceFilter(BaseOp):
         Push filtered container onto the stack.
         Path segment is [] (Slice) since the filter narrows the whole collection.
         """
-        filtered = type(frame.node)(self.filtered(frame.node))
+        filtered = type(frame.node)(self.filtered(frame.node, frame.settings.below(frame.node)))
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
         stack.push(base.Frame(frame.ops, filtered, cp, settings=frame.settings))
         return ()

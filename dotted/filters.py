@@ -21,10 +21,15 @@ def _any_reference(items):
 
 
 class FilterOp(base.MatchOp):
+    """
+    Base of the filters. filtered() and is_filtered() take the Settings
+    of the items under test, for the references in filter values and
+    transforms: root, and the parents of the items when tracked.
+    """
     def is_pattern(self):
         return False
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
         raise NotImplementedError
 
     def matchable(self, op):
@@ -234,41 +239,40 @@ class FilterKeyValue(FilterOp):
             return True
         return _any_reference(self.transforms)
 
-    def _eq_match(self, node):
+    def _eq_match(self, node, settings=base.SETTINGS):
         """
-        True if any value from self.key in node matches self.val (after transforms).
+        True if any value from self.key in node equals self.val (after transforms).
+        """
+        return self._pred_match(node, predicates.EQ, settings)
+
+    def _pred_match(self, node, pred_op, settings=base.SETTINGS):
+        """
+        True if any value from self.key in node satisfies pred_op against
+        self.val after the transforms. A reference in the transforms or in
+        self.val sees the value as ^, node as ^^ and node's tracked parents
+        above that; one that does not resolve matches nothing.
         """
         if not hasattr(node, 'keys'):
             return False
+        from . import results
+        parents = (node,) + (settings.parents or ())
         for val, found in self.key.get_values(node):
-            if found:
+            if not found:
+                continue
+            try:
                 if self.transforms:
-                    from .results import apply_transforms
-                    val = apply_transforms(val, self.transforms)
-                for vm in self.val.matches((val,)):
-                    return True
+                    val = results.apply_transforms(val, self.transforms, settings.root, parents)
+            except base.UnresolvedReference:
+                continue
+            if results.guard_passes(pred_op, val, self.val, settings.root, val, parents):
+                return True
         return False
 
-    def _pred_match(self, node, pred_op):
-        """
-        True if any value from self.key in node satisfies pred_op against self.val.
-        """
-        if not hasattr(node, 'keys'):
-            return False
-        for val, found in self.key.get_values(node):
-            if found:
-                if self.transforms:
-                    from .results import apply_transforms
-                    val = apply_transforms(val, self.transforms)
-                if any(True for _ in pred_op.matches((val,), self.val)):
-                    return True
-        return False
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self._eq_match(node, settings)
 
-    def is_filtered(self, node):
-        return self._eq_match(node)
-
-    def filtered(self, items):
-        return (item for item in items if self.is_filtered(item))
+    def filtered(self, items, settings=base.SETTINGS):
+        return (item for item in items if self.is_filtered(item, settings))
 
     def matchable(self, op):
         if isinstance(op, type(self)):
@@ -317,8 +321,8 @@ class FilterKeyValueNot(FilterKeyValue):
     """
     _eq_str = '!='
 
-    def is_filtered(self, node):
-        return not self._eq_match(node)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return not self._eq_match(node, settings)
 
 
 class FilterKeyValueLt(FilterKeyValue):
@@ -327,8 +331,8 @@ class FilterKeyValueLt(FilterKeyValue):
     """
     _eq_str = '<'
 
-    def is_filtered(self, node):
-        return self._pred_match(node, predicates.LT)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self._pred_match(node, predicates.LT, settings)
 
 
 class FilterKeyValueGt(FilterKeyValue):
@@ -337,8 +341,8 @@ class FilterKeyValueGt(FilterKeyValue):
     """
     _eq_str = '>'
 
-    def is_filtered(self, node):
-        return self._pred_match(node, predicates.GT)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self._pred_match(node, predicates.GT, settings)
 
 
 class FilterKeyValueLe(FilterKeyValue):
@@ -347,8 +351,8 @@ class FilterKeyValueLe(FilterKeyValue):
     """
     _eq_str = '<='
 
-    def is_filtered(self, node):
-        return self._pred_match(node, predicates.LE)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self._pred_match(node, predicates.LE, settings)
 
 
 class FilterKeyValueGe(FilterKeyValue):
@@ -357,8 +361,8 @@ class FilterKeyValueGe(FilterKeyValue):
     """
     _eq_str = '>='
 
-    def is_filtered(self, node):
-        return self._pred_match(node, predicates.GE)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self._pred_match(node, predicates.GE, settings)
 
 
 # Lookup by operator string → filter class (built from _eq_str on each subclass).
@@ -383,11 +387,11 @@ class FilterGroup(FilterOp):
     def __repr__(self):
         return f'({self.inner})'
 
-    def is_filtered(self, node):
-        return self.inner.is_filtered(node) if self.inner else True
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self.inner.is_filtered(node, settings) if self.inner else True
 
-    def filtered(self, items):
-        return self.inner.filtered(items) if self.inner else items
+    def filtered(self, items, settings=base.SETTINGS):
+        return self.inner.filtered(items, settings) if self.inner else items
 
     def matchable(self, op):
         return isinstance(op, FilterGroup) and self.inner.matchable(op.inner)
@@ -433,12 +437,12 @@ class FilterAnd(FilterOp):
     def __repr__(self):
         return '&'.join(str(f) for f in self.filters)
 
-    def is_filtered(self, node):
-        return all(f.is_filtered(node) for f in self.filters)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return all(f.is_filtered(node, settings) for f in self.filters)
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
         for f in self.filters:
-            items = f.filtered(items)
+            items = f.filtered(items, settings)
         return items
 
     def matchable(self, op):
@@ -491,15 +495,15 @@ class FilterOr(FilterOp):
     def __repr__(self):
         return ','.join(str(f) for f in self.filters)
 
-    def is_filtered(self, node):
-        return any(f.is_filtered(node) for f in self.filters)
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return any(f.is_filtered(node, settings) for f in self.filters)
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
         # For OR, we need to collect all items that match any filter
         items = list(items)  # Need to iterate multiple times
         seen = set()
         for f in self.filters:
-            for item in f.filtered(items):
+            for item in f.filtered(items, settings):
                 item_id = id(item)
                 if item_id not in seen:
                     seen.add(item_id)
@@ -537,12 +541,12 @@ class FilterKeyValueFirst(FilterOp):
     def __repr__(self):
         return f'{self.inner}?'
 
-    def is_filtered(self, node):
-        return self.inner.is_filtered(node) if self.inner else True
+    def is_filtered(self, node, settings=base.SETTINGS):
+        return self.inner.is_filtered(node, settings) if self.inner else True
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
         if self.inner:
-            for item in self.inner.filtered(items):
+            for item in self.inner.filtered(items, settings):
                 yield item
                 break
 
@@ -597,15 +601,15 @@ class FilterNot(FilterOp):
     def __repr__(self):
         return f'!{self.inner}'
 
-    def is_filtered(self, node):
+    def is_filtered(self, node, settings=base.SETTINGS):
         if self.inner is None:
             return False
-        return not self.inner.is_filtered(node)
+        return not self.inner.is_filtered(node, settings)
 
-    def filtered(self, items):
+    def filtered(self, items, settings=base.SETTINGS):
         if self.inner is None:
             return
-        yield from (item for item in items if not self.inner.is_filtered(item))
+        yield from (item for item in items if not self.inner.is_filtered(item, settings))
 
     def matchable(self, op):
         if not isinstance(op, FilterNot):

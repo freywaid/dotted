@@ -3,6 +3,28 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- References resolve in transform arguments, guard values and filter
+  values: `n|add:$$(config.offset)`, `*>$$(limit)`,
+  `users[*&name=$$(selected)]`. `$$(path)` is the root as before;
+  `$$(^path)` is the value being transformed or compared, `$$(^^path)`
+  the node holding it, and so on up. A reference that does not resolve
+  matches nothing, as in an access position.
+
+### Fixed
+- A `$(name)` substitution in a transform argument resolved through
+  `bindings=` is handed to the transform as its value; it was handed as
+  the parsed wrapper, so the transform failed and returned the value
+  unchanged. `null`, `true` and `false` arguments are likewise unwrapped.
+- A reference as a guard or filter value raised `AttributeError`.
+- For development: the `.pxd` files cimport `dotted.base` by its full
+  name, which the compiler's dependency scanner follows, so a change to
+  `base.pxd` rebuilds every compiled module that depends on it. Written
+  as `from . cimport base`, the dependency went unseen and stale modules
+  warned about a changed `DepthStack` size.
+
 ## [0.46.1]
 
 ### Changed

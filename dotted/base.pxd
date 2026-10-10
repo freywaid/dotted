@@ -8,6 +8,11 @@
 # Only a method without closures (generator expressions, nested
 # functions) can be cpdef, and every override of it in a compiled
 # subclass must be closure-free too.
+#
+# The other .pxd files cimport this one as `cimport dotted.base as base`:
+# the compiler's dependency scanner follows that spelling (and
+# `from .base cimport Name`) but not `from . cimport base`, which left a
+# change here unbuilt in the modules that use it.
 
 cdef class MatchResult:
     cdef public object val
@@ -44,6 +49,7 @@ cdef class DepthStack:
     cdef public object _stacks
     cdef public object level
     cdef public object current
+    cdef public tuple transforms
 
     cpdef push(self, frame)
     cpdef pop(self)

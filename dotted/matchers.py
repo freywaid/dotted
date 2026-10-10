@@ -335,7 +335,7 @@ class Reference(MatchOp):
         else:
             idx = d - 2
             if idx >= len(parents):
-                raise KeyError(f'$$({self.value}): not enough ancestors')
+                raise base.UnresolvedReference(f'$$({self.value}): not enough ancestors')
             target = parents[idx]
         path = self.inner_path
         if not path:
@@ -343,7 +343,7 @@ class Reference(MatchOp):
         _marker = object()
         val = get(target, path, default=_marker)
         if val is _marker:
-            raise KeyError(f'$$({self.value}) not found')
+            raise base.UnresolvedReference(f'$$({self.value}) not found')
         return val
 
     def quote(self):
@@ -475,14 +475,15 @@ class Concat(MatchOp):
         """
         return self._parts
 
-    def _apply_part_transforms(self, val, transforms):
+    def _apply_part_transforms(self, val, transforms, root=None, parents=()):
         """
-        Apply per-part transforms to a value.
+        Apply per-part transforms to a value; a reference in a transform
+        argument sees the part's value as ^ (see results.apply_transforms).
         """
         if not transforms:
             return val
         from .results import apply_transforms
-        return apply_transforms(val, transforms)
+        return apply_transforms(val, transforms, root, parents)
 
     def _reduce(self, values):
         """
@@ -566,12 +567,13 @@ class Concat(MatchOp):
         Resolve reference parts, apply per-part transforms, reduce with +.
         """
         vals = []
+        below = (node,) + tuple(parents)
         for p in self._parts:
             if p.op.is_reference():
                 v = p.op.resolve_ref(root, node=node, parents=parents)
             else:
                 v = p.op.value
-            v = self._apply_part_transforms(v, p.transforms)
+            v = self._apply_part_transforms(v, p.transforms, root, below)
             vals.append(v)
         return self._reduce(vals)
 

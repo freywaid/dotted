@@ -338,7 +338,7 @@ class Recursive(BaseOp):
 
         for acc, k, v in items:
             cp = prefix + (acc.concrete(k),) if paths else prefix
-            if self.filters and not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,), settings)):
                 yield from self._collect_matches(v, paths, depth + 1, cp, seen,
                                                  _below_match=_below_match, _depths=_depths, settings=settings)
                 continue
@@ -384,7 +384,7 @@ class Recursive(BaseOp):
             # Recurse first (bottom-up)
             v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, settings=settings)
             node = self._assign(acc, node, k, v)
-            if self.filters and not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,), settings)):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):
@@ -414,7 +414,7 @@ class Recursive(BaseOp):
             # Recurse first (bottom-up)
             v = self._remove_recursive(ops, v, val, nop, depth + 1, guard, seen, settings=settings)
             node = self._assign(acc, node, k, v)
-            if self.filters and not any(True for _ in self.filtered((v,))):
+            if self.filters and not any(True for _ in self.filtered((v,), settings)):
                 continue
             max_dtl = self._max_depth_to_leaf(v) if self._has_negative_depth() else 0
             if not self.in_depth_range(depth, max_dtl):

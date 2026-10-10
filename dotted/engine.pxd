@@ -1,6 +1,6 @@
 # Type declarations for the compiler; see base.pxd.
 cimport cython
-from . cimport base
+cimport dotted.base as base
 
 
 cpdef _needs_parents(ops)

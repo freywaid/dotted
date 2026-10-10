@@ -177,6 +177,15 @@ class Settings:
 SETTINGS = Settings(None)
 
 
+class UnresolvedReference(KeyError):
+    """
+    A $$(reference) names a path that is not there, or reaches above the
+    ancestors the traversal has. In an access position the reference then
+    matches nothing; in a transform, guard or filter the value under test
+    is not matched.
+    """
+
+
 class Frame:
     """
     Stack frame for the traversal engine.
@@ -196,14 +205,16 @@ class DepthStack:
     """
     Stack of substacks, indexed by depth. Each depth level is a deque.
     OpGroups push a new level for branch isolation; simple ops push
-    onto the current level.
+    onto the current level. The transforms, when given, are applied to
+    each value as its frame reaches a leaf (see engine.process).
     """
-    __slots__ = ('_stacks', 'level', 'current')
+    __slots__ = ('_stacks', 'level', 'current', 'transforms')
 
-    def __init__(self):
+    def __init__(self, transforms=()):
         self._stacks = collections.defaultdict(collections.deque)
         self.level = 0
         self.current = self._stacks[0]
+        self.transforms = transforms
 
     def push(self, frame):
         self.current.append(frame)
@@ -432,6 +443,40 @@ class Transform(Op):
         if all(np is op for np, op in zip(new_params, self.params)):
             return self
         return Transform(self.name, *new_params)
+
+    def is_template(self):
+        """
+        True if a param is an unresolved substitution.
+        """
+        return any(hasattr(p, 'is_template') and p.is_template() for p in self.params)
+
+    def is_reference(self):
+        """
+        True if a param is an internal reference.
+        """
+        return any(hasattr(p, 'is_reference') and p.is_reference() for p in self.params)
+
+    def arguments(self, root=None, node=None, parents=()):
+        """
+        The params as the values the transform function receives: a
+        reference resolved against root, node and parents, where node is
+        the value being transformed (so $$(^x) looks x up in it) and
+        parents its ancestors, nearest first; a parsed constant, such as a
+        resolved substitution or null, unwrapped; anything else as parsed.
+        Raises UnresolvedReference when a reference does not resolve.
+        """
+        if not self.params:
+            return ()
+        args = []
+        for p in self.params:
+            if hasattr(p, 'is_reference') and p.is_reference():
+                args.append(p.resolve_ref(root, node=node, parents=parents))
+                continue
+            if isinstance(p, matchers.Const):
+                args.append(p.value)
+                continue
+            args.append(p)
+        return args
 
 
 # matchers imports this module, so it can only be bound once the classes
