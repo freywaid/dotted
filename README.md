@@ -226,6 +226,32 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.47.0
+- **`!` binds tighter than guards, filters and transforms.** `!a=5` is now
+  `(!a)=5`, the values other than `a`'s that equal 5; the old meaning,
+  everything but an `a` equal to 5, is written `!(a=5)`. Likewise `!a&k=v`
+  filters what `!a` yields and `!a|int` transforms it. See
+  [Precedence](#precedence).
+- **A guard, filter or transform after a group distributes to every branch.**
+  `(a,b)=5` is `(a=5,b=5)`, `(first&last)>5` is `(first>5&last>5)`,
+  `(a,b)|int` is `(a|int,b|int)`, and `assemble` writes the distributed form.
+  These used to fail to parse.
+- **`a,b|int` transforms only `b`.** A transform binds to the expression on
+  its left before `,` and `&`; `(a,b)|int` transforms both.
+- **`:type` tests the value a path yields, not the node it is applied to.**
+  `x:int` on `{'x': 3}` is `3`; it was `None`. Restrict a container one
+  segment earlier: `a.b:dict` → `a:dict.b`, and
+  `*[*]:!(str, bytes)` → `*:!(str, bytes)[*]`. `**:!(str, bytes)` and
+  `*(*, [*]):!(str, bytes)` now drop string values themselves, not only
+  their decomposition.
+- **`!a.b` continues into `b`.** It yielded the complement of `a` and
+  ignored `.b`; it now yields `.b` of every key other than `a`, as
+  `match` always read it.
+- **Ops own their transforms.** `Dotted.transforms` is read-only and
+  reflects the trailing op; `parse('a.b|int')` reprs as
+  `Dotted([a, b|int])`. A guard's or filter's match-only transforms,
+  `a|int=5`, are `guard_transforms`, not `transforms`.
+
 ### v0.44.0
 - **Parameter renamed from `key` to `path`** across the public API to align with
   the terminology used throughout the docs (a _path_ is the whole dotted
