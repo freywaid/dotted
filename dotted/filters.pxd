@@ -14,7 +14,7 @@ cdef class FilterKey(base.MatchOp):
 cdef class FilterKeyValue(FilterOp):
     cdef public object key
     cdef public object val
-    cdef public tuple transforms
+    cdef public tuple guard_transforms
 
     cpdef _eq_match(self, node, settings=*)
     cpdef is_filtered(self, node, settings=*)

@@ -75,6 +75,13 @@ class Wrap(base.TraversalOp):
     def is_variadic(self):
         return self.inner.is_variadic() if hasattr(self.inner, 'is_variadic') else False
 
+    def leaf_op(self):
+        """
+        The wrapped op's data-access leaf: a wrap decorates, it does not
+        access.
+        """
+        return self.inner.leaf_op()
+
     def do_match(self, rest_pats, path_ops, partial):
         """
         Variadic inners (recursive ops, groups) decide their own segment
@@ -163,6 +170,144 @@ class NopWrap(Wrap):
         return self.inner.do_remove(ops, node, val, nop=True, settings=settings)
 
 
+class TransformWrap(Wrap):
+    """
+    An op that owns transforms: a|int, each branch of (a,b)|int, !a|int.
+    What the op yields passes through them; a reference in an argument
+    sees the value as ^ and the node it came from as ^^ (see
+    results.apply_transforms). On update the value is transformed before
+    it is placed. A value whose reference does not resolve is left out.
+    """
+
+    def __init__(self, inner, transforms, *args, **kwargs):
+        super().__init__(inner, *args, **kwargs)
+        self.inner = inner
+        self.transforms = tuple(transforms)
+
+    def __repr__(self):
+        return self.operator(top=True)
+
+    def __hash__(self):
+        return hash(('transform', self.inner, self.transforms))
+
+    def __eq__(self, other):
+        return (isinstance(other, TransformWrap) and self.inner == other.inner
+                and self.transforms == other.transforms)
+
+    def operator(self, top=False):
+        return self.inner.operator(top) + ''.join('|' + t.operator() for t in self.transforms)
+
+    def is_template(self):
+        return self.inner.is_template() or any(t.is_template() for t in self.transforms)
+
+    def is_reference(self):
+        return self.inner.is_reference() or any(t.is_reference() for t in self.transforms)
+
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in the inner op and the transforms.
+        """
+        new_inner = self.inner.resolve(bindings, partial)
+        new_transforms = tuple(t.resolve(bindings, partial) for t in self.transforms)
+        if (new_inner is self.inner
+                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
+            return self
+        return TransformWrap(new_inner, new_transforms)
+
+    def concrete(self, val):
+        """
+        The concrete op for a matched key keeps the transforms, so a
+        walked path reads back as it was written: a.b|int.
+        """
+        return TransformWrap(self.inner.concrete(val), self.transforms)
+
+    def apply(self, val, settings=base.SETTINGS, parents=()):
+        """
+        val through the transforms, under settings (root, and whether
+        transforms are on at all).
+        """
+        if not settings.transforms:
+            return val
+        from . import results
+        return results.apply_transforms(val, self.transforms, settings.root, parents)
+
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        """
+        The inner op's items with the values transformed, for a guard on
+        a transformed value, (a|str):str; one whose reference does not
+        resolve is left out.
+        """
+        if not filtered:
+            return self.inner.items(node, settings=settings, filtered=False)
+        return self._items(node, settings)
+
+    def _items(self, node, settings):
+        parents = (node,) + (settings.parents or ())
+        for k, v in self.inner.items(node, settings=settings):
+            try:
+                yield k, self.apply(v, settings, parents)
+            except base.UnresolvedReference:
+                continue
+
+    def values(self, node, settings=base.SETTINGS):
+        return (v for _, v in self._items(node, settings))
+
+    def keys(self, node, settings=base.SETTINGS):
+        return (k for k, _ in self._items(node, settings))
+
+    def update(self, node, key, val):
+        """
+        The value transformed, then placed by the inner op; no settings
+        reach here, so a reference argument has no root.
+        """
+        return self.inner.update(node, key, self.apply(val))
+
+    def upsert(self, node, val):
+        return self.inner.upsert(node, self.apply(val))
+
+    def push_children(self, stack, frame, paths):
+        """
+        What the inner op pushes, transformed: each frame's node through
+        the transforms, with its parents as the reference context, and
+        its path segment carrying them; a frame whose reference does not
+        resolve is dropped.
+        """
+        mark = len(stack.current)
+        results = self.inner.push_children(stack, frame, paths)
+        pushed = [stack.current.pop() for _ in range(len(stack.current) - mark)]
+        for f in reversed(pushed):
+            try:
+                f.node = self.apply(f.node, f.settings, f.settings.parents or ())
+            except base.UnresolvedReference:
+                continue
+            if paths and len(f.prefix) > len(frame.prefix):
+                f.prefix = f.prefix[:-1] + (TransformWrap(f.prefix[-1], self.transforms),)
+            stack.push(f)
+        if not results or not frame.settings.transforms:
+            return results
+        out = []
+        for path, val in results:
+            if path is not base.CUT_SENTINEL:
+                try:
+                    val = self.apply(val, frame.settings)
+                except base.UnresolvedReference:
+                    continue
+            out.append((path, val))
+        return out
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        if not ops:
+            # the leaf: the value is transformed before it is placed; ^ is the value
+            try:
+                val = self.apply(val, settings)
+            except base.UnresolvedReference:
+                return node
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
+
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        return self.inner.do_remove(ops, node, val, nop, settings=settings)
+
+
 def _guard_repr(guard):
     """
     Produce the repr string for a guard value (the RHS of key=value).
@@ -186,7 +331,7 @@ class ValueGuard(Wrap):
             self.pred_op = predicates.NE
         else:
             self.pred_op = predicates.EQ
-        self.transforms = tuple(transforms)
+        self.guard_transforms = tuple(transforms)
 
     @property
     def negate(self):
@@ -199,12 +344,12 @@ class ValueGuard(Wrap):
         return self.operator(top=True)
 
     def __hash__(self):
-        return hash(('guard', self.inner, self.guard, self.pred_op, self.transforms))
+        return hash(('guard', self.inner, self.guard, self.pred_op, self.guard_transforms))
 
     def __eq__(self, other):
         return (isinstance(other, ValueGuard) and self.inner == other.inner
                 and self.guard == other.guard and self.pred_op == other.pred_op
-                and self.transforms == other.transforms)
+                and self.guard_transforms == other.guard_transforms)
 
     def _guard_matches(self, val, settings=base.SETTINGS, node=None):
         """
@@ -215,9 +360,9 @@ class ValueGuard(Wrap):
         """
         from . import results
         parents = () if node is None else (node,) + (settings.parents or ())
-        if self.transforms:
+        if self.guard_transforms:
             try:
-                val = results.apply_transforms(val, self.transforms, settings.root, parents)
+                val = results.apply_transforms(val, self.guard_transforms, settings.root, parents)
             except base.UnresolvedReference:
                 return False
         return results.guard_passes(self.pred_op, val, self.guard, settings.root, val, parents)
@@ -226,12 +371,23 @@ class ValueGuard(Wrap):
         """
         Render the |transform suffix for operator/assemble.
         """
-        if not self.transforms:
+        if not self.guard_transforms:
             return ''
-        return ''.join('|' + t.operator() for t in self.transforms)
+        return ''.join('|' + t.operator() for t in self.guard_transforms)
+
+    def _inner_operator(self, top=False):
+        """
+        The wrapped op as written, parenthesized when it carries value
+        transforms: (a|int)=5 is not a|int=5, whose transforms are the
+        guard's own.
+        """
+        s = self.inner.operator(top)
+        if isinstance(self.inner, TransformWrap):
+            return f'({s})'
+        return s
 
     def operator(self, top=False):
-        return self.inner.operator(top) + self._transforms_operator() + self.pred_op.op + _guard_repr(self.guard)
+        return self._inner_operator(top) + self._transforms_operator() + self.pred_op.op + _guard_repr(self.guard)
 
     def is_pattern(self):
         return self.inner.is_pattern()
@@ -245,7 +401,7 @@ class ValueGuard(Wrap):
             return True
         if hasattr(self.guard, 'is_template') and self.guard.is_template():
             return True
-        for t in self.transforms:
+        for t in self.guard_transforms:
             if hasattr(t, 'is_template') and t.is_template():
                 return True
         return False
@@ -259,7 +415,7 @@ class ValueGuard(Wrap):
             return True
         if hasattr(self.guard, 'is_reference') and self.guard.is_reference():
             return True
-        for t in self.transforms:
+        for t in self.guard_transforms:
             if hasattr(t, 'is_reference') and t.is_reference():
                 return True
         return False
@@ -276,7 +432,10 @@ class ValueGuard(Wrap):
     def values(self, node, settings=base.SETTINGS):
         return (v for v in self.inner.values(node, settings=settings) if self._guard_matches(v, settings, node))
 
-    def items(self, node, settings=base.SETTINGS):
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        if not filtered:
+            # enumerating (for a negation): every item, the guard aside
+            return self.inner.items(node, settings=settings, filtered=False)
         return ((k, v) for k, v in self.inner.items(node, settings=settings) if self._guard_matches(v, settings, node))
 
     def keys(self, node, settings=base.SETTINGS):
@@ -341,9 +500,9 @@ class ValueGuard(Wrap):
         new_inner = self.inner.resolve(bindings, partial)
         new_guard = self.guard.resolve(bindings, partial) if hasattr(self.guard, 'resolve') else self.guard
         new_transforms = tuple(
-            t.resolve(bindings, partial) for t in self.transforms)
+            t.resolve(bindings, partial) for t in self.guard_transforms)
         if (new_inner is self.inner and new_guard is self.guard
-                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
+                and all(nt is ot for nt, ot in zip(new_transforms, self.guard_transforms))):
             return self
         return ValueGuard(new_inner, new_guard, pred_op=self.pred_op, transforms=new_transforms)
 
@@ -355,7 +514,15 @@ class ValueGuard(Wrap):
         """
         return functools.partial(self._guard_matches, settings=settings)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
+    def _nop(self, nop):
+        """
+        True if this guard must not mutate: a ~ outside it (nop) or one
+        on the op it wraps, [~0]=1 and @~name=1.
+        """
+        return nop or isinstance(self.inner, NopWrap)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        nop = self._nop(nop)
         if self.inner.is_recursive():
             return self.inner._update_recursive(
                 ops, node, val, has_defaults, _path, nop, guard=self._guard(settings), settings=settings)
@@ -364,9 +531,11 @@ class ValueGuard(Wrap):
             for k in list(self.keys(node, settings=settings)):
                 node = self.inner.update(node, k, val)
             return node
-        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, settings=settings)
+        return access.BaseOp.do_update(
+            self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        nop = self._nop(nop)
         if self.inner.is_recursive():
             return self.inner._remove_recursive(
                 ops, node, val, nop, guard=self._guard(settings), settings=settings)
@@ -375,24 +544,34 @@ class ValueGuard(Wrap):
         return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)
 
 
-class TypeRestriction(Wrap):
+class TypeRestriction(ValueGuard):
     """
-    Wraps an access op with a node-type constraint.
-    :type (positive) or :!type / :!(t1, t2) (negative).
+    A type guard on what an op yields: a:dict is a, when its value is a
+    dict; :!type and :!(t1, t2) exclude types. A value guard whose test
+    is isinstance, so it reads, writes and distributes like key=value.
     """
 
     def __init__(self, inner, *types, negate=False, **kwargs):
-        super().__init__(inner, **kwargs)
-        self.inner = inner
+        super().__init__(inner, None, **kwargs)
         self.types = tuple(types)
-        self.negate = negate
+        self.exclude = negate
 
-    def allows(self, node):
+    @property
+    def negate(self):
         """
-        Return True if node's type is allowed by this restriction.
+        True for :!type, the excluding form.
         """
-        match = isinstance(node, self.types)
-        return not match if self.negate else match
+        return self.exclude
+
+    def allows(self, val):
+        """
+        True if val's type passes this restriction.
+        """
+        match = isinstance(val, self.types)
+        return not match if self.exclude else match
+
+    def _guard_matches(self, val, settings=base.SETTINGS, node=None):
+        return self.allows(val)
 
     def _type_suffix(self):
         """
@@ -404,7 +583,7 @@ class TypeRestriction(Wrap):
             inner = names[0]
         else:
             inner = f'({", ".join(names)})'
-        if self.negate:
+        if self.exclude:
             return f':!{inner}'
         return f':{inner}'
 
@@ -412,13 +591,19 @@ class TypeRestriction(Wrap):
         return f'{self.inner!r}{self._type_suffix()}'
 
     def __hash__(self):
-        return hash(('tr', self.inner, self.types, self.negate))
+        return hash(('tr', self.inner, self.types, self.exclude))
 
     def __eq__(self, other):
         return (isinstance(other, TypeRestriction)
                 and self.inner == other.inner
                 and self.types == other.types
-                and self.negate == other.negate)
+                and self.exclude == other.exclude)
+
+    def is_template(self):
+        return self.inner.is_template()
+
+    def is_reference(self):
+        return self.inner.is_reference()
 
     def resolve(self, bindings, partial=False):
         """
@@ -427,43 +612,10 @@ class TypeRestriction(Wrap):
         new_inner = self.inner.resolve(bindings, partial)
         if new_inner is self.inner:
             return self
-        return TypeRestriction(new_inner, *self.types, negate=self.negate)
+        return TypeRestriction(new_inner, *self.types, negate=self.exclude)
 
     def operator(self, top=False):
-        return self.inner.operator(top) + self._type_suffix()
-
-    def items(self, node, settings=base.SETTINGS):
-        if not self.allows(node):
-            return ()
-        return self.inner.items(node, settings=settings)
-
-    def values(self, node, settings=base.SETTINGS):
-        if not self.allows(node):
-            return ()
-        return self.inner.values(node, settings=settings)
-
-    def keys(self, node, settings=base.SETTINGS):
-        if not self.allows(node):
-            return ()
-        return self.inner.keys(node, settings=settings)
-
-    def push_children(self, stack, frame, paths):
-        """
-        Short-circuit if node type is not allowed; otherwise delegate to inner.
-        """
-        if not self.allows(frame.node):
-            return ()
-        return self.inner.push_children(stack, frame, paths)
-
-    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
-        if not self.allows(node):
-            return node
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
-
-    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
-        if not self.allows(node):
-            return node
-        return self.inner.do_remove(ops, node, val, nop, settings=settings)
+        return self._inner_operator(top) + self._type_suffix()
 
 
 class FilterWrap(Wrap):
@@ -491,6 +643,9 @@ class FilterWrap(Wrap):
     def operator(self, top=False):
         s = self.inner.operator(top)
         filter_str = ''.join(f'&{f!r}' for f in self.filters)
+        # a filter on a transformed value: (a|int)&k=v, not a|int&k=v
+        if isinstance(self.inner, TransformWrap):
+            return f'({s})' + filter_str
         # For slot-like inner ops, insert filter before closing bracket
         if s.endswith(']'):
             return s[:-1] + filter_str + ']'

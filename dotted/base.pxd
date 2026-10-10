@@ -32,6 +32,7 @@ cdef class Settings:
     cdef public object root
     cdef public object parents
     cdef public object strict
+    cdef public object transforms
 
     cpdef below(self, node)
 
@@ -49,7 +50,6 @@ cdef class DepthStack:
     cdef public object _stacks
     cdef public object level
     cdef public object current
-    cdef public tuple transforms
 
     cpdef push(self, frame)
     cpdef pop(self)

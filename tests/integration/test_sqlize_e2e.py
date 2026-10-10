@@ -118,7 +118,7 @@ def test_group_or(query):
 
 def test_group_not(query):
     # NOT (status = 'banned')
-    assert _run_where(query, '(!status = "banned")') == [1, 2, 4, 5, 6, 7]
+    assert _run_where(query, '(!(status = "banned"))') == [1, 2, 4, 5, 6, 7]
 
 
 # ---------------- guard transforms (casts) ----------------

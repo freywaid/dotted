@@ -15,6 +15,7 @@ from . import access
 from . import matchers
 from . import utils
 from . import utypes
+from . import wrappers
 
 
 class Attrs(enum.Enum):
@@ -103,7 +104,7 @@ def _parse(ops):
             parsed = grammar.template.parse_string(ops, parse_all=True)
         except pp.ParseException as e:
             raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
-    return results.Dotted(parsed)
+    return results.Dotted({'ops': parsed['ops']})
 
 
 def parse(path, bindings=None, partial=True):
@@ -114,7 +115,7 @@ def parse(path, bindings=None, partial=True):
     If partial is False, raise TypeError on unresolved templates.
 
     >>> parse('hello.there|str:"=%s"')
-    Dotted([hello, there], [str:'=%s'])
+    Dotted([hello, there|str:'=%s'])
     """
     if isinstance(path, results.Dotted):
         ops = path
@@ -406,10 +407,10 @@ def _pluck_parsed(obj, ops, strict=False):
     straight back to dotted skip the assemble and re-parse.
     """
     seen = set()
-    for path, val in engine.walk(ops, obj, paths=True, strict=strict):
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
         if path is utypes.CUT_SENTINEL:
             break
-        found = results.Dotted({'ops': path, 'transforms': ops.transforms})
+        found = results.Dotted({'ops': path})
         if found in seen:
             continue
         seen.add(found)
@@ -430,10 +431,6 @@ def build_multi(obj, paths, strict=False, bindings=None):
         built = engine.build(ops, obj, strict=strict)
         # walked paths are concrete: nothing for update() to resolve or check
         for found, val in _pluck_parsed(built, ops, strict=strict):
-            try:
-                val = found.apply(val, obj)
-            except base.UnresolvedReference:
-                continue
             obj = engine.updates(found, obj, val, strict=strict)
     return obj
 
@@ -488,11 +485,7 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
                 return ops.apply(val, obj)
             except base.UnresolvedReference:
                 return default
-    transforms = ops.transforms if apply_transforms else ()
-    vals = engine.values(ops, obj, strict=strict, transforms=transforms)
-    if ops.guard is not None:
-        vals = (v for v in vals if ops.guard_matches(v, obj))
-    found = tuple(vals)
+    found = tuple(engine.values(ops, obj, strict=strict, transforms=apply_transforms))
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
@@ -583,13 +576,7 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
         return obj
 
     ops = parse(parsed, bindings=bindings, partial=False)
-    if apply_transforms and ops.transforms:
-        # the value is transformed before it is placed: ^ is the value, no parents
-        try:
-            val = ops.apply(val, obj)
-        except base.UnresolvedReference:
-            return obj
-    return engine.updates(ops, obj, val, strict=strict)
+    return engine.updates(ops, obj, val, strict=strict, transforms=apply_transforms)
 
 
 def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
@@ -850,6 +837,9 @@ def _match_parsed(pats, path_ops, path, groups, partial):
     """
     match() on parsed arguments. `path` is what a successful match returns.
     """
+    # matching is structural: a path op's transforms, a.b|int, play no part
+    if any(isinstance(op, wrappers.TransformWrap) for op in path_ops):
+        path_ops = results.Dotted({'ops': [op.inner if isinstance(op, wrappers.TransformWrap) else op for op in path_ops]})
     # groups can be a bool, a GroupMode member, or its string value.
     _patterns_only = (groups == GroupMode.patterns
                       or groups == GroupMode.patterns.value)
@@ -1094,10 +1084,11 @@ def apply_multi(obj, patterns, strict=False, bindings=None):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(engine.values(ops, obj, strict=strict, transforms=ops.transforms), _marker)
+            first = next(engine.values(ops, obj, strict=strict), _marker)
             if first is _marker:
                 continue
-            obj = engine.updates(ops, obj, first, strict=strict)
+            # the value read is already transformed: write it back as is
+            obj = engine.updates(ops, obj, first, strict=strict, transforms=False)
     return obj
 
 
@@ -1131,10 +1122,10 @@ def _pluck_written(obj, patterns, strict=False, bindings=None):
     seen = {}
     for pattern in patterns:
         ops = parse(pattern, bindings=bindings, partial=False)
-        for path, val in engine.walk(ops, obj, paths=True, strict=strict):
+        for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
             if path is utypes.CUT_SENTINEL:
                 break
-            field, parsed = results.Dotted({'ops': path, 'transforms': ops.transforms}).written()
+            field, parsed = results.Dotted({'ops': path}).written()
             if field in seen:
                 continue
             seen[field] = None
@@ -1169,10 +1160,10 @@ def walk(obj, pattern, strict=False, bindings=None):
     [('a.b', 1), ('a.c', 2)]
     """
     ops = parse(pattern, bindings=bindings, partial=False)
-    for path, val in engine.walk(ops, obj, paths=True, strict=strict):
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
         if path is utypes.CUT_SENTINEL:
             break
-        yield results.Dotted({'ops': path, 'transforms': ops.transforms}).assemble(), val
+        yield results.Dotted({'ops': path}).assemble(), val
 
 
 def walk_multi(obj, patterns, strict=False, bindings=None):

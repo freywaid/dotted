@@ -19,6 +19,37 @@ the ones listed are omitted — browse git history for earlier entries.
   the parsed wrapper, so the transform failed and returned the value
   unchanged. `null`, `true` and `false` arguments are likewise unwrapped.
 - A reference as a guard or filter value raised `AttributeError`.
+- A value guard after an attribute access, `o@name=5`, or after a group,
+  `(a,b)=5`, raised `ValueError` when parsed.
+- A value guard under `~` did not hold for writes: `~a=1` raised
+  `TypeError` on `update` and `remove`, and `[~0]=1` mutated.
+- `!a.b` yielded the complement of `a` and dropped the `.b`; it now
+  continues into `b` from each key other than `a`.
+
+### Changed
+- Precedence, tightest first: access ops and `:type`; `!`; then guards,
+  filters and transforms; then `&`; then `,`. A guard, filter or
+  transform applies to the whole expression on its left. After a
+  parenthesized `,`, `&` or `?` group it is shorthand for writing it on
+  every branch: `(a,b)=5` is `(a=5,b=5)`, `(first&last)>5` is
+  `(first>5&last>5)`, `(a,b)|int` is `(a|int,b|int)`, which is also how
+  `assemble` writes them. After `!` it applies to what the negation
+  yields: `!a=5` is `(!a)=5`, the non-`a` values equal to 5, where it was
+  `!(a=5)`; that reading now needs the parentheses. `a,b|int` transforms
+  only `b`. `@attr=value` is a value guard like `key=value`, honored by
+  `update` and `remove`.
+- `:type` tests the value a path yields, not the node it is applied to:
+  `x:int` is `x`, when its value is an `int`, a type guard beside `=value`
+  at the same level, so `(a|int):int` types a transformed value and
+  `*:dict` is the values that are dicts. It tested the container, so
+  `x:int` on `{'x': 3}` was `None`. A restriction on the container moves
+  one segment earlier: old `a.b:dict` is new `a:dict.b`, and
+  `*[*]:!(str, bytes)` is `*:!(str, bytes)[*]`.
+- Every op owns its transforms: `a.b|int` carries `int` on `b`, so a
+  transform can sit inside a group and `expand`, `pluck` and `unpack`
+  write it back on each concrete path. `Dotted.transforms` is the
+  trailing op's, read-only. The match-only transforms of a guard or
+  filter, `a|int=5`, are its `guard_transforms`.
 - For development: the `.pxd` files cimport `dotted.base` by its full
   name, which the compiler's dependency scanner follows, so a change to
   `base.pxd` rebuilds every compiled module that depends on it. Written

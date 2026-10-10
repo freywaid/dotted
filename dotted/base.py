@@ -155,12 +155,13 @@ class Settings:
     parents when a reference needs it, and strict. Made once by the engine
     and passed down every call; see SETTINGS for calls made without one.
     """
-    __slots__ = ('root', 'parents', 'strict')
+    __slots__ = ('root', 'parents', 'strict', 'transforms')
 
-    def __init__(self, root, strict=False, parents=None):
+    def __init__(self, root, strict=False, parents=None, transforms=True):
         self.root = root
         self.parents = parents
         self.strict = strict
+        self.transforms = transforms  # False: apply_transforms=False, ops' transforms are skipped
 
     def below(self, node):
         """
@@ -169,7 +170,7 @@ class Settings:
         """
         if self.parents is None:
             return self
-        return Settings(self.root, self.strict, (node,) + self.parents)
+        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms)
 
 
 # For a traversal method called on its own, outside any traversal: no root,
@@ -205,16 +206,14 @@ class DepthStack:
     """
     Stack of substacks, indexed by depth. Each depth level is a deque.
     OpGroups push a new level for branch isolation; simple ops push
-    onto the current level. The transforms, when given, are applied to
-    each value as its frame reaches a leaf (see engine.process).
+    onto the current level.
     """
-    __slots__ = ('_stacks', 'level', 'current', 'transforms')
+    __slots__ = ('_stacks', 'level', 'current')
 
-    def __init__(self, transforms=()):
+    def __init__(self):
         self._stacks = collections.defaultdict(collections.deque)
         self.level = 0
         self.current = self._stacks[0]
-        self.transforms = transforms
 
     def push(self, frame):
         self.current.append(frame)

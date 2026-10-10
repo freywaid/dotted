@@ -599,14 +599,17 @@ def test_top_level_negate_wildcard():
 
 def test_top_level_negate_vs_paren_negate_then_traverse():
     """
-    !a.b negates compound path; (!a).b negates a then traverses .b.
+    !a.b is !(a.b): negate a, then traverse .b from every other key, which
+    is also what (!a).b does.
     """
     d = {'a': {'b': 1, 'c': 2}, 'x': 3}
-    # !a.b == !(a.b) — negate compound path
-    r1 = dotted.get(d, '!a.b')
-    # (!a).b — negate a (gives x:3), then traverse .b on 3 (nothing)
-    r2 = dotted.get(d, '(!a).b')
-    assert r1 != r2
+    # x is 3, so there is no .b to traverse into
+    assert dotted.get(d, '!a.b') == ()
+    assert dotted.get(d, '(!a).b') == ()
+    d = {'a': {'b': 1}, 'c': {'b': 2}, 'x': 3}
+    assert dotted.get(d, '!a.b') == (2,)
+    assert dotted.get(d, '!(a.b)') == (2,)
+    assert dotted.get(d, '(!a).b') == (2,)
 
 
 # =============================================================================

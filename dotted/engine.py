@@ -93,11 +93,11 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, strict=False, settings=None, transforms=()):
+def values(ops, node, strict=False, settings=None, transforms=True):
     """
     Yield the value of every match, stopping at a cut. The same values as
-    iter_until_cut(gets(...)), through one generator. transforms, when
-    given, are applied to each value at its leaf (see walk).
+    iter_until_cut(gets(...)), through one generator. transforms=False
+    skips the ops' transforms (apply_transforms=False).
     """
     for path, val in walk(ops, node, False, strict, settings, transforms):
         if path is base.CUT_SENTINEL:
@@ -124,15 +124,7 @@ def process(stack, paths):
     while stack.level >= level and stack.current:
         frame = stack.pop()
         if not frame.ops:
-            val = frame.node
-            if stack.transforms:
-                # at the leaf: ^ is the value, ^^ and up its tracked parents
-                try:
-                    val = results.apply_transforms(
-                        val, stack.transforms, frame.settings.root, frame.settings.parents or ())
-                except base.UnresolvedReference:
-                    continue
-            yield (frame.prefix if paths else None, val)
+            yield (frame.prefix if paths else None, frame.node)
             continue
         yield from advance(frame, stack, paths)
 
@@ -147,26 +139,24 @@ def advance(frame, stack, paths):
     return op.push_children(stack, frame, paths)
 
 
-def settings_for(ops, node, strict, settings):
+def settings_for(ops, node, strict, settings, transforms=True):
     """
     The Settings a traversal of `ops` from `node` runs under: the ones
     passed in when this is a traversal within another, else new ones.
     """
     if settings is not None:
         return settings
-    return base.Settings(node, strict, () if _needs_parents(ops) else None)
+    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms)
 
 
-def walk(ops, node, paths=True, strict=False, settings=None, transforms=()):
+def walk(ops, node, paths=True, strict=False, settings=None, transforms=True):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
-    transforms, when given, are applied to each value at its leaf, where a
-    reference in an argument sees the value's parents; a value whose
-    reference does not resolve is left out.
+    transforms=False skips the ops' transforms (apply_transforms=False).
     """
-    settings = settings_for(ops, node, strict, settings)
-    stack = base.DepthStack(tuple(transforms))
+    settings = settings_for(ops, node, strict, settings, transforms)
+    stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
 
@@ -216,8 +206,8 @@ def _format_path(segments):
     return ''.join(result)
 
 
-def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=False, settings=None):
-    settings = settings_for(ops, node, strict, settings)
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=False, settings=None, transforms=True):
+    settings = settings_for(ops, node, strict, settings, transforms)
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -241,7 +231,7 @@ def expands(ops, node, strict=False, settings=None):
     """
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, True, strict, settings):
+    for path, val in walk(ops, node, True, strict, settings, False):
         if path is base.CUT_SENTINEL:
             return
-        yield Dotted({'ops': path, 'transforms': ops.transforms})
+        yield Dotted({'ops': path})

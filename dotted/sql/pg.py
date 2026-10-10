@@ -331,6 +331,11 @@ class PostgresMixin:
             return {'select': self._path_expr(col_ident, prefix, text=bool(prefix))}
         op = ops[0]
         rest = ops[1:]
+        # value transforms, a.b|int, have no SQL side: translate the op under them
+        if isinstance(op, wrappers.TransformWrap):
+            op = op.inner
+        if isinstance(op, wrappers.TypeRestriction):
+            raise TranslationError('type restriction not supported')
         # Groups: each branch is walked independently, so dispatch first
         # (OpGroup has is_pattern=True but shouldn't take the pattern-mode
         # path wholesale).
@@ -450,6 +455,10 @@ class PostgresMixin:
         expression placed inside `? (...)` after the fragment — used
         for guards and bracket filters.
         """
+        if isinstance(op, wrappers.TransformWrap):
+            return self._op_to_jsonpath(op.inner, jvars)
+        if isinstance(op, wrappers.TypeRestriction):
+            raise TranslationError('type restriction not supported')
         # NB: Slot is a subclass of Key, so check Slot first.
         if isinstance(op, access.Slot):
             return self._key_slot_to_jsonpath(op, is_key=False), None
@@ -526,7 +535,7 @@ class PostgresMixin:
         Translate a ValueGuard's predicate to a JSONPath filter
         expression (without the surrounding `? (...)`).
         """
-        if guard_op.transforms:
+        if guard_op.guard_transforms:
             raise TranslationError(
                 'guard transforms inside pattern paths not supported yet'
             )
@@ -618,7 +627,7 @@ class PostgresMixin:
         """
         if isinstance(f, _filters.FilterKeyValue):
             # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
-            if f.transforms:
+            if f.guard_transforms:
                 raise TranslationError(
                     'filter transforms inside pattern paths not supported yet'
                 )
@@ -766,7 +775,7 @@ class PostgresMixin:
         Build a WHERE predicate for a guard on a scalar (non-JSONB)
         column.
         """
-        if guard_op.transforms:
+        if guard_op.guard_transforms:
             raise TranslationError(
                 'guard transforms on scalar columns not supported in v1'
             )
@@ -805,8 +814,8 @@ class PostgresMixin:
         jsonb_expr = self._path_expr(col_ident, full_prefix, text=False)
         pred = guard_op.pred_op
         val = guard_op.guard
-        if guard_op.transforms:
-            cast = self._transforms_to_cast(guard_op.transforms)
+        if guard_op.guard_transforms:
+            cast = self._transforms_to_cast(guard_op.guard_transforms)
             lhs = f'({text_expr})::{cast}'
             return self._compare_with_lhs(lhs, pred, val)
         if isinstance(val, matchers.NoneValue):

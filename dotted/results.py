@@ -6,6 +6,7 @@ import itertools
 from . import base
 from . import predicates
 from . import utils
+from . import wrappers
 from .access import Attr, Invert, Key, Slot
 from .matchers import Const
 from .utils import lazyprop
@@ -29,36 +30,18 @@ class Dotted:
 
     def __init__(self, results):
         self.ops = tuple(results['ops'])
-        self.transforms = tuple(results.get('transforms', ()))
-        guard_raw = results.get('guard', ())
-        if guard_raw:
-            op, val = guard_raw
-            self.guard = val
-            self.guard_op = predicates.PRED_OPS.get(op, predicates.EQ)
-        else:
-            self.guard = None
-            self.guard_op = predicates.EQ
         self._hash = None
 
     @property
-    def guard_negate(self):
+    def transforms(self):
         """
-        Backward compat: True when guard_op is NE.
+        The transforms on the last op, a.b|int, or () — ops own their
+        transforms; this is the trailing ones as a path shows them.
         """
-        return self.guard_op is predicates.NE
-
-    def guard_matches(self, val, root=None, parents=()):
-        """
-        True if val passes the template-level guard (or if no guard is set).
-        A guard reference resolves against root, with ^ the value itself
-        and ^^ and up its parents (see guard_passes).
-        """
-        if self.guard is None:
-            return True
-        return guard_passes(self.guard_op, val, self.guard, root, val, parents)
+        return self.ops[-1].transforms if self.ops and isinstance(self.ops[-1], wrappers.TransformWrap) else ()
 
     def assemble(self, start=0, pedantic=False):
-        return assemble(self, start, pedantic=pedantic, transforms=self.transforms)
+        return assemble(self, start, pedantic=pedantic)
 
     def written(self):
         """
@@ -67,13 +50,11 @@ class Dotted:
         it is what the string says without having to parse it.
         """
         parts, dropped = render(self.ops)
-        for t in self.transforms:
-            parts.append('|' + t.operator())
         if not dropped:
             return ''.join(parts), self
-        return ''.join(parts), Dotted({'ops': self.ops[:-1], 'transforms': self.transforms})
+        return ''.join(parts), Dotted({'ops': self.ops[:-1]})
     def __repr__(self):
-        return f'{self.__class__.__name__}({list(self.ops)}, {list(self.transforms)})'
+        return f'{self.__class__.__name__}({list(self.ops)})'
     @staticmethod
     def _hashable(obj):
         """
@@ -92,40 +73,29 @@ class Dotted:
         return obj
     def __hash__(self):
         if self._hash is None:
-            try:
-                self._hash = hash((self.ops, self.transforms, self.guard, self.guard_op))
-            except TypeError:
-                self._hash = hash((self.ops, Dotted._hashable(self.transforms), self.guard, self.guard_op))
+            # not hash(self.ops): a Dotted must not collide with its own ops tuple
+            self._hash = hash(('dotted', self.ops))
         return self._hash
     def __len__(self):
         return len(self.ops)
     def __iter__(self):
         return iter(self.ops)
     def __eq__(self, ops):
-        return (self.ops == ops.ops and self.transforms == ops.transforms
-                and self.guard == ops.guard and self.guard_op == ops.guard_op)
+        return isinstance(ops, Dotted) and self.ops == ops.ops
     def __getitem__(self, key):
         return self.ops[key]
     def resolve(self, bindings, partial=False):
         """
-        Return a new Dotted with all $N resolved in ops, transforms, and guard.
+        Return a new Dotted with all $N resolved in the ops.
         """
         new_ops = tuple(op.resolve(bindings, partial) for op in self.ops)
-        new_transforms = tuple(t.resolve(bindings, partial) for t in self.transforms)
-        new_guard = (
-            self.guard.resolve(bindings, partial)
-            if self.guard is not None and hasattr(self.guard, 'resolve')
-            else self.guard)
-        if (all(no is oo for no, oo in zip(new_ops, self.ops))
-                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))
-                and new_guard is self.guard):
+        if all(no is oo for no, oo in zip(new_ops, self.ops)):
             return self
-        guard_raw = (self.guard_op.op, new_guard) if new_guard is not None else ()
-        return Dotted({'ops': new_ops, 'transforms': new_transforms, 'guard': guard_raw})
+        return Dotted({'ops': new_ops})
 
     def apply(self, val, root=None, parents=()):
         """
-        val through this path's transforms (see apply_transforms).
+        val through the trailing transforms (see apply_transforms).
         """
         return apply_transforms(val, self.transforms, root, parents)
 
@@ -145,7 +115,7 @@ class Dotted:
         guard reaching the node holding the value or above. Computed once
         per parsed path.
         """
-        return needs_parents(self.ops, self.transforms, self.guard)
+        return needs_parents(self.ops)
 
     @lazyprop
     def simple_chain(self):
@@ -157,10 +127,14 @@ class Dotted:
         cached; drives the fast path in get() that skips walk().
         kind is 'key', 'attr', or 'slot'.
         """
-        if self.guard is not None or self.needs_parents:
+        if self.needs_parents:
             return None
+        ops = self.ops
+        if ops and isinstance(ops[-1], wrappers.TransformWrap):
+            # trailing transforms apply after the lookup (see get)
+            ops = ops[:-1] + (ops[-1].inner,)
         chain = []
-        for op in self.ops:
+        for op in ops:
             # exact types: subclasses like SlotSpecial have different semantics
             if type(op) not in (Key, Attr, Slot):
                 return None
@@ -181,14 +155,19 @@ def _reaches_above(params):
     return any(getattr(p, 'depth', 0) >= 2 for p in params)
 
 
-def needs_parents(ops, transforms=(), guard=None):
+def needs_parents(ops, transforms=()):
     """
     True if a reference needs _parents tracking during traversal: in an
     access position, a relative reference with depth >= 2 (parent or
-    higher); in a guard, filter or transform, where ^ is the value under
-    test, any reference, since its parents are the ancestors.
+    higher); in an op's transforms, where ^ is the value, one reaching
+    ^^ or above; in a guard or filter, any reference, since its parents
+    are the ancestors.
     """
     for op in ops:
+        if isinstance(op, wrappers.TransformWrap):
+            if any(_reaches_above(t.params) for t in op.transforms):
+                return True
+            op = op.inner
         # the matcher in the access position, when the op has one
         # (Invert's op is the NOP sentinel, not a matcher)
         matcher = getattr(op.most_inner, 'op', None)
@@ -198,9 +177,7 @@ def needs_parents(ops, transforms=(), guard=None):
             continue
         if op.is_reference():
             return True
-    if any(_reaches_above(t.params) for t in transforms):
-        return True
-    return guard is not None and _reaches_above((guard,))
+    return any(_reaches_above(t.params) for t in transforms)
 
 
 def apply_transforms(val, transforms, root=None, parents=()):

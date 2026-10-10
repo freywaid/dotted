@@ -13,14 +13,14 @@ cdef class NopWrap(Wrap):
 cdef class ValueGuard(Wrap):
     cdef public object guard
     cdef public object pred_op
-    cdef public tuple transforms
+    cdef public tuple guard_transforms
 
 
-cdef class TypeRestriction(Wrap):
+cdef class TypeRestriction(ValueGuard):
     cdef public tuple types
-    cdef public object negate
+    cdef public object exclude
 
-    cpdef allows(self, node)
+    cpdef allows(self, val)
 
 
 cdef class FilterWrap(Wrap):

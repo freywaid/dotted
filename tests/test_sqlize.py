@@ -216,7 +216,7 @@ def test_group_or():
 
 
 def test_group_not():
-    r = sqlize('data.(!status="banned")')
+    r = sqlize('data.(!(status="banned"))')
     sql, params = Resolver.build(r.where)
     assert sql == "NOT ((data #>> '{status}') = :_p1)"
     assert params == {'_p1': 'banned'}
@@ -710,7 +710,7 @@ def test_ps_group_and(paramstyle):
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_group_not(paramstyle):
-    r = sqlize('data.(!status="banned")')
+    r = sqlize('data.(!(status="banned"))')
     sql, values = Resolver.build(r.where, paramstyle=paramstyle)
     ph = _placeholder(paramstyle, '_p1', 1)
     assert sql == f"NOT ((data #>> '{{status}}') = {ph})"

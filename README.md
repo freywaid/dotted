@@ -1585,17 +1585,19 @@ To use a literal `$$` as a key, escape with backslash (`\$$`) or quote it
 <a id="type-restrictions"></a>
 ## Type Restrictions
 
-A **type restriction** constrains a path segment so it only applies when the
-current node is a specific type. Append `:type` after any accessor — key,
-slot, or attr:
+A **type restriction** keeps a value only if it is of a given type. Append
+`:type` to a path: `x:int` is `x`, when its value is an `int`, so it reads
+like a guard, `x=5`, with a type in place of a value:
 
     >>> import dotted
     >>> d = {'a': {'b': 1}, 'c': [1, 2], 'd': 'hello'}
+    >>> dotted.get(d, '*:dict')
+    ({'b': 1},)
     >>> dotted.get(d, '*:dict.*')
     (1,)
 
-Here `*:dict` matches all keys but only descends into values that are dicts.
-The list and string are skipped.
+Here `*:dict` keeps the values that are dicts, and `.*` continues into them.
+The list and string are dropped.
 
 Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
 `set`, `frozenset`, `bool`.
@@ -1625,17 +1627,16 @@ Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
 
 Type restrictions work on slot and attr accessors too:
 
-    >>> dotted.get([10, 20], '[0]:list')
-    10
-    >>> dotted.get((10, 20), '[0]:list', 'missing')
+    >>> dotted.get([10, 'x', 20], '[*]:int')
+    (10, 20)
+    >>> dotted.get([10, 20], '[0]:list', 'missing')
     'missing'
-    >>> dotted.get((10, 20), '[0]:tuple')
-    10
 
-Use `:!(str, bytes)` on slot wildcards to prevent string and bytes decomposition:
+A string or bytes value decomposes under `[*]`; to keep that from happening,
+restrict the value before the slot:
 
     >>> d = {'s': 'abc', 'b': b'xyz', 'l': [1, 2]}
-    >>> dotted.get(d, '*[*]:!(str, bytes)')
+    >>> dotted.get(d, '*:!(str, bytes)[*]')
     (1, 2)
 
 <a id="combining-with-filters"></a>
@@ -1647,11 +1648,23 @@ Type restrictions compose with filters. The restriction goes before the filter:
     >>> dotted.get(d, '*:dict&x=1.*')
     (1, 2)
 
+<a id="typing-a-transformed-value"></a>
+### Typing a transformed value
+
+A restriction after a parenthesized group applies to what the group yields,
+transforms included. A `:` directly after a transform name is a parameter,
+`a|int:16`, so the parentheses are what make it a type:
+
+    >>> dotted.get({'a': '5', 'b': 'x'}, '(*|int):int')
+    (5,)
+
+Here `|int` leaves `'x'` as it was, and `:int` drops it.
+
 <a id="recursive-traversal-with-type-restrictions"></a>
 ### Recursive traversal with type restrictions
 
-Type restrictions are especially useful in recursive accessor groups to control
-which containers are traversed:
+Type restrictions are especially useful in recursive accessor groups to keep
+the traversal to values of certain types:
 
     >>> d = {'a': {'b': [1, 2]}, 'c': 'hello'}
     >>> dotted.get(d, '*(*#, [*]:!(str, bytes))')
@@ -1661,11 +1674,12 @@ Without `:!(str, bytes)`, the `[*]` slot accessor would decompose `'hello'`
 into individual characters.
 
 A type restriction can also be applied to an entire group, which distributes it
-to every accessor in the group:
+to every accessor in the group. Here it drops the string `'hello'` as well,
+since the `*` accessor yields it too:
 
     >>> d = {'a': {'b': [1, 2]}, 'c': 'hello'}
     >>> dotted.get(d, '*(*#, [*]):!(str, bytes)')
-    ({'b': [1, 2]}, [1, 2], 1, 2, 'hello')
+    ({'b': [1, 2]}, [1, 2], 1, 2)
 
 The `**` shorthand accepts a type restriction too. It can be combined with a
 depth slice — the type restriction comes first:
@@ -2016,27 +2030,45 @@ Updates and removes apply to all non-matching keys:
 <a id="precedence"></a>
 ### Precedence
 
-Access ops (`.`, `@`, `[]`) bind tightest—they build compound paths
-before any operator sees them. Then `!`, then `&`, then `,`:
+Tightest first:
 
-| Precedence | Operator | Example |
-|------------|----------|---------|
-| tightest   | `.` `@` `[]` (access ops) | `a.b` is one path |
-|            | `!` (negation) | `!a.b` = `!(a.b)` |
-|            | `&` (conjunction) | `!a&b` = `(!a)&b` |
-| loosest    | `,` (disjunction) | `!a&b,c` = `((!a)&b),c` |
+| Level | Operators | Example |
+|-------|-----------|---------|
+| 1 | access ops `.` `@` `[]`, parentheses | `!a.b` is `!(a.b)` |
+| 2 | `!` negation | `!a=5` is `(!a)=5` |
+| 3 | `:type`, `\|transform`, guard `=value`, filter `&key=value` | `!a\|int=5` tests `int` of each `(!a)` value |
+| 4 | `&` conjunction | `!a=5&b` is `((!a)=5)&b` |
+| 5 | `,` disjunction | `a,b\|int` is `a,(b\|int)` |
+
+A guard, filter or transform applies to the whole expression on its left:
+an access path (on its last segment), a `!` expression (on what it
+yields), or a parenthesized group, where it is shorthand for writing it on
+every branch: `(a,b)=5` is `(a=5,b=5)` and `(a,b)|int` is `(a|int,b|int)`,
+which is also how `assemble` writes them.
 
     >>> d = {'a': 1, 'b': 2, 'c': 3}
-    >>> dotted.get(d, '!a&b,c')       # parsed as ((!a)&b), c
+    >>> dotted.get(d, '!a&b,c')       # ((!a)&b), c
     (2, 3, 2, 3)
-
-Since `.` binds tightest, `!a.b&c` is `(!a.b) & c`, not `!(a.b&c)`:
-
-    >>> d = {'a': {'b': 1}, 'c': 2, 'x': 3}
-    >>> dotted.get(d, '!a.b&c')       # (!a.b)&c — negate a.b, conjoin with c
-    (2, 3, 2)
-    >>> dotted.get(d, '!(a.b&c)')     # negate the conjunction as a unit
+    >>> dotted.get(d, '!a=3')         # (!a)=3: the values other than a's equal to 3
     (3,)
+    >>> dotted.get(d, '!(a=3)')       # everything but an a equal to 3
+    (1, 2, 3)
+    >>> dotted.get({'a': '1', 'b': '2'}, '(a,b)|int')
+    (1, 2)
+    >>> dotted.get({'a': '1', 'b': '2'}, 'a,b|int')
+    ('1', 2)
+
+Since access ops bind tightest, `!a.b` negates `a` and continues into `b`
+from every other key, and `!a.b&x` conjoins that with `x`:
+
+    >>> d = {'a': {'b': 1}, 'c': {'b': 2}, 'x': 3}
+    >>> dotted.get(d, '!a.b')
+    (2,)
+    >>> dotted.get(d, '!a.b&x')
+    (2, 3)
+
+A `:` after a transform name is always a parameter, `a|int:16`; to type a
+transformed value, parenthesize: `(a|int):int`.
 
 <a id="operators"></a>
 ## Operators
@@ -2415,8 +2447,8 @@ Filters support `True`, `False`, and `None` as values:
 ### Value guard
 
 A **value guard** tests the value at a path and yields it only if it matches.
-Use `key=value` or `[slot]=value` after accessing a field. All comparison
-operators (`=`, `!=`, `<`, `>`, `<=`, `>=`) are supported:
+Use `key=value`, `[slot]=value` or `@attr=value` after accessing a field. All
+comparison operators (`=`, `!=`, `<`, `>`, `<=`, `>=`) are supported:
 
     >>> d = {'first': 7, 'last': 3}
     >>> dotted.get(d, 'first=7')
@@ -2434,6 +2466,19 @@ For lists of primitive values, use `[*]=value`:
     (7, 7)
     >>> dotted.get(data, '[0]=1')
     1
+
+A guard after a parenthesized group is shorthand for a guard on every
+branch: `(first,last)>5` is `(first>5,last>5)`, and `(first&last)>5` is
+`(first>5&last>5)`, which yields nothing unless both pass. After `!` it
+tests what the negation yields, so `!first=3` is the non-`first` values
+equal to 3; see [Precedence](#precedence).
+
+    >>> dotted.get(d, '(first,last)>5')
+    (7,)
+    >>> dotted.get(d, '(first&last)>5')
+    ()
+    >>> dotted.get(d, '!first=3')
+    (3,)
 
 Guards support all value types: numbers, `None`, `True`/`False`, strings, regex, `*`,
 and [container patterns](#container-filter-values) (`[1, ...]`, `{"a": 1, ...: *}`, `{1, 2, ...}`):

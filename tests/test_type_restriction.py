@@ -168,18 +168,21 @@ def test_slot_wildcard_exclude_str():
 
 def test_slot_wildcard_exclude_str_bytes():
     """
-    [*]:!(str, bytes) skips both strings and bytes.
+    *:!(str, bytes)[*] keeps strings and bytes from decomposing: the
+    restriction goes on the value before the slot.
     """
     d = {'s': 'abc', 'b': b'xyz', 'l': [1, 2]}
-    result = list(dotted.pluck(d, '*[*]:!(str, bytes)'))
+    result = list(dotted.pluck(d, '*:!(str, bytes)[*]'))
     assert result == [('l[0]', 1), ('l[1]', 2)]
 
 
-def test_slot_list_only():
+def test_slot_typed_value():
     """
-    [0]:list only accesses if node is a list.
+    [0]:int keeps the slot's value when it is an int; :list drops it.
     """
-    assert dotted.get([10, 20], '[0]:list') == 10
+    assert dotted.get([10, 20], '[0]:int') == 10
+    assert dotted.get([10, 'x', 20], '[*]:int') == (10, 20)
+    assert dotted.get([10, 20], '[0]:list', 'missing') == 'missing'
 
 
 def test_slot_list_on_dict():
@@ -190,11 +193,11 @@ def test_slot_list_on_dict():
     assert dotted.get(d, '[0]:list', 'missing') == 'missing'
 
 
-def test_slot_tuple_only():
+def test_slot_tuple_values():
     """
-    [0]:tuple only accesses tuples.
+    [*]:tuple keeps the values that are tuples.
     """
-    assert dotted.get((10, 20), '[0]:tuple') == 10
+    assert dotted.get(((1, 2), 3), '[*]:tuple') == ((1, 2),)
     assert dotted.get([10, 20], '[0]:tuple', 'missing') == 'missing'
 
 
@@ -230,11 +233,11 @@ def test_slot_type_with_filter():
     [*&filter]:type combines filter and type restriction on slots.
     """
     d = {'items': [{'name': 'a', 'val': 1}, {'name': 'b', 'val': 2}]}
-    # Filter by name, restrict to list type (container is a list)
-    result = dotted.get(d, 'items[*&name="b"]:list')
+    # Filter by name, keep the value when it is a dict
+    result = dotted.get(d, 'items[*&name="b"]:dict')
     assert result == ({'name': 'b', 'val': 2},)
-    # Same filter but wrong type restriction — container is a list, not a dict
-    result2 = dotted.get(d, 'items[*&name="b"]:dict')
+    # Same filter but a type the value is not
+    result2 = dotted.get(d, 'items[*&name="b"]:list')
     assert result2 == ()
 
 
@@ -272,13 +275,14 @@ def test_recursive_with_typed_accessors():
 # -- Type restrictions on OpGroups --
 
 @pytest.mark.parametrize('expr,expected', [
-    ('(*, [*]):!(str, bytes)', '(*,[*]):!(str, bytes)'),
-    ('(*#, [*]):dict', '(*#,[*]):dict'),
-    ('(*, [*]):!str', '(*,[*]):!str'),
+    ('(*, [*]):!(str, bytes)', '(*:!(str, bytes),[*]:!(str, bytes))'),
+    ('(*#, [*]):dict', '(*:dict#,[*]:dict)'),
+    ('(*, [*]):!str', '(*:!str,[*]:!str)'),
 ])
 def test_group_type_restriction_round_trip(expr, expected):
     """
-    OpGroup with type restriction parses and assembles.
+    A type restriction on a group distributes to every branch, which is
+    how it assembles.
     """
     ops = dotted.api.parse(expr)
     assert ops.assemble() == expected
@@ -289,13 +293,12 @@ def test_group_type_restriction_skips_str():
     (*, [*]):!(str, bytes) skips strings in non-recursive context.
     """
     d = {'items': [1, 2], 'name': 'hello'}
-    # The group wraps in TypeRestriction — skips str/bytes nodes
+    # the restriction distributes to both accessors: no str value is yielded
     result = dotted.get(d, '*(*, [*]):!(str, bytes)')
     vals = list(result)
     assert 1 in vals
     assert 2 in vals
-    # 'hello' is yielded by * (key access on dict), but [*] won't decompose it
-    assert 'hello' in vals
+    assert 'hello' not in vals
     assert 'h' not in vals
 
 
@@ -325,7 +328,7 @@ def test_dstar_type_restriction():
     """
     d = {'a': {'b': 1}, 'c': 'hello'}
     result = dotted.get(d, '**:!(str, bytes)')
-    assert result == ({'b': 1}, 1, 'hello')
+    assert result == ({'b': 1}, 1)
 
 
 def test_dstar_type_restriction_with_depth():
@@ -349,7 +352,8 @@ def test_recursive_group_type_restriction():
     assert [1, 2] in vals
     assert 1 in vals
     assert 2 in vals
-    assert 'hello' in vals
+    # the restriction is on the * accessor too, so the str value itself is dropped
+    assert 'hello' not in vals
     assert 'h' not in vals
 
 
@@ -359,4 +363,4 @@ def test_recursive_group_type_restriction_with_depth():
     """
     d = {'a': {'b': [1, 2, 3]}, 'x': {'y': {'z': [4, 5]}}, 'extra': 'stuff'}
     result = dotted.get(d, '*(*#, [*]):!(str, bytes):0')
-    assert result == ({'b': [1, 2, 3]}, {'y': {'z': [4, 5]}}, 'stuff')
+    assert result == ({'b': [1, 2, 3]}, {'y': {'z': [4, 5]}})

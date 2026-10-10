@@ -202,20 +202,20 @@ class FilterKeyValue(FilterOp):
             self.key = items[0]
             self.val = items[-1]
             # Middle items are Transform objects
-            self.transforms = tuple(
+            self.guard_transforms = tuple(
                 item for item in items[1:-1]
                 if isinstance(item, base.Transform)
             )
         else:
             self.key = self.args[0]
             self.val = self.args[1]
-            self.transforms = ()
+            self.guard_transforms = ()
 
     def __hash__(self):
-        return hash((self._eq_str, self.key, self.val, self.transforms))
+        return hash((self._eq_str, self.key, self.val, self.guard_transforms))
 
     def __repr__(self):
-        t_str = ''.join('|' + t.operator() for t in self.transforms) if self.transforms else ''
+        t_str = ''.join('|' + t.operator() for t in self.guard_transforms) if self.guard_transforms else ''
         return f'{self.key}{t_str}{self._eq_str}{self.val}'
 
     def is_template(self):
@@ -226,7 +226,7 @@ class FilterKeyValue(FilterOp):
             return True
         if hasattr(self.val, 'is_template') and self.val.is_template():
             return True
-        return _any_template(self.transforms)
+        return _any_template(self.guard_transforms)
 
     def is_reference(self):
         """
@@ -237,7 +237,7 @@ class FilterKeyValue(FilterOp):
             return True
         if hasattr(self.val, 'is_reference') and self.val.is_reference():
             return True
-        return _any_reference(self.transforms)
+        return _any_reference(self.guard_transforms)
 
     def _eq_match(self, node, settings=base.SETTINGS):
         """
@@ -260,8 +260,8 @@ class FilterKeyValue(FilterOp):
             if not found:
                 continue
             try:
-                if self.transforms:
-                    val = results.apply_transforms(val, self.transforms, settings.root, parents)
+                if self.guard_transforms:
+                    val = results.apply_transforms(val, self.guard_transforms, settings.root, parents)
             except base.UnresolvedReference:
                 continue
             if results.guard_passes(pred_op, val, self.val, settings.root, val, parents):
@@ -305,12 +305,12 @@ class FilterKeyValue(FilterOp):
         new_key = self.key.resolve(bindings, partial) if hasattr(self.key, 'resolve') else self.key
         new_val = self.val.resolve(bindings, partial) if hasattr(self.val, 'resolve') else self.val
         new_transforms = tuple(
-            t.resolve(bindings, partial) for t in self.transforms)
+            t.resolve(bindings, partial) for t in self.guard_transforms)
         if (new_key is self.key and new_val is self.val
-                and all(nt is ot for nt, ot in zip(new_transforms, self.transforms))):
+                and all(nt is ot for nt, ot in zip(new_transforms, self.guard_transforms))):
             return self
         result = type(self)(new_key, new_val)
-        result.transforms = new_transforms
+        result.guard_transforms = new_transforms
         return result
 
 

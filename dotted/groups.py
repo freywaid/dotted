@@ -700,11 +700,61 @@ class OpGroupNot(OpGroup):
         if not inner:
             return ()
         leaf = inner[0].leaf_op()
+        # the rest of the negated branch continues from each complement item
+        ops = tuple(inner[1:]) + tuple(frame.ops)
+        below = frame.settings.below(frame.node)
         children = list(self._not_items(frame.node, settings=frame.settings))
         for k, v in reversed(children):
             cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
+            stack.push(base.Frame(ops, v, cp, settings=below))
         return ()
+
+    # Data access for a guard, filter or transform wrapping a negation,
+    # (!a)=5: the complement's items through the negated op's leaf.
+
+    def _leaf(self):
+        """
+        The data-access op of the negated branch.
+        """
+        return self.inner[0].leaf_op()
+
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        if not filtered:
+            return self._leaf().items(node, filtered=False, settings=settings)
+        return self._not_items(node, settings=settings)
+
+    def keys(self, node, settings=base.SETTINGS):
+        return (k for k, _ in self._not_items(node, settings=settings))
+
+    def values(self, node, settings=base.SETTINGS):
+        return (v for _, v in self._not_items(node, settings=settings))
+
+    def is_empty(self, node):
+        return not any(True for _ in self._not_items(node))
+
+    def update(self, node, key, val):
+        return self._leaf().update(node, key, val)
+
+    def upsert(self, node, val):
+        for k in list(self.keys(node)):
+            node = self.update(node, k, val)
+        return node
+
+    def pop(self, node, key):
+        return self._leaf().pop(node, key)
+
+    def remove(self, node, val, settings=base.SETTINGS):
+        leaf = self._leaf()
+        for k, v in reversed(list(self._not_items(node, settings=settings))):
+            if val is base.ANY or v == val:
+                node = leaf.pop(node, k)
+        return node
+
+    def concrete(self, val):
+        return self._leaf().concrete(val)
+
+    def default(self):
+        return self._leaf().default()
 
     def do_match(self, rest_pats, path_ops, partial):
         """

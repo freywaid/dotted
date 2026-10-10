@@ -40,8 +40,15 @@ def inner_not_action(t):
     OpGroupNot takes a single branch as its inner pattern.
     """
     item = t[0]
-    branch = _to_branch(item)
-    return groups.OpGroupNot(branch)
+    if isinstance(item, (list, tuple, pp.ParseResults)) and len(item) == 1:
+        item = item[0]  # an op_seq of one op
+    if isinstance(item, groups.OpGroupOr):
+        # a parenthesized single path, !(a.b): the group adds nothing, so
+        # !(a.b) is the same op as !a.b
+        branches = list(base.branches_only(item.branches))
+        if len(branches) == 1 and len(branches) == len(item.branches):
+            return groups.OpGroupNot(branches[0])
+    return groups.OpGroupNot(_to_branch(item))
 
 
 def inner_and_action(t):
@@ -645,33 +652,6 @@ _type_pos = (colon + _type_spec).set_parse_action(
     lambda t: utypes.TypeSpec(*(utypes.TYPE_REGISTRY[n] for n in t)))
 type_restriction = _type_neg | _type_pos
 
-def _keycmd_guarded_action(pred_op):
-    """
-    Parse action for key with optional type restriction, transforms, and value guard.
-    """
-    def action(t):
-        t = list(t)
-        guard = t[-1]
-        tr, filters, xforms, _, args = _classify_tokens(t[:-1])
-        inner = access.Key(*args)
-        if tr:
-            inner = tr.wrap(inner)
-        if filters:
-            inner = wrappers.FilterWrap(inner, filters)
-        return wrappers.ValueGuard(inner, guard, pred_op=pred_op, transforms=xforms)
-    return action
-
-def _keycmd_guarded_dispatch(t):
-    """
-    Dispatch keycmd guard to the correct pred_op based on the operator string.
-    """
-    t = list(t)
-    op_str = t[-2]
-    t_clean = t[:-2] + [t[-1]]
-    return _keycmd_guarded_action(predicates.PRED_OPS[op_str])(t_clean)
-
-_keycmd_guarded_all = pp.And([key, Opt(type_restriction), ZM(amp + filters), ZM(pipe + transform), _pred_op_re, value]).set_parse_action(_keycmd_guarded_dispatch)
-
 def _keycmd_action(t):
     """
     Parse action for key with optional type restriction.
@@ -684,38 +664,17 @@ def _keycmd_action(t):
         result = wrappers.FilterWrap(result, filters)
     return result
 
-keycmd = (key + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(_keycmd_action)
+# A key's type, filters, guard and transforms, a:dict&k=v|int=5, are the
+# level-3 postfix (see _postfix), not part of the segment: !a&k=v filters
+# what !a yields. The exception is a type restriction or filter the path
+# continues past, a:dict.b or a&k=v.b: it tests a's value and the path
+# goes on into it, so it stays on the segment. At the end of an
+# expression the postfix takes it, which keeps !a:dict as (!a):dict.
+_continues = pp.Forward()  # lookahead: an op_seq continuation follows (set below)
+_seg_mid = ((type_restriction + ZM(amp + filters)) | OM(amp + filters)) + _continues
+keycmd = (key + Opt(_seg_mid)).set_parse_action(_keycmd_action)
 
 _slotguts = (_slot_concat | _commons | numeric_extended | numeric_slot) + ZM(amp + filters)
-
-def _slotcmd_guarded_action(pred_op):
-    """
-    Parse action for slot with optional type restriction, transforms, and value guard.
-    """
-    def action(t):
-        t = list(t)
-        guard = t[-1]
-        tr, filters, xforms, nop, args = _classify_tokens(t[:-1])
-        inner = access.Slot(*args)
-        if filters:
-            inner = wrappers.FilterWrap(inner, filters)
-        if tr:
-            inner = tr.wrap(inner)
-        if nop:
-            inner = wrappers.NopWrap(inner)
-        return wrappers.ValueGuard(inner, guard, pred_op=pred_op, transforms=xforms)
-    return action
-
-def _slotcmd_guarded_dispatch(t):
-    """
-    Dispatch slotcmd guard to the correct pred_op based on the operator string.
-    """
-    t = list(t)
-    op_str = t[-2]
-    t_clean = t[:-2] + [t[-1]]
-    return _slotcmd_guarded_action(predicates.PRED_OPS[op_str])(t_clean)
-
-_slotcmd_guarded_all = pp.And([lb, Opt(L('~')), _slotguts, rb, Opt(type_restriction), ZM(pipe + transform), _pred_op_re, value]).set_parse_action(_slotcmd_guarded_dispatch)
 
 def _slotcmd_action(t):
     """
@@ -731,7 +690,7 @@ def _slotcmd_action(t):
         result = wrappers.NopWrap(result)
     return result
 
-slotcmd =(lb + Opt(L('~')) + _slotguts + rb + Opt(type_restriction)).set_parse_action(_slotcmd_action)
+slotcmd =(lb + Opt(L('~')) + _slotguts + rb + Opt(_seg_mid)).set_parse_action(_slotcmd_action)
 
 # @~ and ~@ both produce NopWrap (canonical form @~)
 def _attr_action(t, nop=False):
@@ -748,9 +707,9 @@ def _attr_action(t, nop=False):
         result = wrappers.NopWrap(result)
     return result
 
-_attr_nop = ((at + tilde) | (tilde + at)) + (_concat_attr | nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)
+_attr_nop = ((at + tilde) | (tilde + at)) + (_concat_attr | nameop | _common_pats) + Opt(_seg_mid)
 _attr_nop = _attr_nop.set_parse_action(lambda t: _attr_action(t, nop=True))
-_attr_plain = (at + (_concat_attr | nameop | _common_pats) + Opt(type_restriction) + ZM(amp + filters)).set_parse_action(lambda t: _attr_action(t))
+_attr_plain = (at + (_concat_attr | nameop | _common_pats) + Opt(_seg_mid)).set_parse_action(lambda t: _attr_action(t))
 attrcmd = _attr_nop | _attr_plain
 
 slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(access.SlotSpecial)
@@ -801,9 +760,9 @@ def _grouped_with_type_restriction(parsed_result, first=False):
         grp = tr.wrap(grp)
     return grp
 
-inner_grouped = (lparen + inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+inner_grouped = (lparen + inner_expr + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-inner_grouped_first = (lparen + inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+inner_grouped_first = (lparen + inner_expr + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 # Explicit-op grouped: used mid-path where bare-key inference is not allowed.
 # Uses a separate precedence tower (_explicit_inner_expr) that only allows
@@ -812,17 +771,17 @@ inner_grouped_first = (lparen + inner_expr + rparen + S('?') + Opt(type_restrict
 # start an explicit branch, don't even try the tower.
 _explicit_op_start = pp.FollowedBy(pp.Char('.@[!~('))
 _explicit_inner_expr = pp.Forward()
-_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 # Bare-key grouped: first branch does NOT start with an access op.
 # Used with prefix shorthand (.(a,b), @(a,b)) where the prefix distributes.
 # Allows ! and ~ (modifiers) but rejects . @ [ ( (access ops / nested groups).
 _bare_key_start = ~pp.FollowedBy(pp.Char('.@[('))
-_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen + Opt(type_restriction)).set_parse_action(
+_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?') + Opt(type_restriction)).set_parse_action(
+_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 
 # Recursive operator: ** (recursive wildcard) and *pattern (recursive chain-following)
@@ -932,61 +891,6 @@ def _dstar_body():
 def _pat_body():
     return _rec_pat_prefix + _rec_inner + Opt(type_restriction) + Opt(_rec_depth) + ZM(amp + filters)
 
-# Helpers to separate transforms from other tokens in recursive guarded forms
-def _extract_transforms(tokens):
-    """
-    Extract Transform objects from a token list.
-    """
-    return [t for t in tokens if isinstance(t, base.Transform)]
-
-def _extract_non_transform(tokens):
-    """
-    Return tokens with Transform objects removed.
-    """
-    return [t for t in tokens if not isinstance(t, base.Transform)]
-
-# ValueGuard composition: **=7, *name!=None, **|int=7, etc. (must try before plain forms)
-def _rec_dstar_guarded_action(pred_op):
-    """
-    Parse action for recursive ** with value guard.
-    """
-    def action(t):
-        return wrappers.ValueGuard(
-            _make_recursive([matchers.Wildcard()] + _extract_non_transform(list(t[:-1]))),
-            t[-1], pred_op=pred_op, transforms=_extract_transforms(list(t[:-1])))
-    return action
-
-def _rec_pat_guarded_action(pred_op):
-    """
-    Parse action for recursive *pattern with value guard.
-    """
-    def action(t):
-        return wrappers.ValueGuard(
-            _make_recursive(_extract_non_transform(list(t[:-1]))),
-            t[-1], pred_op=pred_op, transforms=_extract_transforms(list(t[:-1])))
-    return action
-
-def _rec_dstar_guarded_dispatch(t):
-    """
-    Dispatch recursive ** guard based on operator string.
-    """
-    t = list(t)
-    op_str = t[-2]
-    t_clean = t[:-2] + [t[-1]]
-    return _rec_dstar_guarded_action(predicates.PRED_OPS[op_str])(t_clean)
-
-def _rec_pat_guarded_dispatch(t):
-    """
-    Dispatch recursive *pattern guard based on operator string.
-    """
-    t = list(t)
-    op_str = t[-2]
-    t_clean = t[:-2] + [t[-1]]
-    return _rec_pat_guarded_action(predicates.PRED_OPS[op_str])(t_clean)
-
-_rec_dstar_guarded_all = (_dstar_body() + ZM(pipe + transform) + _pred_op_re + value).set_parse_action(_rec_dstar_guarded_dispatch)
-_rec_pat_guarded_all = (_pat_body() + ZM(pipe + transform) + _pred_op_re + value).set_parse_action(_rec_pat_guarded_dispatch)
-
 # First-match: **?, *name?
 rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
     lambda t: _make_recursive([matchers.Wildcard()] + list(t), first=True))
@@ -999,43 +903,32 @@ rec_dstar = _dstar_body().set_parse_action(
 rec_pat = _pat_body().set_parse_action(
     lambda t: _make_recursive(t))
 
-recursive_op_nonguarded = (
+recursive_op = (
     rec_dstar_first | rec_dstar | rec_pat_first | rec_pat)
-recursive_op_guarded = (
-    _rec_dstar_guarded_all | _rec_pat_guarded_all)
-recursive_op = recursive_op_guarded | recursive_op_nonguarded
 
 empty = pp.Empty().set_parse_action(access.Empty)
 
 # Operation grouping: (.b,[]) for grouping operation sequences
 # An op_seq is a sequence of operations like .key, [slot], @attr
 # .~key and ~.key both produce NopWrap(key); .key produces key
-_dot_keycmd_guarded_nop = (((dot + tilde) | (tilde + dot)) + _keycmd_guarded_all).set_parse_action(
-    lambda t: wrappers.NopWrap(t[-1]))
-_dot_keycmd_guarded_plain = (dot + _keycmd_guarded_all).set_parse_action(lambda t: t[0])
 _dot_keycmd_nop = (((dot + tilde) | (tilde + dot)) + keycmd).set_parse_action(
     lambda t: wrappers.NopWrap(t[-1]))
 _dot_keycmd = (dot + keycmd).set_parse_action(lambda t: t[0])
 # op_seq_item uses _nop_wrap (defined later); Forward for circular ref
 op_seq_item = pp.Forward()     # first item: allows bare (a,b)
 _op_seq_cont = pp.Forward()    # continuation: requires explicit ops
-_op_seq_guarded = pp.Forward() # guarded terminator (resolved below)
-# op_seq: guarded op is always terminal — either the sole op (alt 1), or
-# optionally trailing a non-guarded path (alt 2).
-op_seq = pp.Group(
-    _op_seq_guarded
-    | (op_seq_item + ZM(_op_seq_cont) + Opt(_op_seq_guarded))
-)
+# op_seq: access ops only (level 1). Guards, filters and transforms are
+# the level-3 postfix applied to a whole op_seq, group or negation; see
+# _postfix.
+op_seq = pp.Group(op_seq_item + ZM(_op_seq_cont))
 
 # Continuation items (absorbed from former multi grammar):
 # .~ and ~. with grouped expressions — prefix shorthand requires bare keys inside
 _dot_nop_grouped = ((dot + tilde) | (tilde + dot)) + (_inner_grouped_bare_first | _inner_grouped_bare)
 _dot_nop_grouped = _dot_nop_grouped.set_parse_action(lambda t: wrappers.NopWrap(t[-1]))
 _dot_plain_grouped = (dot + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(lambda t: t[0])
-# .recursive (split into guarded / non-guarded)
-_dot_recursive_nonguarded = (dot + recursive_op_nonguarded).set_parse_action(lambda t: t[0])
-_dot_recursive_guarded = (dot + recursive_op_guarded).set_parse_action(lambda t: t[0])
-_dot_recursive = _dot_recursive_guarded | _dot_recursive_nonguarded
+# .recursive
+_dot_recursive = (dot + recursive_op).set_parse_action(lambda t: t[0])
 # @(group) — attribute group access: @(a,b) == (@a,@b), prefix requires bare keys
 _at_plain_grouped = (at + (_inner_grouped_bare_first | _inner_grouped_bare)).set_parse_action(
     lambda t: as_attrs_opgroup(t[0])
@@ -1046,7 +939,7 @@ _at_nop_grouped = _at_nop_grouped.set_parse_action(
 )
 
 # NOP (~): match but don't update
-_nop_inner = inner_grouped_first | inner_grouped | recursive_op | _keycmd_guarded_all | keycmd | attrcmd | slotgroup_first | slotgroup | _slotcmd_guarded_all | slotcmd | slotspecial | slicefilter | slicecmd
+_nop_inner = inner_grouped_first | inner_grouped | recursive_op | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd
 _nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
 # Explicit NOP (~): like _nop_wrap but inner must start with an access op (./@/[]).
@@ -1054,64 +947,43 @@ _nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1
 _explicit_nop_inner = (
     _inner_grouped_explicit_first | _inner_grouped_explicit |
     recursive_op |
-    _dot_keycmd_guarded_nop | _dot_keycmd_guarded_plain |
     _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
-    _slotcmd_guarded_all | slotcmd |
+    slotcmd |
     slotspecial | slicefilter | slicecmd
 )
 _explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
-# Guarded variants — terminal within op_seq. After a `=value`, no more ops
-# may follow (guards have no right-side delimiter, so continuations are
-# ambiguous/meaningless — `a=1.b` is not a legal path).
-_op_seq_guarded << (
-    _keycmd_guarded_all |
-    _dot_keycmd_guarded_nop | _dot_keycmd_guarded_plain |
-    _slotcmd_guarded_all |
-    recursive_op_guarded |
-    _dot_recursive_guarded
-)
-
-# Lookahead: a non-guarded continuation must NOT be followed by a guarded
-# suffix (`|transform* + pred_op`). If it is, the whole thing belongs to
-# the trailing `_op_seq_guarded` terminator, not to this continuation.
-# A bare `|transform` (without pred_op) is fine — that's a template-level
-# transform applied after the path resolves.
-_guard_la = pp.NotAny(ZM(pipe + transform) + _pred_op_re)
-
-# Continuation items for the ZM middle of op_seq — guarded variants excluded.
-# Items that could be the LHS of a guard get a `_guard_la` lookahead so
-# they don't greedily eat what belongs to the trailing guarded terminator.
+# Continuation items for the ZM middle of op_seq.
 _op_seq_cont_items = (
     _nop_wrap |
     _inner_grouped_explicit_first | _inner_grouped_explicit |
-    (recursive_op_nonguarded + _guard_la) |
-    (keycmd + _guard_la) |
-    _dot_recursive_nonguarded |
-    ((_dot_keycmd_nop | _dot_keycmd) + _guard_la) |
+    recursive_op |
+    keycmd |
+    _dot_recursive |
+    _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
-    (slotcmd + _guard_la) |
+    slotcmd |
     slotspecial | slicefilter | slicecmd
 )
 _op_seq_cont << _op_seq_cont_items
+_continues <<= pp.FollowedBy(_op_seq_cont)
 
-# First-item items — same set but WITHOUT the lookahead: the first position
-# doesn't need it because alt 1 (_op_seq_guarded) handles sole-guard cases
-# like `first=7` before we fall into this branch.
+# First-item items — the same set; the first position also allows a bare
+# key, which op_seq_item adds below.
 _op_seq_first_items = (
     _nop_wrap |
     _inner_grouped_explicit_first | _inner_grouped_explicit |
-    recursive_op_nonguarded |
+    recursive_op |
     keycmd |
-    _dot_recursive_nonguarded |
+    _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
     _at_nop_grouped | _at_plain_grouped |
@@ -1124,9 +996,93 @@ _op_seq_first_items = (
 # This is valid at the start of a path (top-level inference).
 op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_first_items)
 
-# Precedence tower (atoms are op_seqs)
+# ---------------------------------------------------------------------------
+# Level 3: the postfix a path expression may end with — filters, then
+# transforms, then a guard with transforms after it:
+#     a&k=v   a|int   a|int=5   a|int=5|str   a=5
+# It applies to the whole level-2 expression on its left: an op_seq (on
+# its last op), a negation (on what it yields) or a parenthesized group
+# (distributed to every branch, (a,b)=5 being (a=5,b=5)). Transforms
+# before a guard are the guard's, matching only; after it, or with no
+# guard, they transform the value.
+# ---------------------------------------------------------------------------
+
+_postfix = Opt(type_restriction) + ZM(amp + filters) + ZM(pipe + transform) + Opt(_pred_op_re + value + ZM(pipe + transform))
+
+
+def _split_postfix(tokens):
+    """
+    The postfix tokens as (type spec, filters, guard transforms, pred_op,
+    guard value, value transforms); the type spec and pred_op are None
+    when absent.
+    """
+    tr = next((t for t in tokens if isinstance(t, utypes.TypeSpec)), None)
+    filters = [t for t in tokens if isinstance(t, flt.FilterOp)]
+    rest = [t for t in tokens if not isinstance(t, (flt.FilterOp, utypes.TypeSpec))]
+    for i, t in enumerate(rest):
+        if isinstance(t, str) and t in predicates.PRED_OPS:
+            return tr, filters, rest[:i], predicates.PRED_OPS[t], rest[i + 1], rest[i + 2:]
+    return tr, filters, [], None, None, rest
+
+
+def _decorate(op, tr, filters, gxf, pred_op, guard, vxf):
+    """
+    op with the postfix on it: the type guard, then filters, then the
+    guard with its transforms, then the value transforms. A , & or ?
+    group gets it on the last op of every branch, through ~ on the group;
+    a negation gets it on the last op of its branch when the branch
+    continues past the negated op, else on the negation itself, so (!a)=5
+    is the non-a values equal to 5.
+    """
+    if isinstance(op, groups.OpGroupNot) and len(op.inner) > 1:
+        return groups.OpGroupNot(op.inner[:-1] + (_decorate(op.inner[-1], tr, filters, gxf, pred_op, guard, vxf),))
+    if isinstance(op, groups.OpGroup) and not isinstance(op, groups.OpGroupNot):
+        branches = []
+        for b in op.branches:
+            if not isinstance(b, tuple) or not b:
+                branches.append(b)  # cut markers and empty branches pass through
+                continue
+            branches.append(b[:-1] + (_decorate(b[-1], tr, filters, gxf, pred_op, guard, vxf),))
+        return type(op)(*branches)
+    if isinstance(op, wrappers.NopWrap) and isinstance(op.inner, groups.OpGroup):
+        return wrappers.NopWrap(_decorate(op.inner, tr, filters, gxf, pred_op, guard, vxf))
+    if tr is not None:
+        op = tr.wrap(op)
+    if filters:
+        op = wrappers.FilterWrap(op, filters)
+    if pred_op is not None:
+        op = wrappers.ValueGuard(op, guard, pred_op=pred_op, transforms=gxf)
+    if vxf:
+        op = wrappers.TransformWrap(op, vxf)
+    return op
+
+
+def _apply_postfix(t):
+    """
+    Parse action for `expr + _postfix`: the expression's ops with the
+    postfix, if any, on the op it binds to. The expression token is an
+    op_seq (a ParseResults of ops) or a single op (a negation); the
+    result keeps that shape, as one token.
+    """
+    expr, tokens = t[0], list(t[1:])
+    if not tokens:
+        return [expr]
+    ops = list(expr) if isinstance(expr, (list, tuple, pp.ParseResults)) else [expr]
+    ops[-1] = _decorate(ops[-1], *_split_postfix(tokens))
+    return [pp.ParseResults(ops)]
+
+
+def _with_postfix(expr):
+    """
+    expr followed by the level-3 postfix.
+    """
+    return (expr + _postfix).set_parse_action(_apply_postfix)
+
+
+# Precedence tower (atoms are op_seqs): access ops, then !, then the
+# postfix, then &, then ,
 inner_atom = op_seq
-inner_not = (bang + inner_atom).set_parse_action(inner_not_action) | inner_atom
+inner_not = _with_postfix((bang + inner_atom).set_parse_action(inner_not_action) | inner_atom)
 inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(inner_and_action) | inner_not
 inner_or_term = pp.Group(inner_and + Opt(cut_marker))
 inner_or = (inner_or_term + ZM(_comma_ws + inner_or_term)).set_parse_action(inner_or_action) | inner_and
@@ -1141,19 +1097,18 @@ inner_expr <<= inner_or
 _explicit_op_seq_cont_items = (
     _explicit_nop_wrap |
     _inner_grouped_explicit_first | _inner_grouped_explicit |
-    _dot_keycmd_guarded_nop | _dot_keycmd_guarded_plain |
     _dot_recursive |
     _dot_keycmd_nop | _dot_keycmd |
     _dot_nop_grouped | _dot_plain_grouped |
     _at_nop_grouped | _at_plain_grouped |
     attrcmd |
     slotgroup_first | slotgroup |
-    _slotcmd_guarded_all | slotcmd |
+    slotcmd |
     slotspecial | slicefilter | slicecmd
 )
 _explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
 _explicit_inner_atom = _explicit_op_seq
-_explicit_inner_not = (bang + _explicit_inner_atom).set_parse_action(inner_not_action) | _explicit_inner_atom
+_explicit_inner_not = _with_postfix((bang + _explicit_inner_atom).set_parse_action(inner_not_action) | _explicit_inner_atom)
 _explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(inner_and_action) | _explicit_inner_not
 _explicit_inner_or_term = pp.Group(_explicit_inner_and + Opt(cut_marker))
 _explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term)).set_parse_action(inner_or_action) | _explicit_inner_and
@@ -1175,7 +1130,9 @@ def _top_level_flatten(t):
     return out
 
 invert = Opt(L('-').set_parse_action(access.Invert))
-dotted = pp.Group((invert + (inner_expr | empty)).set_parse_action(_top_level_flatten))
+# an empty path takes the postfix too: '|int' transforms the root
+dotted = pp.Group((invert + (inner_expr | _with_postfix(empty))).set_parse_action(_top_level_flatten))
 
-_template_guard = (_pred_op_re + value).set_parse_action(lambda t: [(t[0], t[1])])
-template = dotted('ops') + transforms('transforms') + Opt(_template_guard)('guard')
+template = dotted('ops')
+
+
