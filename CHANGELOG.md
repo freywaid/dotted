@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `$str`, a `$` before a word, is a plain string wherever a key, guard
+  value or transform argument may stand, as `^str` already was. It was a
+  `ParseError`. `$0`, `$(name)` and `$$(path)` are unchanged.
+
 ## [0.47.1]
 
 ### Added

@@ -1,6 +1,7 @@
 """
 """
 import decimal
+import re
 import pyparsing as pp
 from pyparsing import pyparsing_common as ppc
 
@@ -275,7 +276,9 @@ def _paren_subst_action(t):
 _paren_subst = pp.Regex(r'\$\([^)]+\)').set_parse_action(_paren_subst_action)
 _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
     lambda t: matchers.Subst(int(t[0][1:])))
-var = _escaped_dollar | _reference | _paren_subst | _raw_subst
+# $str, a $ before a word: a plain string, as ^str is. Not $0, $(name) or $$(path).
+_dollar_word = pp.Regex(r'\$(?![0-9($])[^' + re.escape(reserved) + r' \t\n\r]+').set_parse_action(matchers.Word)
+var = _escaped_dollar | _reference | _paren_subst | _raw_subst | _dollar_word
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 

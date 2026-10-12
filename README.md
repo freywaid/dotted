@@ -1608,6 +1608,13 @@ Quoting also works — a quoted string is always literal:
 To use a literal `$$` as a key, escape with backslash (`\$$`) or quote it
 (`'$$(…)'`).
 
+A `$` before a word is not a substitution at all: `$str` is the plain string
+`$str`, in a segment, a guard value or a transform argument alike, just as
+`^str` is. Only `$0`, `$(name)` and `$$(path)` have meaning:
+
+    >>> dotted.get({'$amount': {'value': 2}}, '$amount.value')
+    2
+
 <a id="type-restrictions"></a>
 ## Type Restrictions
 
