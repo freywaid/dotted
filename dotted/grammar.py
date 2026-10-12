@@ -279,6 +279,10 @@ _raw_subst = pp.Regex(r'\$[0-9]+').set_parse_action(
 # $str, a $ before a word: a plain string, as ^str is. Not $0, $(name) or $$(path).
 _dollar_word = pp.Regex(r'\$(?![0-9($])[^' + re.escape(reserved) + r' \t\n\r]+').set_parse_action(matchers.Word)
 var = _escaped_dollar | _reference | _paren_subst | _raw_subst | _dollar_word
+# In an argument or value position a sigil token may carry a dotted path,
+# |min:$amount.value or =^lots.taken: one string, for a resolver to read
+# whole. In a segment position the . separates segments, so not there.
+_arg_sigil = pp.Regex(r'(?:\$(?![0-9($])|\^)[^' + re.escape(reserved.replace('.', '')) + r' \t\n\r]+').set_parse_action(matchers.Word)
 slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
          + pp.Optional(':') + pp.Optional(integer | plus)
 
@@ -535,7 +539,7 @@ concrete_value <<= (
 value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
-value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_slot
+value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | _arg_sigil | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_slot
 # ---------------------------------------------------------------------------
 # Concat: part+part for key construction using Python's native + operator.
 # Each part can carry per-part transforms: part|xform+part|xform
@@ -545,7 +549,7 @@ _key_atom = _commons | numeric_extended | non_integer | numeric_key | word
 _slot_atom = _commons | numeric_extended | numeric_slot
 
 # Transform: |name or |name:param — defined early so filters and guards can reference it
-targ = concrete_value | var | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+targ = concrete_value | _arg_sigil | var | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = (transform_name.copy() + ZM(param)).set_parse_action(lambda s, loc, t: base.Transform(*t))
 transforms = ZM(pipe + transform)

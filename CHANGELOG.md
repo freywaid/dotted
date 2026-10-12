@@ -3,6 +3,16 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Fixed
+- A sigil token in a transform argument, guard value or filter value may
+  carry a dotted path: `|min:$amount.value`, `=^lots.taken`. It is one
+  string, offered whole to a resolver with `literals = True`, and the
+  literal string without one. `$amount.value` was a `ParseError` there
+  and `^lots.taken` a raw string no resolver saw, so the transform
+  failed silently (#60). In a segment the dot still separates segments.
+
 ## [0.48.0]
 
 ### Added

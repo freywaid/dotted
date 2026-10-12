@@ -1681,6 +1681,14 @@ A `$` before a word is not a substitution at all: `$str` is the plain string
     >>> dotted.get({'$amount': {'value': 2}}, '$amount.value')
     2
 
+In a guard value or transform argument the token may carry dots,
+`|min:$amount.value` or `=^lots.taken`, and is still one string; a
+[custom resolver](#custom-resolvers) reads it whole. In a segment the dot
+separates segments, so there `$amount.value` is two:
+
+    >>> dotted.get({'a': None}, 'a|coalesce:$amount.value')
+    '$amount.value'
+
 <a id="type-restrictions"></a>
 ## Type Restrictions
 
