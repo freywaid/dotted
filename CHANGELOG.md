@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.48.1]
 
 ### Fixed
 - A sigil token in a transform argument, guard value or filter value may
