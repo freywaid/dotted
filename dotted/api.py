@@ -482,7 +482,7 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
             if not (apply_transforms and ops.transforms):
                 return val
             try:
-                return ops.apply(val, obj)
+                return ops.apply(val, base.Settings(obj))
             except base.UnresolvedReference:
                 return default
     found = tuple(engine.values(ops, obj, strict=strict, transforms=apply_transforms))

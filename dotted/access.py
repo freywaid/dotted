@@ -263,10 +263,8 @@ class AccessOp(SimpleOp):
         tuple of concrete ops (empty if the reference path is not found).
         Callers must guard with is_reference() before calling.
         """
-        root = settings.root
-        parents = settings.parents or ()
         try:
-            val = self.op.resolve_ref(root, node=node, parents=parents)
+            val = settings.resolve(self.op, node, settings.parents or ())
         except KeyError:
             return ()
         if self.op.is_pattern():

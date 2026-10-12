@@ -229,7 +229,7 @@ class TransformWrap(Wrap):
         if not settings.transforms:
             return val
         from . import results
-        return results.apply_transforms(val, self.transforms, settings.root, parents)
+        return results.apply_transforms(val, self.transforms, settings, parents)
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
         """
@@ -362,10 +362,10 @@ class ValueGuard(Wrap):
         parents = () if node is None else (node,) + (settings.parents or ())
         if self.guard_transforms:
             try:
-                val = results.apply_transforms(val, self.guard_transforms, settings.root, parents)
+                val = results.apply_transforms(val, self.guard_transforms, settings, parents)
             except base.UnresolvedReference:
                 return False
-        return results.guard_passes(self.pred_op, val, self.guard, settings.root, val, parents)
+        return results.guard_passes(self.pred_op, val, self.guard, settings, val, parents)
 
     def _transforms_operator(self):
         """

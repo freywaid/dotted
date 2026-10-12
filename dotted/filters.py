@@ -261,10 +261,10 @@ class FilterKeyValue(FilterOp):
                 continue
             try:
                 if self.guard_transforms:
-                    val = results.apply_transforms(val, self.guard_transforms, settings.root, parents)
+                    val = results.apply_transforms(val, self.guard_transforms, settings, parents)
             except base.UnresolvedReference:
                 continue
-            if results.guard_passes(pred_op, val, self.val, settings.root, val, parents):
+            if results.guard_passes(pred_op, val, self.val, settings, val, parents):
                 return True
         return False
 

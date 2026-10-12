@@ -93,11 +93,11 @@ class Dotted:
             return self
         return Dotted({'ops': new_ops})
 
-    def apply(self, val, root=None, parents=()):
+    def apply(self, val, settings=base.SETTINGS, parents=()):
         """
         val through the trailing transforms (see apply_transforms).
         """
-        return apply_transforms(val, self.transforms, root, parents)
+        return apply_transforms(val, self.transforms, settings, parents)
 
     @lazyprop
     def variadic(self):
@@ -180,44 +180,46 @@ def needs_parents(ops, transforms=()):
     return any(_reaches_above(t.params) for t in transforms)
 
 
-def apply_transforms(val, transforms, root=None, parents=()):
+def apply_transforms(val, transforms, settings=base.SETTINGS, parents=()):
     """
     Apply a sequence of transforms to a value. A reference in a transform
-    argument resolves as the transform runs: $$(path) against root,
-    $$(^path) against the value the transform receives, $$(^^path) and up
-    against parents, nearest first. Raises UnresolvedReference when one
-    does not resolve.
+    argument resolves as the transform runs, through the traversal's
+    resolver (see base.Resolver): $$(path) against the root, $$(^path)
+    against the value the transform receives, $$(^^path) and up against
+    parents, nearest first. Raises UnresolvedReference when one does not
+    resolve.
     """
     for t in transforms:
         fn = Dotted._registry[t.name]
-        val = fn(val, *t.arguments(root, val, parents))
+        val = fn(val, *t.arguments(settings, val, parents))
     return val
 
 
-def guard_matcher(guard, root=None, node=None, parents=()):
+def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=()):
     """
     The match op a guard or filter value compares with: the value as
-    parsed, or a reference resolved against root, node and parents, node
-    being the value under test (so $$(^x) looks x up in it). A reference
-    path that is a pattern becomes a value group of what it resolves to.
-    Raises UnresolvedReference when the reference does not resolve.
+    parsed, or a reference resolved through the traversal's resolver
+    against node and parents, node being the value under test (so
+    $$(^x) looks x up in it). A reference path that is a pattern becomes
+    a value group of what it resolves to. Raises UnresolvedReference when
+    the reference does not resolve.
     """
     if not (hasattr(guard, 'is_reference') and guard.is_reference()):
         return guard
-    val = guard.resolve_ref(root, node=node, parents=parents)
+    val = settings.resolve(guard, node, parents)
     if not guard.is_pattern():
         return Const(val)
     from . import containers
     return containers.ValueGroup(*(Const(v) for v in val))
 
 
-def guard_passes(pred_op, val, guard, root=None, node=None, parents=()):
+def guard_passes(pred_op, val, guard, settings=base.SETTINGS, node=None, parents=()):
     """
     True if val satisfies pred_op against guard (see guard_matcher); a
     guard reference that does not resolve passes nothing.
     """
     try:
-        matcher = guard_matcher(guard, root, node, parents)
+        matcher = guard_matcher(guard, settings, node, parents)
     except base.UnresolvedReference:
         return False
     return any(True for _ in pred_op.matches((val,), matcher))

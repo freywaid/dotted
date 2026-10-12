@@ -149,19 +149,60 @@ class NOP(metaclass=MetaNOP):
         return False
 
 
+class Resolver:
+    """
+    What a reference means at run time. Every $$(path) a traversal meets,
+    in an access position, a transform argument, a guard or a filter
+    value, comes here with the traversal's Settings, the node it stands
+    in and that node's ancestors. This default reads it as dotted does:
+    a path against the root, or with ^ against the node, ^^ its parent,
+    and so on. Raises UnresolvedReference when there is nothing there.
+    """
+
+    def resolve(self, ref, settings, node=None, parents=()):
+        """
+        The value of ref, a Reference or a Concat of them.
+        """
+        if hasattr(ref, 'resolve_parts'):
+            return ref.resolve_parts(settings, node, parents)
+        from .api import get
+        d = ref.depth
+        if d == 0:
+            target = settings.root
+        elif d == 1:
+            target = node
+        else:
+            idx = d - 2
+            if idx >= len(parents):
+                raise UnresolvedReference(f'$$({ref.value}): not enough ancestors')
+            target = parents[idx]
+        path = ref.inner_path
+        if not path:
+            return target
+        val = get(target, path, default=marker)
+        if val is marker:
+            raise UnresolvedReference(f'$$({ref.value}) not found')
+        return val
+
+
+RESOLVER = Resolver()
+
+
 class Settings:
     """
     What holds for the whole of one traversal: the root node, the chain of
-    parents when a reference needs it, and strict. Made once by the engine
-    and passed down every call; see SETTINGS for calls made without one.
+    parents when a reference needs it, strict, whether transforms apply,
+    and the resolver references go to. Made once by the engine and passed
+    down every call; see SETTINGS for calls made without one.
     """
-    __slots__ = ('root', 'parents', 'strict', 'transforms')
+    __slots__ = ('root', 'parents', 'strict', 'transforms', 'resolver')
 
-    def __init__(self, root, strict=False, parents=None, transforms=True):
+    def __init__(self, root, strict=False, parents=None, transforms=True, resolver=None):
         self.root = root
         self.parents = parents
         self.strict = strict
         self.transforms = transforms  # False: apply_transforms=False, ops' transforms are skipped
+        self.resolver = RESOLVER if resolver is None else resolver
 
     def below(self, node):
         """
@@ -170,7 +211,14 @@ class Settings:
         """
         if self.parents is None:
             return self
-        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms)
+        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver)
+
+    def resolve(self, ref, node=None, parents=()):
+        """
+        The value of a reference met at node, through this traversal's
+        resolver.
+        """
+        return self.resolver.resolve(ref, self, node, parents)
 
 
 # For a traversal method called on its own, outside any traversal: no root,
@@ -455,21 +503,24 @@ class Transform(Op):
         """
         return any(hasattr(p, 'is_reference') and p.is_reference() for p in self.params)
 
-    def arguments(self, root=None, node=None, parents=()):
+    def arguments(self, settings=None, node=None, parents=()):
         """
         The params as the values the transform function receives: a
-        reference resolved against root, node and parents, where node is
-        the value being transformed (so $$(^x) looks x up in it) and
-        parents its ancestors, nearest first; a parsed constant, such as a
-        resolved substitution or null, unwrapped; anything else as parsed.
-        Raises UnresolvedReference when a reference does not resolve.
+        reference resolved through settings against node and parents,
+        where node is the value being transformed (so $$(^x) looks x up
+        in it) and parents its ancestors, nearest first; a parsed
+        constant, such as a resolved substitution or null, unwrapped;
+        anything else as parsed. Raises UnresolvedReference when a
+        reference does not resolve.
         """
         if not self.params:
             return ()
+        if settings is None:
+            settings = SETTINGS
         args = []
         for p in self.params:
             if hasattr(p, 'is_reference') and p.is_reference():
-                args.append(p.resolve_ref(root, node=node, parents=parents))
+                args.append(settings.resolve(p, node, parents))
                 continue
             if isinstance(p, matchers.Const):
                 args.append(p.value)

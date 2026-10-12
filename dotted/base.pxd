@@ -33,6 +33,7 @@ cdef class Settings:
     cdef public object parents
     cdef public object strict
     cdef public object transforms
+    cdef public object resolver
 
     cpdef below(self, node)
 

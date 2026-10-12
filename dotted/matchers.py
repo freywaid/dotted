@@ -321,31 +321,6 @@ class Reference(MatchOp):
 
     _match_from = ()
 
-    def resolve_ref(self, root, node=None, parents=()):
-        """
-        Resolve this reference against the appropriate target.
-        depth 0 = root, 1 = current node, 2+ = ancestor from parents stack.
-        """
-        from .api import get
-        d = self.depth
-        if d == 0:
-            target = root
-        elif d == 1:
-            target = node
-        else:
-            idx = d - 2
-            if idx >= len(parents):
-                raise base.UnresolvedReference(f'$$({self.value}): not enough ancestors')
-            target = parents[idx]
-        path = self.inner_path
-        if not path:
-            return target
-        _marker = object()
-        val = get(target, path, default=_marker)
-        if val is _marker:
-            raise base.UnresolvedReference(f'$$({self.value}) not found')
-        return val
-
     def quote(self):
         """
         Return the dotted notation form of this reference.
@@ -475,7 +450,7 @@ class Concat(MatchOp):
         """
         return self._parts
 
-    def _apply_part_transforms(self, val, transforms, root=None, parents=()):
+    def _apply_part_transforms(self, val, transforms, settings=base.SETTINGS, parents=()):
         """
         Apply per-part transforms to a value; a reference in a transform
         argument sees the part's value as ^ (see results.apply_transforms).
@@ -483,7 +458,7 @@ class Concat(MatchOp):
         if not transforms:
             return val
         from .results import apply_transforms
-        return apply_transforms(val, transforms, root, parents)
+        return apply_transforms(val, transforms, settings, parents)
 
     def _reduce(self, values):
         """
@@ -562,18 +537,19 @@ class Concat(MatchOp):
             return ResolvedValue(self._reduce(vals))
         return Concat(*new_parts)
 
-    def resolve_ref(self, root, node=None, parents=()):
+    def resolve_parts(self, settings, node=None, parents=()):
         """
-        Resolve reference parts, apply per-part transforms, reduce with +.
+        Resolve reference parts through the traversal's resolver, apply
+        per-part transforms, reduce with +.
         """
         vals = []
         below = (node,) + tuple(parents)
         for p in self._parts:
             if p.op.is_reference():
-                v = p.op.resolve_ref(root, node=node, parents=parents)
+                v = settings.resolve(p.op, node, parents)
             else:
                 v = p.op.value
-            v = self._apply_part_transforms(v, p.transforms, root, below)
+            v = self._apply_part_transforms(v, p.transforms, settings, below)
             vals.append(v)
         return self._reduce(vals)
 
