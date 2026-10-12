@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.47.1]
 
 ### Added
 - The `coalesce` transform: `n|coalesce:0` is `n`, or 0 when `n` is
