@@ -2937,6 +2937,7 @@ decorator.
 | `float` | `raises` | Convert to float |
 | `decimal` | `raises` | Convert to `Decimal` |
 | `none` | values... | Return `None` if falsy or matches values: `\|none::null:empty` |
+| `coalesce` | fallbacks... | The first of the value and the fallbacks that is not `None`: `\|coalesce:0` |
 | `strip` | `chars`, `raises` | Strip whitespace or specified chars |
 | `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
 | `lowercase` | `raises` | Convert string to lowercase |
@@ -2990,6 +2991,19 @@ Comparison and membership transforms return `True`/`False`:
     True
     >>> dotted.get({'n': 2}, 'n|in:[1, 2, 3]')
     True
+
+`coalesce` stands in a fallback for `None`, as SQL's does; with several
+fallbacks the first that is not `None` wins, which matters when a fallback is
+a [reference](#references-in-transforms-and-guards) that may itself be `None`:
+
+    >>> d = {'n': None, 'defaults': {'n': 7}}
+    >>> dotted.get(d, 'n|coalesce:0')
+    0
+    >>> dotted.get(d, 'n|coalesce:$$(defaults.n):0')
+    7
+
+A transform only runs on a value the path yields, so `coalesce` does not fill
+a missing key; `get(..., default=)` does that.
 
 <a id="container-transform-arguments"></a>
 ### Container transform arguments

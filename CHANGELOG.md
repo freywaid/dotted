@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- The `coalesce` transform: `n|coalesce:0` is `n`, or 0 when `n` is
+  `None`. Several fallbacks take the first that is not `None`, so a
+  reference may stand in first: `n|coalesce:$$(defaults.n):0`.
+
 ## [0.47.0]
 
 ### Added

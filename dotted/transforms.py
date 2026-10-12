@@ -104,6 +104,24 @@ def transform_none(val, *none_vals):
     return None if val in none_vals else val
 
 
+@transform('coalesce')
+def transform_coalesce(val, *fallbacks):
+    """
+    The first of val and the fallbacks that is not None
+        <dotted>|coalesce:<fallback>        fallback if val is None else val
+        <dotted>|coalesce:<f1>:<f2>         the first of val, f1, f2 not None
+    >>> import dotted
+    >>> dotted.get({'n': None}, 'n|coalesce:0')
+    0
+    >>> dotted.get({'n': 5}, 'n|coalesce:0')
+    5
+    """
+    for v in (val, *fallbacks):
+        if v is not None:
+            return v
+    return None
+
+
 @transform('strip')
 def transform_strip(val, chars=None, *modes):
     """
