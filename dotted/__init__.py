@@ -65,7 +65,7 @@ from .api import \
     parse, compile, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
     is_inverted, is_mutable, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
     set_simple_fastpath, set_parse_cache, \
-    register, transform, \
+    register, transform, set_resolver, get_resolver, \
     assemble, assemble_multi, \
     build, build_multi, \
     expand, expand_multi, \
@@ -77,10 +77,13 @@ from .api import \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
 from .sql import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
+# the run-time reference resolver; sqlize's Resolver, above, has the plain name
+from .base import Resolver as ReferenceResolver, UnresolvedReference
 
 __all__ = [
     # Core
     'get', 'update', 'remove', 'has', 'setdefault',
+    'ReferenceResolver', 'UnresolvedReference', 'set_resolver', 'get_resolver',
     # Multi
     'get_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern

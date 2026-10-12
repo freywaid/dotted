@@ -248,6 +248,16 @@ class AccessOp(SimpleOp):
         """
         return self.op.is_reference()
 
+    def _offered(self, settings):
+        """
+        True if the match op goes to the resolver: a reference, or a
+        plain constant when the resolver in force takes literals.
+        """
+        if self.op.is_reference():
+            return True
+        return (settings.literals() and isinstance(self.op, matchers.Const)
+                and not isinstance(self.op, matchers.ResolvedValue))
+
     def resolve(self, bindings, partial=False):
         """
         Resolve $N in the inner match op.
@@ -267,15 +277,17 @@ class AccessOp(SimpleOp):
             val = settings.resolve(self.op, node, settings.parents or ())
         except KeyError:
             return ()
+        # ResolvedValue, not Const: a resolved key is not offered to the
+        # resolver again (see _offered)
         if self.op.is_pattern():
-            return tuple(self.__class__(matchers.Const(v)) for v in val)
-        return (self.__class__(matchers.Const(val)),)
+            return tuple(self.__class__(matchers.ResolvedValue(v)) for v in val)
+        return (self.__class__(matchers.ResolvedValue(val)),)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         """
         Resolve references before updating.
         """
-        if self.is_reference():
+        if self._offered(settings):
             for r in self._resolved(node=node, settings=settings):
                 node = r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
             return node
@@ -285,7 +297,7 @@ class AccessOp(SimpleOp):
         """
         Resolve references before removing.
         """
-        if self.is_reference():
+        if self._offered(settings):
             for r in self._resolved(node=node, settings=settings):
                 node = r.do_remove(ops, node, val, nop, settings=settings)
             return node
@@ -393,7 +405,7 @@ class Key(AccessOp):
         return iter(pairs)
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
-        if self.is_reference():
+        if self._offered(settings):
             return self._reference_items(node, filtered, settings)
         # Dict-like: use key matching
         if hasattr(node, 'keys'):
@@ -584,7 +596,7 @@ class Attr(Key):
         yield (key, v)
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
-        if self.is_reference():
+        if self._offered(settings):
             return self._reference_items(node, filtered, settings)
         all_keys = self._all_keys(node)
         keys = self.op.matches(all_keys) if filtered else all_keys
@@ -671,7 +683,7 @@ class Slot(Key):
         return '[' + self.op.quote() + ']'
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
-        if self.is_reference():
+        if self._offered(settings):
             return self._reference_items(node, filtered, settings)
         if hasattr(node, 'keys'):
             if settings.strict:

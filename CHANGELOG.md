@@ -3,6 +3,25 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `dotted.ReferenceResolver`: what a reference means at run time, as a
+  class a host subclasses. `resolve(ref, settings, node, parents)` is
+  called for every `$$(path)` a traversal meets, in an access position,
+  a transform argument, a guard or a filter value; `super().resolve` is
+  dotted's own reading. With `literals = True` it is offered every plain
+  token in those positions too, so a host sigil such as `$sel` can be a
+  variable. `fold(segments)` is called once per path with its segment
+  strings and folds runs of them into pre-resolved keys, so a
+  multi-segment host variable, `$amount.value`, is one name. Pass a
+  resolver as `resolver=` to `get`, `update`, `remove` and the other
+  traversal calls, or install one for the process with
+  `dotted.set_resolver(r)`; `get_resolver()` reads it back.
+  `UnresolvedReference` is exported for resolvers to raise.
+- `Dotted.segments()`, each segment's plain value with its wrappers
+  aside, and slicing a parsed path, `ops[1:]`, gives a path.
+
 ## [0.47.2]
 
 ### Added

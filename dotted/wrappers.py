@@ -138,6 +138,12 @@ class NopWrap(Wrap):
     def __eq__(self, other):
         return isinstance(other, NopWrap) and self.inner == other.inner
 
+    def rewrap(self, inner):
+        """
+        This wrap around another op.
+        """
+        return NopWrap(inner)
+
     def operator(self, top=False):
         s = self.inner.operator(top)
         # Empty slice: canonical ~[]
@@ -183,6 +189,12 @@ class TransformWrap(Wrap):
         super().__init__(inner, *args, **kwargs)
         self.inner = inner
         self.transforms = tuple(transforms)
+
+    def rewrap(self, inner):
+        """
+        These transforms around another op.
+        """
+        return TransformWrap(inner, self.transforms)
 
     def __repr__(self):
         return self.operator(top=True)
@@ -350,6 +362,12 @@ class ValueGuard(Wrap):
         return (isinstance(other, ValueGuard) and self.inner == other.inner
                 and self.guard == other.guard and self.pred_op == other.pred_op
                 and self.guard_transforms == other.guard_transforms)
+
+    def rewrap(self, inner):
+        """
+        This guard around another op.
+        """
+        return ValueGuard(inner, self.guard, pred_op=self.pred_op, transforms=self.guard_transforms)
 
     def _guard_matches(self, val, settings=base.SETTINGS, node=None):
         """
@@ -599,6 +617,9 @@ class TypeRestriction(ValueGuard):
                 and self.types == other.types
                 and self.exclude == other.exclude)
 
+    def rewrap(self, inner):
+        return TypeRestriction(inner, *self.types, negate=self.exclude)
+
     def is_template(self):
         return self.inner.is_template()
 
@@ -628,6 +649,12 @@ class FilterWrap(Wrap):
         super().__init__(inner, *args, **kwargs)
         self.inner = inner
         self.filters = tuple(filters)
+
+    def rewrap(self, inner):
+        """
+        These filters around another op.
+        """
+        return FilterWrap(inner, self.filters)
 
     def __repr__(self):
         return self.operator(top=True)

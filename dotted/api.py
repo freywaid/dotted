@@ -339,7 +339,7 @@ def _is_mutable_container(obj):
     return False
 
 
-def mutable(obj, path, strict=False, bindings=None):
+def mutable(obj, path, strict=False, bindings=None, resolver=None):
     """
     Check if update(obj, path, val) would mutate obj in place.
 
@@ -400,14 +400,14 @@ _mutable = mutable
 is_mutable = mutable
 
 
-def _pluck_parsed(obj, ops, strict=False):
+def _pluck_parsed(obj, ops, strict=False, resolver=None):
     """
     Yield deduped (parsed path, value) pairs from obj matching `ops`.
     Like pluck_multi, but the paths stay parsed so callers that hand them
     straight back to dotted skip the assemble and re-parse.
     """
     seen = set()
-    for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
         if path is utypes.CUT_SENTINEL:
             break
         found = results.Dotted({'ops': path})
@@ -417,7 +417,7 @@ def _pluck_parsed(obj, ops, strict=False):
         yield (found, val)
 
 
-def build_multi(obj, paths, strict=False, bindings=None):
+def build_multi(obj, paths, strict=False, bindings=None, resolver=None):
     """
     Build a subset/default obj based on concrete path fields
     >>> build_multi({}, ('hello.bye[]', 'hello.there', ))
@@ -427,25 +427,47 @@ def build_multi(obj, paths, strict=False, bindings=None):
     if obj is AUTO:
         obj = _auto_root(((p, None) for p in paths))
     for path in paths:
-        ops = parse(path, bindings=bindings, partial=False)
-        built = engine.build(ops, obj, strict=strict)
+        ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
+        built = engine.build(ops, obj, strict=strict, resolver=resolver)
         # walked paths are concrete: nothing for update() to resolve or check
-        for found, val in _pluck_parsed(built, ops, strict=strict):
-            obj = engine.updates(found, obj, val, strict=strict)
+        for found, val in _pluck_parsed(built, ops, strict=strict, resolver=resolver):
+            obj = engine.updates(found, obj, val, strict=strict, resolver=resolver)
     return obj
 
 
-def build(obj, path, strict=False, bindings=None):
+def build(obj, path, strict=False, bindings=None, resolver=None):
     """
     Build a subset/default obj based on dotted
     >>> build({}, 'hello.there')
     {'hello': {'there': None}}
     >>> # build({}, 'a.b.c[:2].d')
     """
-    return build_multi(obj, (path,), strict=strict, bindings=bindings)
+    return build_multi(obj, (path,), strict=strict, resolver=resolver, bindings=bindings)
 
 
-def get(obj, path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None):
+def _literals(resolver):
+    """
+    True if the resolver a call will run under, its own or the process
+    default, takes plain tokens: the simple fast path must then step aside.
+    """
+    return (base.RESOLVER if resolver is None else resolver).literals
+
+
+def _prepare(ops, resolver):
+    """
+    The path a traversal runs: the parsed path with the runs its
+    resolver's fold() asks for folded into references (see
+    ReferenceResolver). A path handed in already parsed goes through
+    fold() again, so a hook must be content to see its own output.
+    """
+    r = base.RESOLVER if resolver is None else resolver
+    if type(r).fold is base.Resolver.fold:
+        return ops
+    runs = r.fold(ops.segments())
+    return ops.folded(runs) if runs else ops
+
+
+def get(obj, path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Get a value specified by the dotted path. If dotted is a pattern,
     return a tuple of all matches.
@@ -472,8 +494,8 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
     >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
     (7,)
     """
-    ops = parse(path, bindings=bindings, partial=False)
-    chain = ops.simple_chain if _SIMPLE_FASTPATH else None
+    ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
+    chain = ops.simple_chain if _SIMPLE_FASTPATH and not _literals(resolver) else None
     if chain is not None:
         val = engine.simple_get(chain, obj, strict=strict)
         if val is not engine.SIMPLE_BAIL:
@@ -482,27 +504,27 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
             if not (apply_transforms and ops.transforms):
                 return val
             try:
-                return ops.apply(val, base.Settings(obj))
+                return ops.apply(val, base.Settings(obj, resolver=resolver))
             except base.UnresolvedReference:
                 return default
-    found = tuple(engine.values(ops, obj, strict=strict, transforms=apply_transforms))
+    found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms))
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
 
 
-def get_multi(obj, iterable, apply_transforms=True, strict=False, bindings=None):
+def get_multi(obj, iterable, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Get all values from obj in iterable; return iterable
     >>> list(get_multi({'hello': 7, 'there': 9}, ['hello', 'there']))
     [7, 9]
     """
     dummy = object()
-    found = (get(obj, p, dummy, dummy, apply_transforms=apply_transforms, strict=strict, bindings=bindings) for p in iterable)
+    found = (get(obj, p, dummy, dummy, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings) for p in iterable)
     return (v for v in found if v is not dummy)
 
 
-def has(obj, path, strict=False, bindings=None):
+def has(obj, path, strict=False, bindings=None, resolver=None):
     """
     True if path/pattern is contained in obj
     >>> d = {'hello': {'there': [1, '2', 3]}}
@@ -512,10 +534,10 @@ def has(obj, path, strict=False, bindings=None):
     False
     """
     dummy = object()
-    return get(obj, path, dummy, dummy, strict=strict, bindings=bindings) is not dummy
+    return get(obj, path, dummy, dummy, strict=strict, resolver=resolver, bindings=bindings) is not dummy
 
 
-def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=None):
+def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Get value at path if it exists, else set path to val and return that value (like dict.setdefault).
     >>> d = {'hello': 'there'}
@@ -526,16 +548,16 @@ def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=Non
     >>> setdefault({}, 'a.b.c', 7)
     7
     """
-    ops = parse(path, bindings=bindings, partial=False)
+    ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
     if obj is AUTO:
         obj = _auto_root_from_path(ops)
-    if has(obj, ops, strict=strict):
-        return get(obj, ops, apply_transforms=apply_transforms, strict=strict)
-    obj = update(obj, ops, val, apply_transforms=apply_transforms, strict=strict)
-    return get(obj, ops, apply_transforms=False, strict=strict)
+    if has(obj, ops, strict=strict, resolver=resolver):
+        return get(obj, ops, apply_transforms=apply_transforms, strict=strict, resolver=resolver)
+    obj = update(obj, ops, val, apply_transforms=apply_transforms, strict=strict, resolver=resolver)
+    return get(obj, ops, apply_transforms=False, strict=strict, resolver=resolver)
 
 
-def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindings=None):
+def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     For each (path, value), set value at path only if path does not exist (like setdefault).
     Returns an iterable of the value at each path (same order as pathvalues), like get_multi.
@@ -547,10 +569,10 @@ def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindi
     {'a': 1, 'b': 2}
     """
     for p, v in pathvalues.items() if hasattr(pathvalues, 'items') else pathvalues:
-        yield setdefault(obj, p, v, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+        yield setdefault(obj, p, v, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Update only when pred(val) is true.  Default pred skips None values.
     Use pred=None for unconditional update (same as update).
@@ -575,11 +597,11 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     if pred is not None and not pred(val):
         return obj
 
-    ops = parse(parsed, bindings=bindings, partial=False)
-    return engine.updates(ops, obj, val, strict=strict, transforms=apply_transforms)
+    ops = _prepare(parse(parsed, bindings=bindings, partial=False), resolver)
+    return engine.updates(ops, obj, val, strict=strict, resolver=resolver, transforms=apply_transforms)
 
 
-def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Update multiple paths, skipping items where pred(val) is false.
     items: iterable of (path, val) or (path, val, pred).
@@ -592,11 +614,11 @@ def update_if_multi(obj, items, pred=lambda val: val is not None, mutable=True, 
     for item in items:
         path, val, *rest = item
         p = rest[0] if rest else pred
-        obj = update_if(obj, path, val, pred=p, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+        obj = update_if(obj, path, val, pred=p, mutable=mutable, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings)
     return obj
 
 
-def update(obj, path, val, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update(obj, path, val, mutable=True, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Update obj with all matches to dotted path with val
     >>> d = {'hello': {'there': {'stuff': 1}}}
@@ -636,10 +658,10 @@ def update(obj, path, val, mutable=True, apply_transforms=True, strict=False, bi
     >>> result
     {'a': 2}
     """
-    return update_if(obj, path, val, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return update_if(obj, path, val, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def update_multi(obj, pathvalues, mutable=True, apply_transforms=True, strict=False, bindings=None):
+def update_multi(obj, pathvalues, mutable=True, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Update obj with all pathvalues.  Pass AUTO as obj to infer the root
     container type from the first path.
@@ -655,10 +677,10 @@ def update_multi(obj, pathvalues, mutable=True, apply_transforms=True, strict=Fa
     if obj is AUTO:
         pathvalues = list(pathvalues)
         obj = _auto_root(pathvalues)
-    return update_if_multi(obj, pathvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return update_if_multi(obj, pathvalues, pred=None, mutable=mutable, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=True, strict=False, bindings=None):
+def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=True, strict=False, bindings=None, resolver=None):
     """
     Remove only when pred(path) is true.  Default pred skips None paths.
     Use pred=None for unconditional remove (same as remove).
@@ -679,10 +701,11 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     if pred is not None and not pred(path):
         return obj
 
-    return engine.removes(parse(parsed, bindings=bindings, partial=False), obj, val, strict=strict)
+    ops = _prepare(parse(parsed, bindings=bindings, partial=False), resolver)
+    return engine.removes(ops, obj, val, strict=strict, resolver=resolver)
 
 
-def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not None, mutable=True, strict=False, bindings=None):
+def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not None, mutable=True, strict=False, bindings=None, resolver=None):
     """
     Remove by paths or (path, val, pred), skipping items where pred(path) is false.
     Default pred skips None paths.
@@ -695,17 +718,17 @@ def remove_if_multi(obj, items, paths_only=True, pred=lambda path: path is not N
 
     if paths_only:
         for p in items:
-            obj = remove_if(obj, p, pred=pred, val=ANY, mutable=mutable, strict=strict, bindings=bindings)
+            obj = remove_if(obj, p, pred=pred, val=ANY, mutable=mutable, strict=strict, resolver=resolver, bindings=bindings)
         return obj
 
     for item in items:
         p, v, *rest = item
         pr = rest[0] if rest else pred
-        obj = remove_if(obj, p, pred=pr, val=v, mutable=mutable, strict=strict, bindings=bindings)
+        obj = remove_if(obj, p, pred=pr, val=v, mutable=mutable, strict=strict, resolver=resolver, bindings=bindings)
     return obj
 
 
-def remove(obj, path, val=ANY, mutable=True, strict=False, bindings=None):
+def remove(obj, path, val=ANY, mutable=True, strict=False, bindings=None, resolver=None):
     """
     To remove all matches to `path`
         remove(obj, path) or remove(obj, path, ANY)
@@ -733,20 +756,20 @@ def remove(obj, path, val=ANY, mutable=True, strict=False, bindings=None):
     >>> result
     {'b': 2}
     """
-    return remove_if(obj, path, pred=None, val=val, mutable=mutable, strict=strict, bindings=bindings)
+    return remove_if(obj, path, pred=None, val=val, mutable=mutable, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def remove_multi(obj, iterable, paths_only=True, mutable=True, strict=False, bindings=None):
+def remove_multi(obj, iterable, paths_only=True, mutable=True, strict=False, bindings=None, resolver=None):
     """
     Remove by paths or path-value pairs
     >>> remove_multi({'hello': {'there': 7}, 'my': {'precious': 9}}, ['hello', 'my.precious'])
     {'my': {}}
     """
     if paths_only:
-        return remove_if_multi(obj, iterable, paths_only=True, pred=None, mutable=mutable, strict=strict, bindings=bindings)
+        return remove_if_multi(obj, iterable, paths_only=True, pred=None, mutable=mutable, strict=strict, resolver=resolver, bindings=bindings)
     if hasattr(iterable, 'items') and callable(iterable.items):
         iterable = iterable.items()
-    return remove_if_multi(obj, iterable, paths_only=False, pred=None, mutable=mutable, strict=strict, bindings=bindings)
+    return remove_if_multi(obj, iterable, paths_only=False, pred=None, mutable=mutable, strict=strict, resolver=resolver, bindings=bindings)
 
 
 def match(pattern, path, groups=False, partial=True, strict=False):
@@ -1036,7 +1059,7 @@ def assemble(segments):
     return next(assemble_multi((segments,)))
 
 
-def expand_multi(obj, patterns, strict=False, bindings=None):
+def expand_multi(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     Yield deduped paths that match any of `patterns` in `obj`.
 
@@ -1046,7 +1069,8 @@ def expand_multi(obj, patterns, strict=False, bindings=None):
     """
     seen = {}
     for pat in patterns:
-        paths = (o.assemble() for o in engine.expands(parse(pat, bindings=bindings, partial=False), obj, strict=strict))
+        ops = _prepare(parse(pat, bindings=bindings, partial=False), resolver)
+        paths = (o.assemble() for o in engine.expands(ops, obj, strict=strict, resolver=resolver))
         for found in paths:
             if found in seen:
                 continue
@@ -1054,7 +1078,7 @@ def expand_multi(obj, patterns, strict=False, bindings=None):
             yield found
 
 
-def expand(obj, pattern, strict=False, bindings=None):
+def expand(obj, pattern, strict=False, bindings=None, resolver=None):
     """
     Return all paths that match `pattern` in `obj`
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
@@ -1067,10 +1091,10 @@ def expand(obj, pattern, strict=False, bindings=None):
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    return tuple(expand_multi(obj, (pattern,), strict=strict, bindings=bindings))
+    return tuple(expand_multi(obj, (pattern,), strict=strict, resolver=resolver, bindings=bindings))
 
 
-def apply_multi(obj, patterns, strict=False, bindings=None):
+def apply_multi(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     Update `obj` with transforms at `patterns`
     >>> d = {'hello': 7, 'there': 9}
@@ -1080,29 +1104,29 @@ def apply_multi(obj, patterns, strict=False, bindings=None):
     seen = {}
     _marker = object()
     for pat in patterns:
-        for ops in engine.expands(parse(pat, bindings=bindings, partial=False), obj, strict=strict):
+        for ops in engine.expands(_prepare(parse(pat, bindings=bindings, partial=False), resolver), obj, strict=strict, resolver=resolver):
             if ops in seen:
                 continue
             seen[ops] = None
-            first = next(engine.values(ops, obj, strict=strict), _marker)
+            first = next(engine.values(ops, obj, strict=strict, resolver=resolver), _marker)
             if first is _marker:
                 continue
             # the value read is already transformed: write it back as is
-            obj = engine.updates(ops, obj, first, strict=strict, transforms=False)
+            obj = engine.updates(ops, obj, first, strict=strict, resolver=resolver, transforms=False)
     return obj
 
 
-def apply(obj, pattern, strict=False, bindings=None):
+def apply(obj, pattern, strict=False, bindings=None, resolver=None):
     """
     Update `obj` with transforms at `pattern`
     >>> d = {'hello': 7}
     >>> apply(d, 'hello|str')
     {'hello': '7'}
     """
-    return apply_multi(obj, (pattern,), strict=strict, bindings=bindings)
+    return apply_multi(obj, (pattern,), strict=strict, resolver=resolver, bindings=bindings)
 
 
-def pluck_multi(obj, patterns, default=None, strict=False, bindings=None):
+def pluck_multi(obj, patterns, default=None, strict=False, bindings=None, resolver=None):
     """
     Yield deduped (field, value) pairs from obj matching any of `patterns`.
 
@@ -1110,10 +1134,10 @@ def pluck_multi(obj, patterns, default=None, strict=False, bindings=None):
     >>> list(pluck_multi(d, ('hello', 'a.b')))
     [('hello', 7), ('a.b', 'seven')]
     """
-    return ((field, val) for field, _, val in _pluck_written(obj, patterns, strict=strict, bindings=bindings))
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, strict=strict, resolver=resolver, bindings=bindings))
 
 
-def _pluck_written(obj, patterns, strict=False, bindings=None):
+def _pluck_written(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     Yield deduped (field, parsed field, value) triples from obj matching any
     of `patterns`: what pluck_multi yields, plus each field already parsed,
@@ -1121,8 +1145,8 @@ def _pluck_written(obj, patterns, strict=False, bindings=None):
     """
     seen = {}
     for pattern in patterns:
-        ops = parse(pattern, bindings=bindings, partial=False)
-        for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
+        ops = _prepare(parse(pattern, bindings=bindings, partial=False), resolver)
+        for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
             if path is utypes.CUT_SENTINEL:
                 break
             field, parsed = results.Dotted({'ops': path}).written()
@@ -1132,7 +1156,7 @@ def _pluck_written(obj, patterns, strict=False, bindings=None):
             yield (field, parsed, val)
 
 
-def pluck(obj, pattern, default=None, strict=False, bindings=None):
+def pluck(obj, pattern, default=None, strict=False, bindings=None, resolver=None):
     """
     Return the concrete field,value pairs from obj given pattern
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
@@ -1142,7 +1166,7 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None):
     ('a.b', 'seven')
     """
     parsed = parse(pattern)
-    out = tuple(pluck_multi(obj, (parsed,), default=default, strict=strict, bindings=bindings))
+    out = tuple(pluck_multi(obj, (parsed,), default=default, strict=strict, resolver=resolver, bindings=bindings))
     if not out:
         return ()
     if is_pattern(parsed):
@@ -1150,7 +1174,7 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None):
     return out[0]
 
 
-def walk(obj, pattern, strict=False, bindings=None):
+def walk(obj, pattern, strict=False, bindings=None, resolver=None):
     """
     Yield (path_string, value) pairs for all matches of pattern in obj.
 
@@ -1159,14 +1183,14 @@ def walk(obj, pattern, strict=False, bindings=None):
     >>> list(walk(d, 'a.*'))
     [('a.b', 1), ('a.c', 2)]
     """
-    ops = parse(pattern, bindings=bindings, partial=False)
-    for path, val in engine.walk(ops, obj, paths=True, strict=strict, transforms=False):
+    ops = _prepare(parse(pattern, bindings=bindings, partial=False), resolver)
+    for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
         if path is utypes.CUT_SENTINEL:
             break
         yield results.Dotted({'ops': path}).assemble(), val
 
 
-def walk_multi(obj, patterns, strict=False, bindings=None):
+def walk_multi(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     Yield (path_string, value) pairs for all matches of each pattern in obj.
 
@@ -1175,10 +1199,10 @@ def walk_multi(obj, patterns, strict=False, bindings=None):
     [('a', 1), ('b.c', 2)]
     """
     for pattern in patterns:
-        yield from walk(obj, pattern, strict=strict, bindings=bindings)
+        yield from walk(obj, pattern, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def pack(pathvalues, apply_transforms=True, strict=False, bindings=None):
+def pack(pathvalues, apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     Build a new object from dotted path-value pairs, typically via unpack.
     Infers root container type from the first path.
@@ -1188,7 +1212,7 @@ def pack(pathvalues, apply_transforms=True, strict=False, bindings=None):
     >>> pack([('[0]', 'a'), ('[1]', 'b')])
     ['a', 'b']
     """
-    return update_multi(AUTO, pathvalues, apply_transforms=apply_transforms, strict=strict, bindings=bindings)
+    return update_multi(AUTO, pathvalues, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings)
 
 
 def unpack(obj, attrs=None, project=None, partial=True):
@@ -1332,5 +1356,34 @@ def transform(name):
 
 def registry():
     return results.Dotted._registry
+
+
+def set_resolver(resolver=None):
+    """
+    Set the process-wide resolver: what a reference means at run time,
+    for every traversal that is not given a resolver= of its own. None
+    restores dotted's own (see Resolver).
+    >>> import dotted
+    >>> class Upper(dotted.ReferenceResolver):
+    ...     literals = True
+    ...     def resolve(self, ref, settings, node=None, parents=()):
+    ...         if ref.is_reference():
+    ...             return super().resolve(ref, settings, node, parents)
+    ...         return ref.value.upper()
+    >>> dotted.set_resolver(Upper())
+    >>> dotted.get({'A': 1}, 'a')
+    1
+    >>> dotted.set_resolver()
+    >>> dotted.get({'A': 1}, 'a', default='literal again')
+    'literal again'
+    """
+    base.RESOLVER = base.Resolver() if resolver is None else resolver
+
+
+def get_resolver():
+    """
+    The process-wide resolver (see set_resolver).
+    """
+    return base.RESOLVER
 
 registry.__doc__ = results.Dotted.registry.__doc__

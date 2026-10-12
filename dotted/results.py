@@ -8,7 +8,7 @@ from . import predicates
 from . import utils
 from . import wrappers
 from .access import Attr, Invert, Key, Slot
-from .matchers import Const
+from .matchers import Const, ResolvedValue
 from .utils import lazyprop
 
 
@@ -39,6 +39,42 @@ class Dotted:
         transforms; this is the trailing ones as a path shows them.
         """
         return self.ops[-1].transforms if self.ops and isinstance(self.ops[-1], wrappers.TransformWrap) else ()
+
+    def segments(self):
+        """
+        The plain value of each segment, wrappers aside: ('$amount',
+        'value') for $amount.value|sub:1, whatever guards, filters,
+        transforms or ~ sit on them. A segment with no single value, a
+        pattern, group or recursive op, is given as its text.
+        """
+        out = []
+        for op in self.ops:
+            inner = op.most_inner
+            matcher = getattr(inner, 'op', None)
+            if isinstance(matcher, Const):
+                out.append(matcher.value)
+                continue
+            out.append(render([inner])[0][0])
+        return tuple(out)
+
+    def folded(self, runs):
+        """
+        This path with runs of segments folded into pre-resolved keys, as
+        a resolver's fold() asks (see base.Resolver): runs are (start,
+        stop, value) triples, and ops[start:stop] become one op whose key
+        is the value, keeping the last op's decorations. An inner op of a
+        run may carry none; overlapping runs are an error.
+        """
+        out = []
+        at = 0
+        for start, stop, value in sorted(runs, key=lambda run: run[0]):
+            if start < at or stop <= start:
+                raise ValueError(f'fold {(start, stop)} overlaps another or is empty')
+            out.extend(self.ops[at:start])
+            out.append(_folded(self.ops[start:stop], value))
+            at = stop
+        out.extend(self.ops[at:])
+        return Dotted({'ops': tuple(out)})
 
     def assemble(self, start=0, pedantic=False):
         return assemble(self, start, pedantic=pedantic)
@@ -83,6 +119,9 @@ class Dotted:
     def __eq__(self, ops):
         return isinstance(ops, Dotted) and self.ops == ops.ops
     def __getitem__(self, key):
+        if isinstance(key, slice):
+            # a slice is a path too: ops[1:] is the path past its head
+            return Dotted({'ops': self.ops[key]})
         return self.ops[key]
     def resolve(self, bindings, partial=False):
         """
@@ -180,6 +219,28 @@ def needs_parents(ops, transforms=()):
     return any(_reaches_above(t.params) for t in transforms)
 
 
+def _folded(ops, value):
+    """
+    One op for the run of ops: the last op's decorations around an access
+    whose key is `value`, pre-resolved, so it is not offered to the
+    resolver again. The ops before the last must be plain accesses.
+    """
+    for op in ops[:-1]:
+        if type(op) not in (Key, Attr, Slot):
+            raise ValueError(f'folded segment {op!r} carries a guard, filter, transform or ~; only the last may')
+    return _rewrapped(ops[-1], lambda access: type(access)(ResolvedValue(value)))
+
+
+def _rewrapped(op, make):
+    """
+    op with its innermost access op replaced by make(access), every wrap
+    around it kept.
+    """
+    if isinstance(op, wrappers.Wrap):
+        return op.rewrap(_rewrapped(op.inner, make))
+    return make(op)
+
+
 def apply_transforms(val, transforms, settings=base.SETTINGS, parents=()):
     """
     Apply a sequence of transforms to a value. A reference in a transform
@@ -204,7 +265,9 @@ def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=()):
     a value group of what it resolves to. Raises UnresolvedReference when
     the reference does not resolve.
     """
-    if not (hasattr(guard, 'is_reference') and guard.is_reference()):
+    # container values (ContainerList and kin) are ops without is_reference
+    reference = hasattr(guard, 'is_reference') and guard.is_reference()
+    if not (reference or (settings.literals() and isinstance(guard, Const))):
         return guard
     val = settings.resolve(guard, node, parents)
     if not guard.is_pattern():

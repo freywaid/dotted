@@ -98,6 +98,7 @@ For faster `mutable=False` updates and removes, install the
   - [References](#references)
   - [Relative References](#relative-references)
   - [References in transforms and guards](#references-in-transforms-and-guards)
+  - [Custom resolvers](#custom-resolvers)
   - [Escaping](#escaping)
 - [Type Restrictions](#type-restrictions)
   - [Positive restrictions](#positive-restrictions)
@@ -1583,6 +1584,71 @@ A reference that does not resolve matches nothing, as in an access position:
 
     >>> dotted.get({'a': 1}, 'a|add:$$(missing)', default='fallback')
     'fallback'
+
+<a id="custom-resolvers"></a>
+### Custom resolvers
+
+What a reference means at run time is decided by a **resolver**. The default
+is dotted's own reading above. A host with its own namespaces subclasses
+`dotted.ReferenceResolver`, passes an instance as `resolver=` to `get`,
+`update`, `remove` and the rest, or installs one for the process with
+`dotted.set_resolver(r)`; `set_resolver()` with no argument restores the
+default.
+
+`resolve(ref, settings, node, parents)` is called for every `$$(...)` the
+traversal meets, in an access position, a transform argument, a guard or a
+filter value. `ref.is_reference()` is true for those, `ref.inner_path` is the
+text inside, and `super().resolve(...)` is dotted's reading, so a host can
+claim some references and leave the rest:
+
+    >>> class Store(dotted.ReferenceResolver):
+    ...     def __init__(self, store):
+    ...         self.store = store
+    ...     def resolve(self, ref, settings, node=None, parents=()):
+    ...         return dotted.get(self.store, ref.inner_path)
+    >>> store = {'lots': {'taken': 3}}
+    >>> dotted.get({'amount': 10}, 'amount|sub:$$(lots.taken)', resolver=Store(store))
+    7
+
+A resolver that sets `literals = True` is also offered every plain token in
+those positions, so a host sigil such as `$sel` can be a variable. Return
+`ref.value` to leave a token the literal it is; a key the resolver answers
+is not offered again:
+
+    >>> class Sigils(dotted.ReferenceResolver):
+    ...     literals = True
+    ...     def __init__(self, names):
+    ...         self.names = names
+    ...     def resolve(self, ref, settings, node=None, parents=()):
+    ...         if ref.is_reference():
+    ...             return super().resolve(ref, settings, node, parents)
+    ...         if isinstance(ref.value, str) and ref.value.startswith('$'):
+    ...             return self.names[ref.value]
+    ...         return ref.value
+    >>> users = {'users': [{'name': 'alice'}, {'name': 'bob'}]}
+    >>> dotted.get(users, 'users[*&name=$sel].name', resolver=Sigils({'$sel': 'bob'}))
+    ('bob',)
+
+A host variable may span several segments, `$amount.value`, which dotted has
+parsed as two. The path-level hook `fold(segments)` is called once with a
+path's segment strings, `('$amount', 'value')`, and returns the runs it
+resolves as `(start, stop, value)` triples; each run becomes one segment
+whose key is the value, keeping the last segment's guard, filter and
+transforms. An inner segment of a run may carry none.
+
+    >>> class Folding(Sigils):
+    ...     def fold(self, segments):
+    ...         name = '.'.join(str(s) for s in segments)
+    ...         if name in self.names:
+    ...             return [(0, len(segments), self.names[name])]
+    ...         return []
+    >>> r = Folding({'$amount.value': 'amt'})
+    >>> dotted.get({'amt': 10}, '$amount.value|sub:3', resolver=r)
+    7
+
+A path handed in already parsed goes through `fold()` again, so a hook must
+be content to see its own output. `Dotted.segments()` gives any parsed
+path's segment values, and a slice of a parsed path, `ops[1:]`, is a path.
 
 <a id="escaping"></a>
 ### Escaping

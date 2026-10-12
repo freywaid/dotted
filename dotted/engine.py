@@ -36,9 +36,9 @@ def build_default(ops):
     return cur.upsert(built, build_default(ops))
 
 
-def build(ops, node, deepcopy=True, strict=False, settings=None):
+def build(ops, node, deepcopy=True, strict=False, settings=None, resolver=None):
     if settings is None:
-        settings = base.Settings(None, strict)
+        settings = base.Settings(None, strict, resolver=resolver)
     cur, *ops = ops
     built = node.__class__()
     for k,v in cur.items(node, settings=settings):
@@ -93,13 +93,13 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, strict=False, settings=None, transforms=True):
+def values(ops, node, strict=False, settings=None, transforms=True, resolver=None):
     """
     Yield the value of every match, stopping at a cut. The same values as
     iter_until_cut(gets(...)), through one generator. transforms=False
     skips the ops' transforms (apply_transforms=False).
     """
-    for path, val in walk(ops, node, False, strict, settings, transforms):
+    for path, val in walk(ops, node, False, strict, settings, transforms, resolver):
         if path is base.CUT_SENTINEL:
             return
         yield val
@@ -139,33 +139,34 @@ def advance(frame, stack, paths):
     return op.push_children(stack, frame, paths)
 
 
-def settings_for(ops, node, strict, settings, transforms=True):
+def settings_for(ops, node, strict, settings, transforms=True, resolver=None):
     """
     The Settings a traversal of `ops` from `node` runs under: the ones
     passed in when this is a traversal within another, else new ones.
     """
     if settings is not None:
         return settings
-    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms)
+    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms, resolver)
 
 
-def walk(ops, node, paths=True, strict=False, settings=None, transforms=True):
+def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, resolver=None):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
-    transforms=False skips the ops' transforms (apply_transforms=False).
+    transforms=False skips the ops' transforms (apply_transforms=False);
+    resolver is the traversal's, else the process default.
     """
-    settings = settings_for(ops, node, strict, settings, transforms)
+    settings = settings_for(ops, node, strict, settings, transforms, resolver)
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
 
 
-def gets(ops, node, strict=False, settings=None):
+def gets(ops, node, strict=False, settings=None, resolver=None):
     """
     Yield values for all matches. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, False, strict, settings):
+    for path, val in walk(ops, node, False, strict, settings, True, resolver):
         if path is base.CUT_SENTINEL:
             yield base.CUT_SENTINEL
         else:
@@ -206,8 +207,8 @@ def _format_path(segments):
     return ''.join(result)
 
 
-def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=False, settings=None, transforms=True):
-    settings = settings_for(ops, node, strict, settings, transforms)
+def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=False, settings=None, transforms=True, resolver=None):
+    settings = settings_for(ops, node, strict, settings, transforms, resolver)
     if _path is None:
         _path = []
     if not has_defaults and not _is_container(node):
@@ -221,17 +222,17 @@ def updates(ops, node, val, has_defaults=False, _path=None, nop=False, strict=Fa
     return cur.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
 
 
-def removes(ops, node, val=base.ANY, nop=False, strict=False, settings=None):
-    settings = settings_for(ops, node, strict, settings)
+def removes(ops, node, val=base.ANY, nop=False, strict=False, settings=None, resolver=None):
+    settings = settings_for(ops, node, strict, settings, True, resolver)
     cur, *ops = ops
     return cur.do_remove(ops, node, val, nop, settings=settings)
 
 
-def expands(ops, node, strict=False, settings=None):
+def expands(ops, node, strict=False, settings=None, resolver=None):
     """
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, True, strict, settings, False):
+    for path, val in walk(ops, node, True, strict, settings, False, resolver):
         if path is base.CUT_SENTINEL:
             return
         yield Dotted({'ops': path})

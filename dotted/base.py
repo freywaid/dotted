@@ -159,12 +159,35 @@ class Resolver:
     and so on. Raises UnresolvedReference when there is nothing there.
     """
 
+    # True to be offered every plain token in a var-permitting position as
+    # well: key, slot and attr segments, transform arguments, guard and
+    # filter values. The host decides which are its variables; returning
+    # ref.value leaves a token the literal it is.
+    literals = False
+
+    def fold(self, segments):
+        """
+        The path-level hook, called once with a path's segment strings
+        before it is traversed, ('a', '$x', 'y', 'b') for a.$x.y.b. It
+        answers with the runs it resolves: (start, stop, value) triples,
+        each turning segments[start:stop] into one pre-resolved segment
+        whose key is the value, so (1, 3, 'k') makes the path a.k.b. The
+        last segment of a run keeps its guard, filter, transforms and ~;
+        the others may carry none. A folded value is not offered to
+        resolve() again. The default folds nothing.
+        """
+        return ()
+
     def resolve(self, ref, settings, node=None, parents=()):
         """
-        The value of ref, a Reference or a Concat of them.
+        The value of ref: a Reference, a Concat of them, or, for a
+        resolver that takes literals, any other match op, whose own value
+        is the default answer.
         """
         if hasattr(ref, 'resolve_parts'):
             return ref.resolve_parts(settings, node, parents)
+        if not ref.is_reference():
+            return ref.value
         from .api import get
         d = ref.depth
         if d == 0:
@@ -202,7 +225,7 @@ class Settings:
         self.parents = parents
         self.strict = strict
         self.transforms = transforms  # False: apply_transforms=False, ops' transforms are skipped
-        self.resolver = RESOLVER if resolver is None else resolver
+        self.resolver = resolver  # None: the process default, RESOLVER, read when used
 
     def below(self, node):
         """
@@ -213,12 +236,23 @@ class Settings:
             return self
         return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver)
 
+    def resolving(self):
+        """
+        The resolver in force: this traversal's, else the process default.
+        """
+        return RESOLVER if self.resolver is None else self.resolver
+
+    def literals(self):
+        """
+        True if the resolver in force wants plain tokens offered too.
+        """
+        return self.resolving().literals
+
     def resolve(self, ref, node=None, parents=()):
         """
-        The value of a reference met at node, through this traversal's
-        resolver.
+        The value of a reference met at node, through the resolver in force.
         """
-        return self.resolver.resolve(ref, self, node, parents)
+        return self.resolving().resolve(ref, self, node, parents)
 
 
 # For a traversal method called on its own, outside any traversal: no root,
@@ -517,9 +551,10 @@ class Transform(Op):
             return ()
         if settings is None:
             settings = SETTINGS
+        literals = settings.literals()
         args = []
         for p in self.params:
-            if hasattr(p, 'is_reference') and p.is_reference():
+            if isinstance(p, Op) and (p.is_reference() or (literals and isinstance(p, matchers.Const))):
                 args.append(settings.resolve(p, node, parents))
                 continue
             if isinstance(p, matchers.Const):
