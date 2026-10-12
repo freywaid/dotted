@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.48.0]
 
 ### Added
 - `dotted.ReferenceResolver`: what a reference means at run time, as a
