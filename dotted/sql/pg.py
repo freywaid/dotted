@@ -336,6 +336,8 @@ class PostgresMixin:
             op = op.inner
         if isinstance(op, wrappers.TypeRestriction):
             raise TranslationError('type restriction not supported')
+        if isinstance(op.most_inner, _groups.Pack):
+            raise TranslationError('packed group not supported')
         # Groups: each branch is walked independently, so dispatch first
         # (OpGroup has is_pattern=True but shouldn't take the pattern-mode
         # path wholesale).
@@ -459,6 +461,8 @@ class PostgresMixin:
             return self._op_to_jsonpath(op.inner, jvars)
         if isinstance(op, wrappers.TypeRestriction):
             raise TranslationError('type restriction not supported')
+        if isinstance(op.most_inner, _groups.Pack):
+            raise TranslationError('packed group not supported')
         # NB: Slot is a subclass of Key, so check Slot first.
         if isinstance(op, access.Slot):
             return self._key_slot_to_jsonpath(op, is_key=False), None
@@ -674,6 +678,8 @@ class PostgresMixin:
         if isinstance(key, _filters.FilterKey):
             parts = ['@']
             for p in key.parts:
+                if isinstance(p, _groups.Pack):
+                    raise TranslationError('packed group in filter key not supported')
                 if isinstance(p, access.Slot):
                     m = p.op
                     if isinstance(m, matchers.Wildcard):

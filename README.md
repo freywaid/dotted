@@ -227,6 +227,11 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.49.0
+- **`;` is now a reserved character**: it packs a group, `(a,b;)` (see
+  [Packing](#packing)). If you have keys containing a literal `;`, quote
+  them: `"a;b"`.
+
 ### v0.47.0
 - **`!` binds tighter than guards, filters and transforms.** `!a=5` is now
   `(!a)=5`, the values other than `a`'s that equal 5; the old meaning,
@@ -2100,6 +2105,77 @@ fallback as disjunction—first concrete path (last to first):
     >>> dotted.update({'a': {}}, 'a(.x,.y)?', 99)    # nothing matches → creates last (.y)
     {'a': {'y': 99}}
 
+#### Packing
+
+A group yields its matches one by one. A `;` just inside either paren
+**packs** them: the group yields one value, the tuple of what it would
+have yielded. `(a,b;)` and `(;a,b)` are the same pack, and the group
+keeps its own kind—`(a,b;)` packs the branches that match, `(a&b;)` packs
+both or nothing, `(a#,b;)` packs what the cut lets through, `(a,b;)?`
+packs the first match—and `(a.*;)` packs a one-branch group. Nothing
+matched packs to `()`:
+
+    >>> d = {'a': {'x': 1, 'y': 2}, 'b': 3}
+    >>> dotted.get(d, '(a.*;)')
+    (1, 2)
+    >>> dotted.get(d, '(b,zz;)')
+    (3,)
+    >>> dotted.get(d, '(b&zz;)')
+    ()
+    >>> dotted.get(d, '(zz.*;)')
+    ()
+
+The tuple is one value, so a packed path is not a pattern: `get` returns
+the value bare, and a transform after the pack applies to the tuple once.
+This is how an aggregate over a pattern is written—the pack gathers, an
+ordinary [transform](#transforms) reduces:
+
+    >>> dotted.get(d, '(a.*;)|sum')
+    3
+    >>> dotted.get(d, '(a.*;)|mean')
+    1.5
+    >>> dotted.get(d, '(a.*;)|set|len')
+    2
+    >>> dotted.get({'a': 1, 'b': 2}, '(a,b;)|sum')      # not (a|sum,b|sum)
+    3
+
+The group runs from the node the pack sits at, so a pack under a pattern
+gives one tuple per match—a group-by—while a pack around the whole path
+gathers across every level inside it:
+
+    >>> d = {'items': [{'p': [1, 2]}, {'p': [3]}, {'p': []}]}
+    >>> dotted.get(d, 'items[*].(p[*];)|sum')
+    (3, 3, 0)
+    >>> dotted.get(d, '(items[*].p[*];)|sum')
+    6
+
+The path may continue into the tuple, and a guard compares it, with
+[guard transforms](#guard-transforms) before it:
+
+    >>> d = {'a': {'x': 1, 'y': 2}}
+    >>> dotted.get(d, '(a.*;)[0]')
+    1
+    >>> dotted.get(d, '(a.*;)|sum>2')
+    (1, 2)
+
+A packed group may also lead a [filter](#filters) key, where it runs
+from each item and its tuple is the value compared—filter by an
+aggregate over the item:
+
+    >>> d = {'items': [{'p': [1, 2]}, {'p': [3]}, {'p': []}]}
+    >>> dotted.get(d, 'items[(p[*];)|sum>2]')
+    [{'p': [1, 2]}, {'p': [3]}]
+    >>> dotted.get(d, 'items[*&(p[*];)|len=0]')
+    ({'p': []},)
+
+A pack is its own path segment: `walk` and `expand` give it back as
+written, `(a.*;)|sum`. There is nothing under a tuple of matches to write
+to, so `update` and `remove` through a pack raise `ValueError`, and a pack
+cannot be negated. `;` is a reserved character; quote a key that contains
+one, `"a;b"`.
+
+`(a.*;)[*]` yields the matches again: `[*]` is the inverse of packing.
+
 #### Negation (NOT)
 
 Use `!` prefix to exclude keys matching a pattern:
@@ -2151,7 +2227,8 @@ A guard, filter or transform applies to the whole expression on its left:
 an access path (on its last segment), a `!` expression (on what it
 yields), or a parenthesized group, where it is shorthand for writing it on
 every branch: `(a,b)=5` is `(a=5,b=5)` and `(a,b)|int` is `(a|int,b|int)`,
-which is also how `assemble` writes them.
+which is also how `assemble` writes them. A [packed](#packing) group
+yields one value, so `(a,b;)|sum` applies to that tuple once.
 
     >>> d = {'a': 1, 'b': 2, 'c': 3}
     >>> dotted.get(d, '!a&b,c')       # ((!a)&b), c
@@ -3021,6 +3098,8 @@ decorator.
 | `coalesce` | fallbacks... | The first of the value and the fallbacks that is not `None`: `\|coalesce:0` |
 | `strip` | `chars`, `raises` | Strip whitespace or specified chars |
 | `len` | `default` | Get length. Optional default if not sized: `\|len:0` |
+| `sum` | `start`, `raises` | Sum a container: `\|sum`, `\|sum:10`; over a pattern, `(a.*;)\|sum` |
+| `mean` | `raises` | Arithmetic mean of a container: `(a.*;)\|mean` |
 | `lowercase` | `raises` | Convert string to lowercase |
 | `uppercase` | `raises` | Convert string to uppercase |
 | `add` | `rhs`, `raises` | Add value: `\|add:10` |

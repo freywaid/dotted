@@ -92,6 +92,12 @@ class OpGroup(base.TraversalOp):
     def __hash__(self):
         return hash(self.branches)
 
+    def __eq__(self, other):
+        # spelled out, not inherited: a compiled class that defines
+        # __hash__ alone compares by identity (CPython inherits
+        # tp_richcompare only together with tp_hash)
+        return self.__class__ == other.__class__ and self.branches == other.branches
+
     def is_pattern(self):
         return True
 
@@ -839,6 +845,117 @@ class OpGroupNot(OpGroup):
 # =============================================================================
 # Parse actions — called by grammar.py to construct OpGroups from parse results
 # =============================================================================
+
+
+class Pack(base.TraversalOp):
+    """
+    A packed group, (a,b;) or (;a,b): the group's matches as one tuple.
+    The group keeps its own kind, so (a,b;) packs whatever branches
+    match, (a&b;) packs both or nothing, (a#,b;) packs what the cut
+    lets through, and (a.*;) packs a one-branch group; no matches pack
+    to (). Yielding one value, it is not a pattern, and a transform
+    after it applies to the tuple once: (a.*;)|sum. The group is run
+    from the node the pack sits at, so a[*].(b.*;) packs per a. Writes
+    through a pack raise. Not a Wrap: the pack is the op, the group
+    its argument, so an unwrapping stops here.
+    """
+
+    def __init__(self, inner):
+        super().__init__(inner)
+        self.inner = inner
+
+    def __repr__(self):
+        return self.operator(top=True)
+
+    def is_template(self):
+        return self.inner.is_template()
+
+    def is_reference(self):
+        return self.inner.is_reference()
+
+    def matchable(self, op):
+        return op == self
+
+    def match(self, op, specials=False):
+        """
+        A pack denotes only itself: it matches an equal pack.
+        """
+        if not self.matchable(op):
+            return None
+        return base.MatchResult(self)
+
+    def do_match(self, rest_pats, path_ops, partial):
+        """
+        One segment, matched by equality (see match).
+        """
+        if not path_ops or not self.match(path_ops[0]):
+            return None
+        rest = base.match_ops(rest_pats, path_ops[1:], partial)
+        if rest is None:
+            return None
+        return [(self, False)] + rest
+
+    def operator(self, top=False):
+        """
+        The group's text with the marker before its closing paren:
+        (a,b;), (a,b;)?.
+        """
+        s = self.inner.operator(top)
+        i = s.rindex(')')
+        return s[:i] + ';' + s[i:]
+
+    def is_pattern(self):
+        return False
+
+    def as_attrs(self):
+        return Pack(self.inner.as_attrs())
+
+    def resolve(self, bindings, partial=False):
+        new_inner = self.inner.resolve(bindings, partial)
+        if new_inner is self.inner:
+            return self
+        return Pack(new_inner)
+
+    def concrete(self, val):
+        """
+        A pack is its own path segment: a walked path reads back as
+        written, (a.*;).
+        """
+        return self
+
+    def gather(self, node, settings=base.SETTINGS):
+        """
+        The tuple of the group's matches from node, stopping at a cut.
+        """
+        return tuple(engine.values((self.inner,), node, settings=settings))
+
+    def items(self, node, settings=base.SETTINGS, filtered=True):
+        yield None, self.gather(node, settings)
+
+    def keys(self, node, settings=base.SETTINGS):
+        yield None
+
+    def values(self, node, settings=base.SETTINGS):
+        yield self.gather(node, settings)
+
+    def is_empty(self, node):
+        return False
+
+    def push_children(self, stack, frame, paths):
+        """
+        One frame, the tuple, with this pack as its path segment; the
+        node the group ran from is its parent for ^^ references.
+        """
+        packed = self.gather(frame.node, frame.settings)
+        cp = frame.prefix + (self,) if paths else frame.prefix
+        stack.push(base.Frame(frame.ops, packed, cp, settings=frame.settings.below(frame.node)))
+        return ()
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        raise ValueError(f'cannot update through a packed group: {self!r}')
+
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        raise ValueError(f'cannot remove through a packed group: {self!r}')
 
 
 def _attr_branch(branch):

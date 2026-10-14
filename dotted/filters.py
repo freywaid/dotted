@@ -52,8 +52,9 @@ class FilterKey(base.MatchOp):
             self.parts = tuple(self.args)
         # Override args with tuple of parts for proper hashing
         self.args = self.parts
-        # For simple keys (single part), expose value for backwards compat
-        self.value = self.parts[0].value if len(self.parts) == 1 else None
+        # For simple keys (single part), expose value for backwards compat;
+        # a packed group, (a,b;), has none
+        self.value = getattr(self.parts[0], 'value', None) if len(self.parts) == 1 else None
 
     def __repr__(self):
         out = []
@@ -66,8 +67,19 @@ class FilterKey(base.MatchOp):
     def __hash__(self):
         return hash(self.parts)
 
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.parts == other.parts
+
     def is_dotted(self):
         return len(self.parts) > 1
+
+    def is_packed(self):
+        """
+        True if the key starts with a packed group, [(p[*];)|sum>2]: the
+        group runs from the item and its tuple is the key's value.
+        """
+        return bool(self.parts) and hasattr(self.parts[0], 'gather')
 
     def is_template(self):
         """
@@ -81,24 +93,29 @@ class FilterKey(base.MatchOp):
         """
         return _any_reference(self.parts)
 
-    def get_values(self, node):
+    def get_values(self, node, settings=base.SETTINGS):
         """
         Get all values from node matching this key, traversing dotted path if needed.
-        Supports slot parts (e.g. tags[*]) to yield each element of a list for matching.
+        Supports slot parts (e.g. tags[*]) to yield each element of a list for matching,
+        and a leading packed group, (p[*];), whose tuple is the value; settings
+        are the traversal's, for references inside the group.
         Yields (value, True) for each match, or (None, False) if no matches.
         """
-        yield from self._get_values(node, list(self.parts))
+        yield from self._get_values(node, list(self.parts), settings)
 
-    def _get_values(self, node, parts):
+    def _get_values(self, node, parts, settings=base.SETTINGS):
         if not parts:
             yield node, True
             return
         part = parts[0]
         rest = parts[1:]
+        if hasattr(part, 'gather'):
+            yield from self._get_values(part.gather(node, settings), rest, settings)
+            return
         if isinstance(part, Slot):
             try:
                 for v in part.values(node):
-                    yield from self._get_values(v, rest)
+                    yield from self._get_values(v, rest, settings)
             except (TypeError, AttributeError):
                 yield None, False
             return
@@ -106,7 +123,7 @@ class FilterKey(base.MatchOp):
             try:
                 s = part.slice(node)
                 val = node[s]
-                yield from self._get_values(val, rest)
+                yield from self._get_values(val, rest, settings)
             except (TypeError, AttributeError, KeyError, IndexError):
                 yield None, False
             return
@@ -127,7 +144,7 @@ class FilterKey(base.MatchOp):
         found = False
         for km in part.matches(node.keys()):
             child = node[km]
-            yield from self._get_values(child, rest)
+            yield from self._get_values(child, rest, settings)
             found = True
             break
         if not found:
@@ -145,9 +162,9 @@ class FilterKey(base.MatchOp):
         """
         For simple keys, delegate to the inner part's matches
         """
-        if not self.is_dotted():
+        if not self.is_dotted() and not self.is_packed():
             return self.parts[0].matches(keys)
-        return ()
+        return iter(())
 
     def matchable(self, op):
         """
@@ -214,6 +231,10 @@ class FilterKeyValue(FilterOp):
     def __hash__(self):
         return hash((self._eq_str, self.key, self.val, self.guard_transforms))
 
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and (self._eq_str, self.key, self.val, self.guard_transforms) == (other._eq_str, other.key, other.val, other.guard_transforms)
+
     def __repr__(self):
         t_str = ''.join('|' + t.operator() for t in self.guard_transforms) if self.guard_transforms else ''
         return f'{self.key}{t_str}{self._eq_str}{self.val}'
@@ -252,11 +273,11 @@ class FilterKeyValue(FilterOp):
         self.val sees the value as ^, node as ^^ and node's tracked parents
         above that; one that does not resolve matches nothing.
         """
-        if not hasattr(node, 'keys'):
+        if not hasattr(node, 'keys') and not self.key.is_packed():
             return False
         from . import results
         parents = (node,) + (settings.parents or ())
-        for val, found in self.key.get_values(node):
+        for val, found in self.key.get_values(node, settings):
             if not found:
                 continue
             try:
@@ -292,9 +313,13 @@ class FilterKeyValue(FilterOp):
             return None
         if not self.key.matchable(op.key) or not self.val.matchable(op.val):
             return None
-        mk = next(self.key.matches((op.key.value,)), base.marker)
+        if self.key.is_packed():
+            # a packed key has no single value: it matches an equal key
+            mk = self.key.match(op.key)
+        else:
+            mk = next(self.key.matches((op.key.value,)), base.marker)
         mv = next(self.val.matches((op.val.value,)), base.marker)
-        if base.marker in (mk, mv):
+        if mk is None or base.marker in (mk, mv):
             return None
         return type(op)(op.key, op.val)
 
@@ -384,6 +409,10 @@ class FilterGroup(FilterOp):
     def __hash__(self):
         return hash(self.inner)
 
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.inner == other.inner
+
     def __repr__(self):
         return f'({self.inner})'
 
@@ -433,6 +462,10 @@ class FilterAnd(FilterOp):
 
     def __hash__(self):
         return hash(self.filters)
+
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.filters == other.filters
 
     def __repr__(self):
         return '&'.join(str(f) for f in self.filters)
@@ -492,6 +525,10 @@ class FilterOr(FilterOp):
     def __hash__(self):
         return hash(self.filters)
 
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.filters == other.filters
+
     def __repr__(self):
         return ','.join(str(f) for f in self.filters)
 
@@ -537,6 +574,10 @@ class FilterKeyValueFirst(FilterOp):
 
     def __hash__(self):
         return hash(self.inner)
+
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.inner == other.inner
 
     def __repr__(self):
         return f'{self.inner}?'
@@ -597,6 +638,10 @@ class FilterNot(FilterOp):
 
     def __hash__(self):
         return hash(('not', self.inner))
+
+    def __eq__(self, other):
+        # spelled out: a compiled class with __hash__ alone compares by identity
+        return self.__class__ == other.__class__ and self.inner == other.inner
 
     def __repr__(self):
         return f'!{self.inner}'

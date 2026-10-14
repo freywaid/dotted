@@ -3,6 +3,7 @@ Default transforms
 """
 import decimal
 import math
+import statistics
 from .results import Dotted
 
 
@@ -497,6 +498,45 @@ def transform_not_in(val, rhs, *modes):
     try:
         return val not in rhs
     except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('sum')
+def transform_sum(val, start=None, *modes):
+    """
+    Sum the elements of val
+        <dotted>|sum                sum(val)
+        <dotted>|sum:<start>        sum(val, <start>)
+        <dotted>|sum::raises        sum(val) or raises
+    >>> import dotted
+    >>> dotted.get({'a': {'x': 1, 'y': 2}}, '(a.*;)|sum')
+    3
+    """
+    try:
+        if start is None:
+            return sum(val)
+        return sum(val, start)
+    except TypeError:
+        if 'raises' in modes:
+            raise
+    return val
+
+
+@transform('mean')
+def transform_mean(val, *modes):
+    """
+    Arithmetic mean of the elements of val
+        <dotted>|mean               statistics.mean(val)
+        <dotted>|mean:raises        statistics.mean(val) or raises
+    >>> import dotted
+    >>> dotted.get({'a': {'x': 1, 'y': 2}}, '(a.*;)|mean')
+    1.5
+    """
+    try:
+        return statistics.mean(val)
+    except (TypeError, statistics.StatisticsError):
         if 'raises' in modes:
             raise
     return val

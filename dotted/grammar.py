@@ -43,6 +43,8 @@ def inner_not_action(t):
     item = t[0]
     if isinstance(item, (list, tuple, pp.ParseResults)) and len(item) == 1:
         item = item[0]  # an op_seq of one op
+    if isinstance(item, groups.Pack):
+        raise ValueError(f'a packed group cannot be negated: !{item!r}')
     if isinstance(item, groups.OpGroupOr):
         # a parenthesized single path, !(a.b): the group adds nothing, so
         # !(a.b) is the same op as !a.b
@@ -92,8 +94,8 @@ def inner_to_opgroup(parsed_result):
     items = list(parsed_result)
     if not items:
         return groups.OpGroupOr()
-    # If there's a single OpGroup result, use it directly
-    if len(items) == 1 and isinstance(items[0], groups.OpGroup):
+    # If there's a single OpGroup (or packed group) result, use it directly
+    if len(items) == 1 and isinstance(items[0], (groups.OpGroup, groups.Pack)):
         inner = items[0]
         # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
         if isinstance(inner, groups.OpGroupOr):
@@ -220,7 +222,7 @@ none = (pp.Literal('None') | pp.Literal('null')).set_parse_action(matchers.NoneV
 true = (pp.Literal('True') | pp.Literal('true')).set_parse_action(matchers.Boolean)
 false = (pp.Literal('False') | pp.Literal('false')).set_parse_action(matchers.Boolean)
 
-reserved = '.[]*:|+?/=,@&()!~#{}$<>' # {} for container syntax, $ for substitution, <> for comparisons
+reserved = '.[]*:|+?/=,@&()!~#{}$<>;' # {} for container syntax, $ for substitution, <> for comparisons, ; for packing
 breserved = ''.join('\\' + i for i in reserved)
 tilde = L('~')
 
@@ -601,7 +603,10 @@ key = _concat_key | _key_atom
 _filter_key_part = string | _common_pats | numeric_extended | non_integer | numeric_key | word
 filter_key_slice = (lb + slice + rb).set_parse_action(lambda t: access.Slice(*t))
 filter_key_slot = (lb + (_commons | numeric_extended | numeric_slot) + rb).set_parse_action(lambda t: access.Slot(t[0]))
-_filter_key_segment = _filter_key_part | filter_key_slice | filter_key_slot
+# A packed group may lead a filter key, [(p[*];)|sum>2]; set below, once
+# the group grammar exists.
+_filter_key_group = pp.Forward()
+_filter_key_segment = _filter_key_group | _filter_key_part | filter_key_slice | filter_key_slot
 filter_key = pp.Group(
     _filter_key_segment + ZM(filter_key_slice | filter_key_slot | (dot + _filter_key_part))
 ).set_parse_action(flt.FilterKey)
@@ -729,6 +734,10 @@ slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(access.Sl
 softcut_marker = L('##')
 cut_marker = softcut_marker | L('#')
 
+# Pack marker: a ; just inside either paren, (a,b;) or (;a,b), packs the
+# group's matches into one tuple (see groups.Pack).
+pack_marker = L(';')
+
 # Slot grouping: [(*&filter, +)] for disjunction inside slots; [(*&filter#, +)] for cut
 def _slot_item_action(t):
     _, filters, _, _, args = _classify_tokens(list(t))
@@ -754,8 +763,12 @@ def _grouped_with_type_restriction(parsed_result, first=False):
     """
     Parse action for grouped expressions with optional type restriction.
     Last token may be a TypeSpec; if so, wrap the OpGroup in TypeRestriction.
+    A ; token at either end packs the group (see groups.Pack); the type
+    restriction then guards the tuple.
     """
     items = list(parsed_result)
+    packed = any(isinstance(i, str) and i == ';' for i in items)
+    items = [i for i in items if not (isinstance(i, str) and i == ';')]
     tr = None
     if items and isinstance(items[-1], utypes.TypeSpec):
         tr = items.pop()
@@ -763,32 +776,50 @@ def _grouped_with_type_restriction(parsed_result, first=False):
         grp = inner_to_opgroup_first(items)
     else:
         grp = inner_to_opgroup(items)
+    if packed:
+        grp = groups.Pack(grp)
     if tr:
         grp = tr.wrap(grp)
     return grp
 
-inner_grouped = (lparen + inner_expr + rparen).set_parse_action(
+_packable = lambda expr: Opt(pack_marker) + expr + Opt(pack_marker)
+
+
+def _filter_key_pack_action(s, loc, t):
+    """
+    Parse action for a group leading a filter key: it must be packed,
+    the tuple being the value compared; an unpacked group has no single
+    value there, so it fails to parse as it always did.
+    """
+    grp = _grouped_with_type_restriction(t)
+    if not isinstance(grp, groups.Pack):
+        raise pp.ParseException(s, loc, 'a group in a filter key must be packed, (a,b;)')
+    return grp
+
+_filter_key_group <<= (lparen + _packable(inner_expr) + rparen).set_parse_action(_filter_key_pack_action)
+
+inner_grouped = (lparen + _packable(inner_expr) + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-inner_grouped_first = (lparen + inner_expr + rparen + S('?')).set_parse_action(
+inner_grouped_first = (lparen + _packable(inner_expr) + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 # Explicit-op grouped: used mid-path where bare-key inference is not allowed.
 # Uses a separate precedence tower (_explicit_inner_expr) that only allows
 # op_seqs built from _op_seq_cont (no bare keys even in first position).
 # The FollowedBy is a fast-fail optimization — if the first char after ( can't
 # start an explicit branch, don't even try the tower.
-_explicit_op_start = pp.FollowedBy(pp.Char('.@[!~('))
+_explicit_op_start = pp.FollowedBy(pp.Char('.@[!~(;'))
 _explicit_inner_expr = pp.Forward()
-_inner_grouped_explicit = (lparen + _explicit_op_start + _explicit_inner_expr + rparen).set_parse_action(
+_inner_grouped_explicit = (lparen + _explicit_op_start + _packable(_explicit_inner_expr) + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-_inner_grouped_explicit_first = (lparen + _explicit_op_start + _explicit_inner_expr + rparen + S('?')).set_parse_action(
+_inner_grouped_explicit_first = (lparen + _explicit_op_start + _packable(_explicit_inner_expr) + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 # Bare-key grouped: first branch does NOT start with an access op.
 # Used with prefix shorthand (.(a,b), @(a,b)) where the prefix distributes.
 # Allows ! and ~ (modifiers) but rejects . @ [ ( (access ops / nested groups).
 _bare_key_start = ~pp.FollowedBy(pp.Char('.@[('))
-_inner_grouped_bare = (lparen + _bare_key_start + inner_expr + rparen).set_parse_action(
+_inner_grouped_bare = (lparen + _bare_key_start + _packable(inner_expr) + rparen).set_parse_action(
     lambda t: _grouped_with_type_restriction(t))
-_inner_grouped_bare_first = (lparen + _bare_key_start + inner_expr + rparen + S('?')).set_parse_action(
+_inner_grouped_bare_first = (lparen + _bare_key_start + _packable(inner_expr) + rparen + S('?')).set_parse_action(
     lambda t: _grouped_with_type_restriction(t, first=True))
 
 # Recursive operator: ** (recursive wildcard) and *pattern (recursive chain-following)

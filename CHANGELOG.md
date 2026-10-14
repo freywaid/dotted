@@ -3,6 +3,35 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- Packing: a `;` just inside either paren of a group, `(a,b;)` or
+  `(;a,b)`, makes the group yield its matches as one tuple instead of
+  one by one. The group keeps its kind, `(a&b;)` packs both or nothing,
+  `(a#,b;)` what the cut lets through, `(a.*;)` a one-branch group, and
+  nothing matched packs to `()`. The tuple is one value, so a packed
+  path is not a pattern and a transform after it applies once, which is
+  how an aggregate over a pattern is written: `(a.*;)|sum` is one
+  number, `items[*].(p[*];)|sum` one per item. Guards compare the
+  tuple, `(a.*;)|sum>2`, and the path may continue into it,
+  `(a.*;)[0]`. A packed group may lead a filter key, running from each
+  item: `items[(p[*];)|sum>2]` filters by an aggregate over the item.
+  `update` and `remove` through a pack raise `ValueError`; the SQL
+  translator raises `TranslationError`.
+- `|sum` and `|mean` transforms, on any container value.
+
+### Changed
+- **Breaking**: `;` is a reserved character. Quote a key that contains
+  one: `"a;b"`.
+
+### Fixed
+- On the compiled engine, groups and filters compared by identity, so
+  `parse('(a,b)') == parse('(a, b)')` was `False` there and `True` on
+  the Python engine. A compiled class that defines `__hash__` alone
+  does not inherit `__eq__`; `OpGroup` and the filter classes now
+  spell theirs out.
+
 ## [0.48.1]
 
 ### Fixed
