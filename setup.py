@@ -11,6 +11,7 @@ same files run as Python.
 import os
 
 from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext as _build_ext
 
 # The engine and the ops it runs. grammar.py, the parser, is left out on
 # purpose: pyparsing inspects its parse actions as Python functions.
@@ -47,7 +48,20 @@ def extensions():
     return cythonize(
         [Extension('dotted.' + name, ['dotted/' + name + '.py'], optional=True) for name in MODULES],
         compiler_directives={'language_level': 3},
+        nthreads=os.cpu_count() or 1,
     )
 
 
-setup(ext_modules=extensions())
+class build_ext(_build_ext):
+    """
+    Compile the extensions one per core. setuptools builds them one after
+    another unless -j is given; the modules are independent, so a release
+    wheel compiles in a fraction of the time on a multi-core runner.
+    """
+    def finalize_options(self):
+        super().finalize_options()
+        if self.parallel is None:
+            self.parallel = os.cpu_count() or 1
+
+
+setup(ext_modules=extensions(), cmdclass={'build_ext': build_ext})
