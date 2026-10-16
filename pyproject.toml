@@ -38,6 +38,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Utilities",
 ]
@@ -78,7 +79,7 @@ Changelog = "https://github.com/freywaid/dotted/blob/master/CHANGELOG.md"
 include = ["dotted*"]
 
 [tool.cibuildwheel]
-# Compiled wheels for CPython 3.11-3.14 (the versions are listed in the
+# Compiled wheels for CPython 3.11-3.15 (the versions are listed in the
 # publish workflow, one job each); everything else installs the pure wheel.
 skip = "pp*"
 test-requires = "pytest"

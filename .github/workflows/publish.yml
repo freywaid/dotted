@@ -71,11 +71,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
-        python: [cp311, cp312, cp313, cp314]
+        python: [cp311, cp312, cp313, cp314, cp315]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pypa/cibuildwheel@v3.2
+      - uses: pypa/cibuildwheel@v4.3
         env:
           CIBW_BUILD: ${{ matrix.python }}-*
       - uses: actions/upload-artifact@v4
