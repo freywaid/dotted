@@ -3,6 +3,21 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `ReferenceResolver.literals` may name the positions a resolver is
+  offered plain tokens in, as a list or tuple of `'segments'`,
+  `'transforms'`, `'guards'` and `'filters'`. A host whose variables are
+  sigiled arguments, `|add:^fee`, leaves `'segments'` out and no longer
+  pays a call per key (#63); `get` then keeps its fast path for a plain
+  chain of keys. An unknown name is a `ValueError`. `True` and `False`
+  are unchanged.
+- `ReferenceResolver(literals=...)` sets `literals` per instance,
+  overriding the class's, so a resolver need not be subclassed only to
+  change it. A subclass with its own `__init__` passes it on with
+  `super().__init__(literals)`.
+
 ## [0.49.1]
 
 ### Documentation

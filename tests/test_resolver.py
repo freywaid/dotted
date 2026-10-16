@@ -13,7 +13,8 @@ class Store(dotted.ReferenceResolver):
     $$(path) reads a separate store, not the root.
     """
 
-    def __init__(self, store):
+    def __init__(self, store, literals=None):
+        super().__init__(literals)
         self.store = store
 
     def resolve(self, ref, settings, node=None, parents=()):
@@ -34,8 +35,8 @@ class Sigils(Store):
     """
     literals = True
 
-    def __init__(self, names, store):
-        super().__init__(store)
+    def __init__(self, names, store, literals=None):
+        super().__init__(store, literals)
         self.names = names
 
     def resolve(self, ref, settings, node=None, parents=()):
@@ -70,7 +71,24 @@ class Folding(Sigils):
         return runs
 
 
-ROOT = {'amt': 10, 'amt_obj': {'value': 10, 'cur': 'USD'}, 'a': {'k': {'b': 5}},
+class ArgSigils(Sigils):
+    """
+    $name tokens offered in transform arguments, guard and filter values,
+    never as path segments; records every plain token offered.
+    """
+    literals = ('transforms', 'guards', 'filters')
+
+    def __init__(self, names, store, literals=None):
+        super().__init__(names, store, literals)
+        self.offered = []
+
+    def resolve(self, ref, settings, node=None, parents=()):
+        if not ref.is_reference():
+            self.offered.append(ref.value)
+        return super().resolve(ref, settings, node, parents)
+
+
+ROOT ={'amt': 10, 'amt_obj': {'value': 10, 'cur': 'USD'}, 'a': {'k': {'b': 5}},
         'users': [{'name': 'alice'}, {'name': 'bob'}], 'n': None}
 STORE = {'lots': {'taken': 3}}
 NAMES = {'$amount.value': 'amt', '$amount': 'amt_obj', '$x.y': 'k', '$sel': 'bob', '$taken': 3}
@@ -145,6 +163,91 @@ def test_unknown_variable_matches_nothing():
     assert dotted.get(ROOT, '$nope', default='missing', resolver=r) == 'missing'
 
 
+def test_literals_named_positions_offered():
+    """
+    literals naming transforms, guards and filters offers each of them.
+    """
+    r = ArgSigils(NAMES, STORE)
+    assert dotted.get(ROOT, 'n|coalesce:$taken', resolver=r) == 3
+    assert dotted.get(ROOT, 'users[*].name=$sel', resolver=r) == ('bob',)
+    assert dotted.get(ROOT, 'users[*&name=$sel].name', resolver=r) == ('bob',)
+
+
+def test_literals_unnamed_segments_not_offered():
+    """
+    literals without segments never offers a path segment.
+    """
+    r = ArgSigils(NAMES, STORE)
+    assert dotted.get(ROOT, '$sel', default='no key', resolver=r) == 'no key'
+    assert dotted.get(ROOT, 'amt_obj.value|add:$taken', resolver=r) == 13
+    assert r.offered == ['$taken']
+
+
+def test_literals_guards_apart_from_filters():
+    """
+    guards and filters are separate positions.
+    """
+    guards = ArgSigils(NAMES, STORE, literals=('guards',))
+    filters = ArgSigils(NAMES, STORE, literals=['filters'])
+    assert dotted.get(ROOT, 'users[*].name=$sel', resolver=guards) == ('bob',)
+    assert dotted.get(ROOT, 'users[*&name=$sel].name', resolver=guards) == ()
+    assert dotted.get(ROOT, 'users[*&name=$sel].name', resolver=filters) == ('bob',)
+    assert dotted.get(ROOT, 'users[*].name=$sel', resolver=filters) == ()
+
+
+def test_literals_transforms_wherever_they_sit():
+    """
+    A transform argument is a transforms position in a filter and before a
+    guard too, not a filters or guards one.
+    """
+    data = {'items': [{'n': None, 'k': 'a'}, {'n': 2, 'k': 'b'}]}
+    names = {'$one': 1}
+    transforms = ArgSigils(names, STORE, literals=('transforms',))
+    others = ArgSigils(names, STORE, literals=('guards', 'filters'))
+    assert dotted.get(data, 'items[*&n|coalesce:$one=1].k', resolver=transforms) == ('a',)
+    assert dotted.get(data, 'items[*&n|coalesce:$one=1].k', resolver=others) == ()
+    assert dotted.get(data, 'items[*].n|coalesce:$one=1', resolver=transforms) == (None,)
+    assert dotted.get(data, 'items[*].n|coalesce:$one=1', resolver=others) == ()
+
+
+def test_literals_segments_only():
+    """
+    literals = ('segments',) offers segments and nothing else.
+    """
+    r = ArgSigils(NAMES, STORE, literals=('segments',))
+    assert dotted.get(ROOT, '$amount', resolver=r) == {'value': 10, 'cur': 'USD'}
+    assert dotted.get(ROOT, 'n|coalesce:$taken', resolver=r) == '$taken'
+    assert r.offered == ['$amount', 'n']
+
+
+def test_literals_per_instance():
+    """
+    literals= on the constructor overrides the class's for that instance.
+    """
+    r = dotted.ReferenceResolver(literals=('transforms',))
+    assert r.literals == ('transforms',)
+    assert dotted.ReferenceResolver().literals is False
+    assert Sigils(NAMES, STORE).literals is True
+    assert Sigils(NAMES, STORE, literals=False).literals is False
+
+
+def test_literals_unknown_name_is_an_error():
+    """
+    A name outside LITERALS, or a bare string, fails on the class or the
+    constructor.
+    """
+    with pytest.raises(ValueError):
+        class Typo(dotted.ReferenceResolver):
+            literals = ('transform',)
+    with pytest.raises(TypeError):
+        class Bare(dotted.ReferenceResolver):
+            literals = 'transforms'
+    with pytest.raises(ValueError):
+        dotted.ReferenceResolver(literals=('transform',))
+    with pytest.raises(TypeError):
+        dotted.ReferenceResolver(literals='transforms')
+
+
 # ---- fold ----
 
 def test_fold_head_run():
@@ -210,3 +313,17 @@ def test_process_default_resolver():
     assert dotted.get(ROOT, '$amount.value', resolver=Store(STORE), default='per call wins') == 'per call wins'
     dotted.set_resolver()
     assert dotted.get(ROOT, '$amount.value', default='reset') == 'reset'
+
+
+def test_process_default_takes_literals_positions():
+    """
+    The process default resolver's literals decide what a call without
+    resolver= offers, segments included.
+    """
+    r = ArgSigils(NAMES, STORE, literals=('transforms',))
+    dotted.set_resolver(r)
+    assert dotted.get(ROOT, 'n|coalesce:$taken') == 3
+    assert dotted.get(ROOT, '$sel', default='no key') == 'no key'
+    assert r.offered == ['$taken']
+    dotted.set_resolver(ArgSigils(NAMES, STORE, literals=('segments',)))
+    assert dotted.get(ROOT, '$amount') == {'value': 10, 'cur': 'USD'}

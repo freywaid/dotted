@@ -251,11 +251,12 @@ class AccessOp(SimpleOp):
     def _offered(self, settings):
         """
         True if the match op goes to the resolver: a reference, or a
-        plain constant when the resolver in force takes literals.
+        plain constant when the resolver in force takes literals in path
+        segments.
         """
         if self.op.is_reference():
             return True
-        return (settings.literals() and isinstance(self.op, matchers.Const)
+        return (settings.literals('segments') and isinstance(self.op, matchers.Const)
                 and not isinstance(self.op, matchers.ResolvedValue))
 
     def resolve(self, bindings, partial=False):

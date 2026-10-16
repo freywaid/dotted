@@ -149,6 +149,12 @@ class NOP(metaclass=MetaNOP):
         return False
 
 
+# The positions a resolver may be offered plain tokens in, named in its
+# literals: key, slot and attr segments, transform arguments, guard values
+# and filter values.
+LITERALS = ('segments', 'transforms', 'guards', 'filters')
+
+
 class Resolver:
     """
     What a reference means at run time. Every $$(path) a traversal meets,
@@ -161,9 +167,29 @@ class Resolver:
 
     # True to be offered every plain token in a var-permitting position as
     # well: key, slot and attr segments, transform arguments, guard and
-    # filter values. The host decides which are its variables; returning
-    # ref.value leaves a token the literal it is.
+    # filter values. A list or tuple of LITERALS names to be offered them in
+    # those positions only, ('transforms', 'guards', 'filters') to leave
+    # segments out. The host decides which are its variables; returning
+    # ref.value leaves a token the literal it is. Set here, on a subclass,
+    # or per instance with literals=.
     literals = False
+
+    def __init_subclass__(cls, **kwargs):
+        """
+        Check a subclass's literals (see check_literals).
+        """
+        super().__init_subclass__(**kwargs)
+        check_literals(cls.literals)
+
+    def __init__(self, literals=None):
+        """
+        literals, when given, overrides the class's for this instance (see
+        check_literals).
+        """
+        if literals is None:
+            return
+        check_literals(literals)
+        self.literals = literals
 
     def fold(self, segments):
         """
@@ -211,6 +237,33 @@ class Resolver:
 RESOLVER = Resolver()
 
 
+def check_literals(literals):
+    """
+    Raise unless literals is True, False, or a list or tuple of LITERALS
+    names.
+    """
+    if isinstance(literals, bool):
+        return
+    if not isinstance(literals, (list, tuple)):
+        raise TypeError(f'literals is True, False or a list or tuple of {LITERALS}, not {literals!r}')
+    unknown = [name for name in literals if name not in LITERALS]
+    if unknown:
+        raise ValueError(f'literals names {unknown}, not among {LITERALS}')
+
+
+def takes_literals(resolver, position):
+    """
+    True if resolver takes plain tokens at position, one of LITERALS: its
+    literals is True, or names it.
+    """
+    lit = resolver.literals
+    if lit is True:
+        return True
+    if not lit:
+        return False
+    return position in lit
+
+
 class Settings:
     """
     What holds for the whole of one traversal: the root node, the chain of
@@ -242,11 +295,12 @@ class Settings:
         """
         return RESOLVER if self.resolver is None else self.resolver
 
-    def literals(self):
+    def literals(self, position):
         """
-        True if the resolver in force wants plain tokens offered too.
+        True if the resolver in force wants plain tokens at position, one
+        of LITERALS, offered too.
         """
-        return self.resolving().literals
+        return takes_literals(self.resolving(), position)
 
     def resolve(self, ref, node=None, parents=()):
         """
@@ -551,7 +605,7 @@ class Transform(Op):
             return ()
         if settings is None:
             settings = SETTINGS
-        literals = settings.literals()
+        literals = settings.literals('transforms')
         args = []
         for p in self.params:
             if isinstance(p, Op) and (p.is_reference() or (literals and isinstance(p, matchers.Const))):

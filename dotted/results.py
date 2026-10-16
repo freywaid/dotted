@@ -256,18 +256,19 @@ def apply_transforms(val, transforms, settings=base.SETTINGS, parents=()):
     return val
 
 
-def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=()):
+def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=(), position='guards'):
     """
     The match op a guard or filter value compares with: the value as
     parsed, or a reference resolved through the traversal's resolver
     against node and parents, node being the value under test (so
-    $$(^x) looks x up in it). A reference path that is a pattern becomes
-    a value group of what it resolves to. Raises UnresolvedReference when
-    the reference does not resolve.
+    $$(^x) looks x up in it). A plain value is resolved too when the
+    resolver takes literals at position, 'guards' or 'filters'. A reference
+    path that is a pattern becomes a value group of what it resolves to.
+    Raises UnresolvedReference when the reference does not resolve.
     """
     # container values (ContainerList and kin) are ops without is_reference
     reference = hasattr(guard, 'is_reference') and guard.is_reference()
-    if not (reference or (settings.literals() and isinstance(guard, Const))):
+    if not (reference or (settings.literals(position) and isinstance(guard, Const))):
         return guard
     val = settings.resolve(guard, node, parents)
     if not guard.is_pattern():
@@ -276,13 +277,13 @@ def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=()):
     return containers.ValueGroup(*(Const(v) for v in val))
 
 
-def guard_passes(pred_op, val, guard, settings=base.SETTINGS, node=None, parents=()):
+def guard_passes(pred_op, val, guard, settings=base.SETTINGS, node=None, parents=(), position='guards'):
     """
     True if val satisfies pred_op against guard (see guard_matcher); a
     guard reference that does not resolve passes nothing.
     """
     try:
-        matcher = guard_matcher(guard, settings, node, parents)
+        matcher = guard_matcher(guard, settings, node, parents, position)
     except base.UnresolvedReference:
         return False
     return any(True for _ in pred_op.matches((val,), matcher))

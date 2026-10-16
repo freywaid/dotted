@@ -1630,14 +1630,16 @@ claim some references and leave the rest:
     >>> dotted.get({'amount': 10}, 'amount|sub:$$(lots.taken)', resolver=Store(store))
     7
 
-A resolver that sets `literals = True` is also offered every plain token in
-those positions, so a host sigil such as `$sel` can be a variable. Return
+A resolver with `literals = True` is also offered every plain token in
+those positions, so a host sigil such as `$sel` can be a variable. Set it on
+the class, or per instance with `literals=` on the constructor. Return
 `ref.value` to leave a token the literal it is; a key the resolver answers
 is not offered again:
 
     >>> class Sigils(dotted.ReferenceResolver):
     ...     literals = True
-    ...     def __init__(self, names):
+    ...     def __init__(self, names, literals=None):
+    ...         super().__init__(literals)
     ...         self.names = names
     ...     def resolve(self, ref, settings, node=None, parents=()):
     ...         if ref.is_reference():
@@ -1648,6 +1650,18 @@ is not offered again:
     >>> users = {'users': [{'name': 'alice'}, {'name': 'bob'}]}
     >>> dotted.get(users, 'users[*&name=$sel].name', resolver=Sigils({'$sel': 'bob'}))
     ('bob',)
+
+`literals` may instead name the positions it wants, as a list or tuple of
+`'segments'` (key, slot and attr segments), `'transforms'` (transform
+arguments), `'guards'` (guard values) and `'filters'` (filter values). A host
+whose variables only ever stand as arguments leaves `'segments'` out, so the
+keys of a path cost no call:
+
+    >>> r = Sigils({'$inc': 3}, literals=('transforms', 'guards', 'filters'))
+    >>> dotted.get({'n': 5}, 'n|add:$inc', resolver=r)
+    8
+
+An unknown name is a `ValueError`, on the class or the constructor.
 
 A host variable may span several segments, `$amount.value`, which dotted has
 parsed as two. The path-level hook `fold(segments)` is called once with a

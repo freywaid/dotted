@@ -448,9 +448,11 @@ def build(obj, path, strict=False, bindings=None, resolver=None):
 def _literals(resolver):
     """
     True if the resolver a call will run under, its own or the process
-    default, takes plain tokens: the simple fast path must then step aside.
+    default, takes plain tokens in path segments: the simple fast path must
+    then step aside. Other positions it can serve, as its transforms
+    resolve through Settings.
     """
-    return (base.RESOLVER if resolver is None else resolver).literals
+    return base.takes_literals(base.RESOLVER if resolver is None else resolver, 'segments')
 
 
 def _prepare(ops, resolver):
@@ -1365,12 +1367,11 @@ def set_resolver(resolver=None):
     restores dotted's own (see Resolver).
     >>> import dotted
     >>> class Upper(dotted.ReferenceResolver):
-    ...     literals = True
     ...     def resolve(self, ref, settings, node=None, parents=()):
     ...         if ref.is_reference():
     ...             return super().resolve(ref, settings, node, parents)
     ...         return ref.value.upper()
-    >>> dotted.set_resolver(Upper())
+    >>> dotted.set_resolver(Upper(literals=True))
     >>> dotted.get({'A': 1}, 'a')
     1
     >>> dotted.set_resolver()
