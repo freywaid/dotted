@@ -1349,7 +1349,8 @@ To chain through the items, use a pattern instead:
 ## Substitutions and References
 
 All `$`-prefixed syntax falls into two categories: **substitutions** (resolved
-at replace time) and **references** (resolved during traversal).
+at replace time) and **references**, inline expressions evaluated during
+traversal.
 
 | Syntax | Type | Resolved against |
 |---|---|---|
@@ -1455,14 +1456,22 @@ the parsed result, so a path used many times can be compiled once:
 <a id="references"></a>
 ### References
 
-A **reference** resolves a dotted path against the root object during traversal
-and uses the result as a literal key. The syntax is `$$(path)`:
+A **reference**, `$$(expr)`, is an inline evaluation expression. The dotted
+expression inside is evaluated during traversal, as `get` would evaluate it
+against the root, and its value stands where the reference is written. The
+expression is a full dotted path, so it may carry patterns and transforms:
+`$$(config.offset|mul:10)` is the value of `config.offset`, times ten.
+
+Where the reference stands decides what its value does. In a transform
+argument, a guard value or a filter value it is the value itself (see
+[References in transforms and guards](#references-in-transforms-and-guards)).
+In an access position, as a key or slot, it is the key to look up:
 
     >>> data = {'config': {'field': 'name'}, 'name': 'Alice'}
     >>> dotted.get(data, '$$(config.field)')
     'Alice'
 
-Here `$$(config.field)` resolves to `'name'`, then looks up `data['name']`.
+Here `$$(config.field)` evaluates to `'name'`, then looks up `data['name']`.
 
 References work with all access types and in any position:
 
@@ -1558,6 +1567,12 @@ and so on:
     >>> data = {'config': {'offset': 10}, 'n': 5}
     >>> dotted.get(data, 'n|add:$$(config.offset)')
     15
+
+The expression inside may chain transforms of its own; they apply to its value
+before it is passed:
+
+    >>> dotted.get(data, 'n|add:$$(config.offset|mul:10)')
+    105
 
     >>> data = {'items': [{'price': 100, 'rate': 1.5}, {'price': 20, 'rate': 2}]}
     >>> dotted.get(data, 'items[*].price|mul:$$(^^rate)')
