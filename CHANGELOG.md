@@ -3,6 +3,15 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.49.1]
+
+### Documentation
+- The README describes a reference, `$$(expr)`, as an inline evaluation
+  expression: the dotted expression inside, transforms included, is
+  evaluated during traversal and its value stands where it is written. In a
+  transform argument, guard or filter value that is the value itself; in an
+  access position it is the key looked up.
+
 ## [0.49.0]
 
 ### Added
