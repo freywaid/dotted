@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.49.3]
 
 ### Added
 - A slice bound may be a reference or a substitution: `b[:$$(i)]`,
