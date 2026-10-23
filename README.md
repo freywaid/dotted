@@ -1116,6 +1116,14 @@ Dotted slicing works like python slicing and all that entails.
     >>> dotted.get(d, '*.there[1:]')
     ([2, 3], [5, 6])
 
+A bound may be a reference or a substitution, resolved the way a slot's is:
+
+    >>> d = {'b': [3, 0, 5], 'i': 2}
+    >>> dotted.get(d, 'b[:$$(i)]')
+    [3, 0]
+    >>> dotted.get(d, 'b[$(n):]', bindings={'n': 1})
+    [0, 5]
+
 <a id="dot-notation-for-sequence-indexing"></a>
 ### Dot notation for sequence indexing
 
@@ -1593,6 +1601,16 @@ as do the transforms before a guard:
     >>> data = {'scale': 10, 'a': 1, 'b': 2}
     >>> dotted.get(data, '*|mul:$$(scale)=20')
     (2,)
+
+So does a reference inside a container value. One whose path is a pattern
+branches the container, once per value; pack it, `(…;)`, to compare with the
+tuple instead:
+
+    >>> data = {'want': [2, 3], 'items': [[1, 2], [1, 4], [1, (2, 3)]]}
+    >>> dotted.get(data, 'items[*]=[1, $$(want[*])]')
+    ([1, 2],)
+    >>> dotted.get(data, 'items[*]=[1, $$((want[*];))]')
+    ([1, (2, 3)],)
 
 With `update`, the transforms apply to the value being set, so `^` is that
 value:

@@ -92,9 +92,33 @@ class Recursive(BaseOp):
             s = '.' + s
         return s
 
+    def _parts(self):
+        """
+        The inner match op, the accessor ops and the filters: every part
+        that may hold a substitution or reference.
+        """
+        yield self.inner
+        for item in self.accessors or ():
+            if item is base.BRANCH_CUT or item is base.BRANCH_SOFTCUT:
+                continue
+            yield from item
+        yield from self.filters
+
+    def is_template(self):
+        """
+        True if a part contains a substitution reference.
+        """
+        return any(hasattr(p, 'is_template') and p.is_template() for p in self._parts())
+
+    def is_reference(self):
+        """
+        True if a part contains an internal reference.
+        """
+        return any(hasattr(p, 'is_reference') and p.is_reference() for p in self._parts())
+
     def resolve(self, bindings, partial=False):
         """
-        Resolve $N in inner match op and accessor branches.
+        Resolve $N in inner match op, accessor branches and filters.
         """
         new_inner = self.inner.resolve(bindings, partial) if hasattr(self.inner, 'resolve') else self.inner
         new_accessors = None
@@ -111,11 +135,16 @@ class Recursive(BaseOp):
                     acc_changed = True
                 new_accessors.append(new_branch)
             new_accessors = tuple(new_accessors)
-        if new_inner is self.inner and not acc_changed:
+        new_filters = tuple(f.resolve(bindings, partial) for f in self.filters)
+        filt_changed = not all(nf is of for nf, of in zip(new_filters, self.filters))
+        if new_inner is self.inner and not acc_changed and not filt_changed:
             return self
-        return Recursive(
+        # type(self): a RecursiveFirst stays first-match
+        r = type(self)(
             new_inner, accessors=new_accessors if new_accessors is not None else self.accessors,
             depth_start=self.depth_start, depth_stop=self.depth_stop, depth_step=self.depth_step)
+        r.filters = new_filters
+        return r
 
     def match(self, op, specials=False):
         return self.inner.matchable(op, specials=specials)

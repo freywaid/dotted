@@ -994,12 +994,49 @@ class Slice(SimpleOp):
         start, stop, step = self.args
         m = [s(start), s(stop)]
         if step is not None:
-            m += [s(stop)]
+            m += [s(step)]
         return '[' + ':'.join(m) + ']'
     def is_pattern(self):
         return False
     def is_slice(self):
         return True
+    def is_template(self):
+        """
+        True if a bound is an unresolved substitution.
+        """
+        return any(isinstance(a, matchers.Subst) for a in self.args)
+    def is_reference(self):
+        """
+        True if a bound is an internal reference.
+        """
+        return any(isinstance(a, matchers.Reference) for a in self.args)
+    def resolve(self, bindings, partial=False):
+        """
+        Resolve $N in the bounds.
+        """
+        if not self.is_template():
+            return self
+        args = []
+        for a in self.args:
+            r = a.resolve(bindings, partial) if isinstance(a, matchers.Subst) else a
+            # a resolved substitution is a ResolvedValue; the bound is its value
+            args.append(r.value if isinstance(r, matchers.ResolvedValue) else r)
+        return self.concrete(slice(*args))
+    def _resolved(self, node=None, settings=base.SETTINGS):
+        """
+        This slice with its $$(path) bounds resolved, or None if one does
+        not resolve.
+        """
+        args = []
+        for a in self.args:
+            if not isinstance(a, matchers.Reference):
+                args.append(a)
+                continue
+            try:
+                args.append(settings.resolve(a, node, settings.parents or ()))
+            except KeyError:
+                return None
+        return self.concrete(slice(*args))
     def operator(self, top=False):
         return str(self)
     def slice(self, node=None):
@@ -1012,6 +1049,8 @@ class Slice(SimpleOp):
         Calculate cardinality of a slice; don't both dealing with countably infinite
         set arithmetic, instead just pick a suitably large integer
         """
+        if self.is_template() or self.is_reference():
+            return 0
         s = self.slice(node)
         start = s.start or 0
         stop = s.stop or '+'
@@ -1023,7 +1062,12 @@ class Slice(SimpleOp):
         return max(0, int((stop - start) / step))
 
     def keys(self, node, settings=base.SETTINGS):
-        return (self.slice(node),)
+        if not self.is_reference():
+            return (self.slice(node),)
+        r = self._resolved(node=node, settings=settings)
+        if r is None:
+            return ()
+        return r.keys(node, settings=settings)
     def items(self, node, settings=base.SETTINGS, filtered=True):
         return self._slice_items(node, settings)
     def _slice_items(self, node, settings):
@@ -1075,6 +1119,28 @@ class Slice(SimpleOp):
         return node.__class__(out)
     def upsert(self, node, val):
         return self.update(node, self.slice(node), val)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        """
+        Resolve references before updating.
+        """
+        if not self.is_reference():
+            return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
+        r = self._resolved(node=node, settings=settings)
+        if r is None:
+            return node
+        return r.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
+
+    def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        """
+        Resolve references before removing.
+        """
+        if not self.is_reference():
+            return super().do_remove(ops, node, val, nop, settings=settings)
+        r = self._resolved(node=node, settings=settings)
+        if r is None:
+            return node
+        return r.do_remove(ops, node, val, nop, settings=settings)
 
     def pop(self, node, key):
         try:

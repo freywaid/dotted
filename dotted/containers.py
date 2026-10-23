@@ -25,7 +25,7 @@ Type prefix semantics:
     fs{...}   frozenset only
 """
 import re
-from itertools import combinations
+from itertools import combinations, product
 
 from . import utils
 from . import base
@@ -46,11 +46,91 @@ def _element_matches(pattern, val):
     return any(True for _ in pattern.matches((val,)))
 
 
+def _holds(items, method):
+    """
+    True if an item, or a part of a (key, value) dict entry, answers True
+    to method: 'is_template' or 'is_reference'.
+    """
+    for x in items:
+        if isinstance(x, tuple):
+            if _holds(x, method):
+                return True
+            continue
+        test = getattr(x, method, None)
+        if test is not None and test():
+            return True
+    return False
+
+
+def _values(ref, settings, node, parents):
+    """
+    What reference ref resolves to, as a tuple: its value, or each value
+    of a pattern reference.
+    """
+    val = settings.resolve(ref, node, parents)
+    if ref.is_pattern():
+        return tuple(val)
+    return (val,)
+
+
+def _alternatives(e, settings, node, parents):
+    """
+    The forms element e takes once its references resolve: a Const per
+    value of a reference, a nested container's branches, each pairing of
+    a dict entry's key and value forms; just e when it holds none.
+    """
+    if isinstance(e, tuple):
+        return tuple(product(*(_alternatives(p, settings, node, parents) for p in e)))
+    if not _holds((e,), 'is_reference'):
+        return (e,)
+    if isinstance(e, matchers.Reference):
+        return tuple(matchers.Const(v) for v in _values(e, settings, node, parents))
+    return e.branches(settings, node, parents)
+
+
+def _fragments(part, typ, owner, settings, node, parents):
+    """
+    The fragments a string or bytes glob part stands for: a reference's
+    values, each of which must be a typ; any other part as it is.
+    """
+    if not isinstance(part, matchers.Reference):
+        return (part,)
+    vals = _values(part, settings, node, parents)
+    for v in vals:
+        if not isinstance(v, typ):
+            raise TypeError(
+                f'{owner} requires {typ.__name__}, got {type(v).__name__}'
+                f' — use $$(path|{typ.__name__}) to coerce')
+    return vals
+
+
+class ContainerOp(base.Op):
+    """
+    Base of the container value patterns. Their args are their parts, so
+    whether one holds a substitution or a reference is read from those.
+
+    A reference inside resolves as the whole value's would (see
+    results.guard_matcher). One that is a pattern branches the container:
+    branches() gives the container once per combination of values.
+    """
+    def is_template(self):
+        """
+        True if a part holds an unresolved substitution.
+        """
+        return _holds(self.args, 'is_template')
+
+    def is_reference(self):
+        """
+        True if a part holds an internal reference.
+        """
+        return _holds(self.args, 'is_reference')
+
+
 # ---------------------------------------------------------------------------
 # Glob — the ... element
 # ---------------------------------------------------------------------------
 
-class Glob(base.Op):
+class Glob(ContainerOp):
     """
     The ... element: zero or more values with optional pattern and count.
 
@@ -87,6 +167,14 @@ class Glob(base.Op):
             return self
         return Glob(new_pat, self.min_count, self.max_count)
 
+    def branches(self, settings, node=None, parents=()):
+        """
+        This glob once per form of its pattern (see ContainerOp).
+        """
+        return tuple(
+            Glob(p, self.min_count, self.max_count)
+            for p in _alternatives(self.pattern, settings, node, parents))
+
     def __repr__(self):
         parts = ['...']
         if self.pattern is not None:
@@ -105,7 +193,7 @@ class Glob(base.Op):
 # DictGlobEntry — a glob entry in a dict pattern
 # ---------------------------------------------------------------------------
 
-class DictGlobEntry(base.Op):
+class DictGlobEntry(ContainerOp):
     """
     A glob entry in a dict: glob on key side with value pattern.
 
@@ -141,6 +229,15 @@ class DictGlobEntry(base.Op):
             return self
         return DictGlobEntry(new_kg, new_vp)
 
+    def branches(self, settings, node=None, parents=()):
+        """
+        This entry once per pairing of its key glob's and value pattern's
+        forms (see ContainerOp).
+        """
+        keys = _alternatives(self.key_glob, settings, node, parents)
+        vals = _alternatives(self.val_pattern, settings, node, parents)
+        return tuple(DictGlobEntry(k, v) for k, v in product(keys, vals))
+
     def __repr__(self):
         val_repr = repr(self.val_pattern) if self.val_pattern is not None else ''
         key_repr = repr(self.key_glob)
@@ -156,7 +253,7 @@ class DictGlobEntry(base.Op):
 _LIST_TYPES = (list, tuple)
 
 
-class ContainerList(base.Op):
+class ContainerList(ContainerOp):
     """
     List/tuple pattern: [elem, elem, ...].
 
@@ -213,6 +310,14 @@ class ContainerList(base.Op):
             return self
         return ContainerList(*new_elems, type_prefix=self.type_prefix)
 
+    def branches(self, settings, node=None, parents=()):
+        """
+        This list once per combination of its elements' forms (see
+        ContainerOp).
+        """
+        forms = (_alternatives(e, settings, node, parents) for e in self.elements)
+        return tuple(ContainerList(*c, type_prefix=self.type_prefix) for c in product(*forms))
+
     def __repr__(self):
         prefix = self.type_prefix or ''
         return prefix + '[' + ', '.join(repr(e) for e in self.elements) + ']'
@@ -222,7 +327,7 @@ class ContainerList(base.Op):
 # ContainerDict — {k: v, ...} pattern
 # ---------------------------------------------------------------------------
 
-class ContainerDict(base.Op):
+class ContainerDict(ContainerOp):
     """
     Dict pattern: {key: val, key: val, ...}.
 
@@ -280,6 +385,14 @@ class ContainerDict(base.Op):
             return self
         return ContainerDict(*new_entries, type_prefix=self.type_prefix)
 
+    def branches(self, settings, node=None, parents=()):
+        """
+        This dict once per combination of its entries' forms (see
+        ContainerOp).
+        """
+        forms = (_alternatives(e, settings, node, parents) for e in self.entries)
+        return tuple(ContainerDict(*c, type_prefix=self.type_prefix) for c in product(*forms))
+
     def matchable(self, op, specials=False):
         """
         ContainerDict can match against Const values.
@@ -302,7 +415,7 @@ class ContainerDict(base.Op):
 # ContainerSet — {v, v, ...} pattern
 # ---------------------------------------------------------------------------
 
-class ContainerSet(base.Op):
+class ContainerSet(ContainerOp):
     """
     Set/frozenset pattern: {elem, elem, ...}.
 
@@ -353,6 +466,14 @@ class ContainerSet(base.Op):
             return self
         return ContainerSet(*new_elems, type_prefix=self.type_prefix)
 
+    def branches(self, settings, node=None, parents=()):
+        """
+        This set once per combination of its elements' forms (see
+        ContainerOp).
+        """
+        forms = (_alternatives(e, settings, node, parents) for e in self.elements)
+        return tuple(ContainerSet(*c, type_prefix=self.type_prefix) for c in product(*forms))
+
     def matchable(self, op, specials=False):
         """
         ContainerSet can match against Const values.
@@ -368,7 +489,7 @@ class ContainerSet(base.Op):
 # StringGlob — "prefix"..."suffix" string pattern
 # ---------------------------------------------------------------------------
 
-class StringGlob(base.Op):
+class StringGlob(ContainerOp):
     """
     String glob pattern: quoted fragments with ... between them.
 
@@ -437,7 +558,8 @@ class StringGlob(base.Op):
         new_parts = []
         changed = False
         for p in self.parts:
-            if not hasattr(p, 'resolve'):
+            # a glob holds no substitution; a reference resolves when matched
+            if isinstance(p, (Glob, matchers.Reference)) or not hasattr(p, 'resolve'):
                 new_parts.append(p)
                 continue
             np = p.resolve(bindings, partial)
@@ -461,6 +583,14 @@ class StringGlob(base.Op):
         if not changed:
             return self
         return StringGlob(*new_parts)
+
+    def branches(self, settings, node=None, parents=()):
+        """
+        This glob once per combination of the strings its references
+        resolve to (see ContainerOp).
+        """
+        forms = (_fragments(p, str, 'StringGlob', settings, node, parents) for p in self.parts)
+        return tuple(StringGlob(*c) for c in product(*forms))
 
     def matches(self, vals):
         """
@@ -493,7 +623,7 @@ class StringGlob(base.Op):
 # BytesGlob — b"prefix"...b"suffix" bytes pattern
 # ---------------------------------------------------------------------------
 
-class BytesGlob(base.Op):
+class BytesGlob(ContainerOp):
     """
     Bytes glob pattern: byte-string fragments with ... between them.
 
@@ -562,7 +692,8 @@ class BytesGlob(base.Op):
         new_parts = []
         changed = False
         for p in self.parts:
-            if not hasattr(p, 'resolve'):
+            # a glob holds no substitution; a reference resolves when matched
+            if isinstance(p, (Glob, matchers.Reference)) or not hasattr(p, 'resolve'):
                 new_parts.append(p)
                 continue
             np = p.resolve(bindings, partial)
@@ -586,6 +717,14 @@ class BytesGlob(base.Op):
         if not changed:
             return self
         return BytesGlob(*new_parts)
+
+    def branches(self, settings, node=None, parents=()):
+        """
+        This glob once per combination of the bytes its references
+        resolve to (see ContainerOp).
+        """
+        forms = (_fragments(p, bytes, 'BytesGlob', settings, node, parents) for p in self.parts)
+        return tuple(BytesGlob(*c) for c in product(*forms))
 
     def matches(self, vals):
         """
@@ -618,7 +757,7 @@ class BytesGlob(base.Op):
 # ValueGroup — (val1, val2) value disjunction
 # ---------------------------------------------------------------------------
 
-class ValueGroup(base.Op):
+class ValueGroup(ContainerOp):
     """
     Value group: (val1, val2, ...) — matches any alternative.
 
@@ -651,6 +790,15 @@ class ValueGroup(base.Op):
         if all(na is oa for na, oa in zip(new_alts, self.alternatives)):
             return self
         return ValueGroup(*new_alts)
+
+    def branches(self, settings, node=None, parents=()):
+        """
+        This group with its references resolved: one group, whose
+        alternatives are every form its alternatives take (see
+        ContainerOp).
+        """
+        alts = (f for a in self.alternatives for f in _alternatives(a, settings, node, parents))
+        return (ValueGroup(*alts),)
 
     def matchable(self, op, specials=False):
         """

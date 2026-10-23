@@ -890,3 +890,58 @@ def test_cycle_accessor_group():
     assert 1 in result
     assert 2 in result
     assert 3 in result
+
+
+# -- Substitutions and references --
+
+def test_subst_filter():
+    """
+    $(v) in a recursive filter resolves from bindings.
+    """
+    d = {'a': {'x': 1, 'y': 2}, 'b': {'x': 2}}
+    assert dotted.get(d, '**&x=$(v)', bindings={'v': 1}) == ({'x': 1, 'y': 2},)
+
+
+def test_subst_filter_replace():
+    assert dotted.replace('**&x=$(v)', {'v': 1}) == '**&x=1'
+
+
+def test_subst_accessor_keeps_filters():
+    """
+    Resolving an accessor keeps the filters.
+    """
+    d = {'a': [{'x': 1}, {'x': 2}]}
+    assert dotted.get(d, '*($(k)#, [*])&x=1', bindings={'k': 'a'}) == ({'x': 1},)
+    assert dotted.replace('*($(k)#, [*])&x=1', {'k': 'a'}) == '*(a#, [*])&x=1'
+
+
+def test_subst_accessor_keeps_first():
+    """
+    Resolving an accessor keeps first-match.
+    """
+    d = {'a': [10, 20]}
+    ops = dotted.parse('*($(k), [*])?', bindings={'k': 'a'})
+    assert isinstance(ops[0], RecursiveFirst)
+    assert dotted.get(d, ops) == ([10, 20],)
+
+
+def test_is_template():
+    assert dotted.is_template('**&x=$(v)')
+    assert dotted.is_template('*($(k), [*])')
+    assert not dotted.is_template('**&x=1')
+
+
+def test_unresolved_subst_raises():
+    with pytest.raises(TypeError):
+        dotted.get({}, '**&x=$(v)')
+
+
+def test_is_reference():
+    assert dotted.is_reference('**&x=$$(want)')
+    assert dotted.is_reference('*($$(k), [*])')
+    assert not dotted.is_reference('**&x=1')
+
+
+def test_reference_filter():
+    d = {'want': 1, 'a': {'x': 1}, 'b': {'x': 2}}
+    assert dotted.get(d, '**&x=$$(want)') == ({'x': 1},)

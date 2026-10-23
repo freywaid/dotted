@@ -64,4 +64,7 @@ class build_ext(_build_ext):
             self.parallel = os.cpu_count() or 1
 
 
-setup(ext_modules=extensions(), cmdclass={'build_ext': build_ext})
+# Guarded: cythonize compiles in a process pool, and a spawned worker
+# (macOS, and Linux from Python 3.14) imports this file again.
+if __name__ == '__main__':
+    setup(ext_modules=extensions(), cmdclass={'build_ext': build_ext})

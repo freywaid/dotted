@@ -810,3 +810,100 @@ def test_glob_with_regex_pattern():
     g = Glob(pattern=r)
     assert g.matches_element(42)
     assert not g.matches_element('hello')
+
+
+# ---------------------------------------------------------------------------
+# References and substitutions inside containers
+# ---------------------------------------------------------------------------
+
+def test_reference_in_list():
+    d = {'want': 2, 'items': [[1, 2], [1, 3]]}
+    assert dotted.get(d, 'items[*]=[1, $$(want)]') == ([1, 2],)
+
+
+def test_pattern_reference_branches_list():
+    """
+    A pattern reference branches the container: one per value.
+    """
+    d = {'want': [2, 3], 'items': [[1, 2], [1, 3], [1, 4]]}
+    assert dotted.get(d, 'items[*]=[1, $$(want[*])]') == ([1, 2], [1, 3])
+
+
+def test_packed_reference_in_list():
+    """
+    A packed reference is one value, the tuple, so it does not branch.
+    """
+    d = {'want': [2, 3], 'items': [[1, (2, 3)], [1, 2]]}
+    assert dotted.get(d, 'items[*]=[1, $$((want[*];))]') == ([1, (2, 3)],)
+
+
+def test_two_pattern_references_branch_together():
+    d = {'x': [1, 2], 'y': [3, 4], 'items': [[1, 4], [2, 3], [1, 1]]}
+    assert dotted.get(d, 'items[*]=[$$(x[*]), $$(y[*])]') == ([1, 4], [2, 3])
+
+
+def test_reference_in_dict():
+    d = {'want': 1, 'items': [{'a': 1}, {'a': 2}]}
+    assert dotted.get(d, 'items[*]={"a": $$(want)}') == ({'a': 1},)
+
+
+def test_reference_in_set():
+    d = {'want': 2, 'items': [{1, 2}, {1, 3}]}
+    assert dotted.get(d, 'items[*]={1, $$(want)}') == ({1, 2},)
+
+
+def test_reference_in_nested_container():
+    d = {'want': 2, 'items': [[[1, 2]], [[1, 3]]]}
+    assert dotted.get(d, 'items[*]=[[1, $$(want)]]') == ([[1, 2]],)
+
+
+def test_reference_in_value_group():
+    d = {'want': 3, 'items': [1, 2, 3]}
+    assert dotted.get(d, 'items[*]=(1, $$(want))') == (1, 3)
+
+
+def test_reference_in_string_glob():
+    d = {'suffix': 'z', 'names': ['abcz', 'abcy']}
+    assert dotted.get(d, 'names[*]="ab"...$$(suffix)') == ('abcz',)
+
+
+def test_reference_in_string_glob_not_str():
+    d = {'suffix': 1, 'names': ['ab1']}
+    with pytest.raises(TypeError):
+        dotted.get(d, 'names[*]="ab"...$$(suffix)')
+    assert dotted.get(d, 'names[*]="ab"...$$(suffix|str)') == ('ab1',)
+
+
+def test_reference_in_container_filter():
+    """
+    In a filter value ^ is the value under test, so ^^ is the item.
+    """
+    d = [{'want': 2, 'tags': [1, 2]}, {'want': 2, 'tags': [1, 3]}]
+    assert dotted.get(d, '[*&tags=[1, $$(^^want)]]') == ({'want': 2, 'tags': [1, 2]},)
+
+
+def test_missing_reference_in_container():
+    d = {'items': [[1, 2]]}
+    assert dotted.get(d, 'items[*]=[1, $$(nope)]') == ()
+
+
+def test_container_is_reference():
+    assert dotted.is_reference('a=[1, $$(x)]')
+    assert dotted.is_reference('a={"k": $$(x)}')
+    assert not dotted.is_reference('a=[1, 2]')
+
+
+def test_container_is_template():
+    assert dotted.is_template('a=[1, $(x)]')
+    assert dotted.is_template('a=(1, $(x))')
+    assert not dotted.is_template('a=[1, 2]')
+
+
+def test_container_unresolved_subst_raises():
+    with pytest.raises(TypeError):
+        dotted.get({'a': [1, 2]}, 'a=[1, $(x)]')
+
+
+def test_subst_in_container():
+    d = {'items': [[1, 2], [1, 3]]}
+    assert dotted.get(d, 'items[*]=[1, $(w)]', bindings={'w': 2}) == ([1, 2],)

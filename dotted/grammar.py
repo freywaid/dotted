@@ -260,8 +260,11 @@ regex = _regex.copy().set_parse_action(matchers.Regex)
 regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(matchers.RegexFirst)
 _escaped_dollar = pp.Regex(r'\\\$\${0,2}(\([^)]*\)|[0-9]*)').set_parse_action(
     lambda t: matchers.Word(t[0][1:]))
-_reference = pp.Regex(r'\$\$\([^)]+\)').set_parse_action(
-    lambda t: matchers.Reference(t[0][3:-1]))
+# $$(path) runs to the ) that closes it, so the path may hold parentheses
+# of its own, $$((a[*];)) or $$(a.(b,c)); a ) inside quotes does not count.
+_reference = (S(pp.Regex(r'\$\$(?=\()'))
+              + pp.original_text_for(pp.nested_expr('(', ')')).add_condition(lambda t: t[0] != '()')
+              ).set_parse_action(lambda t: matchers.Reference(t[0][1:-1]))
 def _paren_subst_action(t):
     """
     Parse $(content) where content is name_or_index[|transform1|transform2...].
@@ -285,8 +288,11 @@ var = _escaped_dollar | _reference | _paren_subst | _raw_subst | _dollar_word
 # |min:$amount.value or =^lots.taken: one string, for a resolver to read
 # whole. In a segment position the . separates segments, so not there.
 _arg_sigil = pp.Regex(r'(?:\$(?![0-9($])|\^)[^' + re.escape(reserved.replace('.', '')) + r' \t\n\r]+').set_parse_action(matchers.Word)
-slice = pp.Optional(integer | plus) + ':' + pp.Optional(integer | plus) \
-         + pp.Optional(':') + pp.Optional(integer | plus)
+# A slice bound: an integer, + (the length), or a $$(path) reference or
+# $(name)/$N substitution standing for one.
+_slice_bound = integer | plus | _reference | _paren_subst | _raw_subst
+slice = pp.Optional(_slice_bound) + ':' + pp.Optional(_slice_bound) \
+         + pp.Optional(':') + pp.Optional(_slice_bound)
 
 _common_pats = wildcard_first | wildcard | var | regex_first | regex
 _commons = bytes_literal | string | _common_pats | numeric_quoted

@@ -445,14 +445,16 @@ def test_resolve_string_glob_strict_out_of_range():
         ops.resolve(('a',))
 
 
-def test_resolve_string_glob_partial_unresolved_no_match():
+def test_resolve_string_glob_partial_unresolved_raises():
     """
-    Partially resolved glob (still has $N) matches nothing at runtime.
+    Partially resolved glob (still has $N) is an unresolved template, so
+    traversing it raises, as any unresolved $N does.
     """
     data = {'a': 'hello_world'}
     ops = parse('*=$0...$1')
     resolved = ops.resolve(('hello',), partial=True)
-    assert dotted.get(data, resolved) == ()
+    with pytest.raises(TypeError, match='unresolved template'):
+        dotted.get(data, resolved)
 
 
 def test_resolve_bytes_glob_str_raises():

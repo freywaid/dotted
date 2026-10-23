@@ -264,16 +264,23 @@ def guard_matcher(guard, settings=base.SETTINGS, node=None, parents=(), position
     $$(^x) looks x up in it). A plain value is resolved too when the
     resolver takes literals at position, 'guards' or 'filters'. A reference
     path that is a pattern becomes a value group of what it resolves to.
+    A container value resolves the references inside it the same way; one
+    that is a pattern branches the container, so it becomes a value group
+    of the container once per value (see containers.ContainerOp).
     Raises UnresolvedReference when the reference does not resolve.
     """
-    # container values (ContainerList and kin) are ops without is_reference
     reference = hasattr(guard, 'is_reference') and guard.is_reference()
     if not (reference or (settings.literals(position) and isinstance(guard, Const))):
         return guard
+    from . import containers
+    if isinstance(guard, containers.ContainerOp):
+        branches = guard.branches(settings, node, parents)
+        if len(branches) == 1:
+            return branches[0]
+        return containers.ValueGroup(*branches)
     val = settings.resolve(guard, node, parents)
     if not guard.is_pattern():
         return Const(val)
-    from . import containers
     return containers.ValueGroup(*(Const(v) for v in val))
 
 

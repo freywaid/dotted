@@ -3,7 +3,7 @@ Tests for $$(path) internal references.
 """
 import pytest
 
-from dotted.api import get, update, remove, parse, is_pattern
+from dotted.api import get, update, remove, parse, is_pattern, ParseError
 
 
 # ---- parsing ----
@@ -318,3 +318,32 @@ def test_root_reference_unchanged():
     """
     data = {'config': {'field': 'name'}, 'name': 'Alice'}
     assert get(data, '$$(config.field)') == 'Alice'
+
+
+# ---- parentheses inside a reference ----
+
+def test_reference_with_group():
+    """
+    $$() runs to its matching ), so the path may hold a group.
+    """
+    assert repr(parse('$$(a.(b,c))')[0]) == '$$(a.(b,c))'
+    data = {'a': {'b': 1, 'c': 2}, 'items': [1, 2, 3]}
+    assert get(data, 'items[*]=$$(a.(b,c))') == (1, 2)
+
+
+def test_reference_with_pack():
+    data = {'want': [2, 3], 'items': [(2, 3), 2]}
+    assert get(data, 'items[*]=$$((want[*];))') == ((2, 3),)
+
+
+def test_reference_quoted_paren():
+    """
+    A ) inside quotes does not close the reference.
+    """
+    data = {'x)': 2, 'items': [1, 2]}
+    assert get(data, 'items[*]=$$("x)")') == (2,)
+
+
+def test_reference_empty_is_parse_error():
+    with pytest.raises(ParseError):
+        parse('$$()')
