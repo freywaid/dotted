@@ -1612,6 +1612,13 @@ tuple instead:
     >>> dotted.get(data, 'items[*]=[1, $$((want[*];))]')
     ([1, (2, 3)],)
 
+A filter key may hold references too. In each part of the key, `^` is the
+node that part is looked up in, so in the first part it is the item:
+
+    >>> data = {'field': 'name', 'users': [{'name': 'alice'}, {'name': 'bob'}]}
+    >>> dotted.get(data, 'users[*&$$(field)="bob"]')
+    ({'name': 'bob'},)
+
 With `update`, the transforms apply to the value being set, so `^` is that
 value:
 

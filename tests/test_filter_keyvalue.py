@@ -866,3 +866,70 @@ def test_default_generation_filterwrap_slot_group():
     r4 = dotted.update(profile4, 'addresses[(*&tags[*]="billing"#,+)]', {'street': '6th'})
     assert len(r4['addresses']) == 1
     assert r4['addresses'][0] == {'street': '6th'}
+
+
+# References in filter keys: each part's ^ is the node it is looked up in
+
+def test_reference_key():
+    d = {'field': 'name', 'users': [{'name': 'a'}, {'name': 'b'}]}
+    assert dotted.get(d, 'users[*&$$(field)="b"].name') == ('b',)
+
+
+def test_reference_key_relative():
+    """
+    In the first part ^ is the item under test.
+    """
+    d = [{'k': 'a', 'a': 1}, {'k': 'b', 'a': 1, 'b': 2}]
+    assert dotted.get(d, '[*&$$(^k)=1]') == ({'k': 'a', 'a': 1},)
+
+
+def test_reference_key_relative_deeper():
+    """
+    In a later part ^ is the node that part is looked up in.
+    """
+    d = [{'cfg': {'pick': 'x', 'x': 1}}, {'cfg': {'pick': 'x', 'x': 2}}]
+    assert dotted.get(d, '[*&cfg.$$(^pick)=1]') == ({'cfg': {'pick': 'x', 'x': 1}},)
+
+
+def test_reference_key_parent():
+    """
+    ^^ in a later part reaches the node above it, here the item.
+    """
+    d = [{'pick': 'x', 'cfg': {'x': 1}}, {'pick': 'x', 'cfg': {'x': 2}}]
+    assert dotted.get(d, '[*&cfg.$$(^^pick)=1]') == ({'pick': 'x', 'cfg': {'x': 1}},)
+
+
+def test_reference_key_pattern():
+    """
+    A pattern reference tries each key it resolves to.
+    """
+    d = {'fields': ['a', 'b'], 'items': [{'a': 1}, {'b': 1}, {'c': 1}]}
+    assert dotted.get(d, 'items[*&$$(fields[*])=1]') == ({'a': 1}, {'b': 1})
+
+
+def test_reference_key_missing():
+    d = {'items': [{'a': 1}]}
+    assert dotted.get(d, 'items[*&$$(nope)=1]') == ()
+
+
+def test_reference_key_slot():
+    d = {'idx': 1, 'items': [{'tags': ['a', 'b']}, {'tags': ['b', 'a']}]}
+    assert dotted.get(d, 'items[*&tags[$$(idx)]="b"]') == ({'tags': ['a', 'b']},)
+
+
+def test_reference_key_slot_parent():
+    """
+    In a slot part ^ is the sequence, so ^^ is the item holding it.
+    """
+    d = [{'i': 0, 'tags': ['a', 'b']}, {'i': 1, 'tags': ['a', 'b']}]
+    assert dotted.get(d, '[*&tags[$$(^^i)]="b"]') == ({'i': 1, 'tags': ['a', 'b']},)
+
+
+def test_reference_key_slice():
+    d = [{'n': 1, 'xs': [1, 2]}, {'n': 2, 'xs': [1, 2]}]
+    assert dotted.get(d, '[*&xs[:$$(^^n)]=[1]]') == ({'n': 1, 'xs': [1, 2]},)
+
+
+def test_subst_key():
+    d = {'items': [{'a': 1}, {'b': 1}]}
+    assert dotted.get(d, 'items[*&$(f)=1]', bindings={'f': 'b'}) == ({'b': 1},)

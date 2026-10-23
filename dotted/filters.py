@@ -2,6 +2,7 @@
 Filter ops: key-value filters, boolean combinators, and negation.
 """
 from . import base
+from . import matchers
 from . import predicates
 from .access import Slot, Slice
 
@@ -112,29 +113,37 @@ class FilterKey(base.MatchOp):
         if hasattr(part, 'gather'):
             yield from self._get_values(part.gather(node, settings), rest, settings)
             return
+        # a reference in a part resolves against the node the part is looked
+        # up in, as ^, and that node's ancestors above it
+        below = settings.below(node)
         if isinstance(part, Slot):
+            # only a reference goes through settings: a resolver taking
+            # literals in segments is not offered a filter key's
+            slots = part._resolved(node=node, settings=settings) if part.is_reference() else (part,)
             try:
-                for v in part.values(node):
-                    yield from self._get_values(v, rest, settings)
+                for slot in slots:
+                    for v in slot.values(node):
+                        yield from self._get_values(v, rest, below)
             except (TypeError, AttributeError):
                 yield None, False
             return
         if isinstance(part, Slice):
             try:
-                s = part.slice(node)
+                s = next(iter(part.keys(node, settings=settings)))
                 val = node[s]
-                yield from self._get_values(val, rest, settings)
-            except (TypeError, AttributeError, KeyError, IndexError):
+                yield from self._get_values(val, rest, below)
+            except (StopIteration, TypeError, AttributeError, KeyError, IndexError):
                 yield None, False
             return
         # Key-like part (Word, Wildcard, etc.)
         if not hasattr(node, 'keys'):
             yield None, False
             return
+        keys = (k for m in self._key_matchers(part, node, settings) for k in m.matches(node.keys()))
         if len(parts) == 1 and not isinstance(part, Slot):
             # Simple key - yield all matching values (existing single-key behavior)
             found_any = False
-            for km in part.matches(node.keys()):
+            for km in keys:
                 yield node[km], True
                 found_any = True
             if not found_any:
@@ -142,13 +151,30 @@ class FilterKey(base.MatchOp):
             return
         # Dotted path - traverse (first match only at each key-like level)
         found = False
-        for km in part.matches(node.keys()):
+        for km in keys:
             child = node[km]
-            yield from self._get_values(child, rest, settings)
+            yield from self._get_values(child, rest, below)
             found = True
             break
         if not found:
             yield None, False
+
+    def _key_matchers(self, part, node, settings):
+        """
+        The match ops a key-like part tests node's keys with: a reference
+        resolved against node and its ancestors, one per value when its
+        path is a pattern, none when it does not resolve; the part itself
+        otherwise.
+        """
+        if not part.is_reference():
+            return (part,)
+        try:
+            val = settings.resolve(part, node, settings.parents or ())
+        except KeyError:
+            return ()
+        if part.is_pattern():
+            return tuple(matchers.ResolvedValue(v) for v in val)
+        return (matchers.ResolvedValue(val),)
 
     def get_value(self, node):
         """
