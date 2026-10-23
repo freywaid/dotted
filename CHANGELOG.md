@@ -3,6 +3,15 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Fixed
+- `update` through `~` around a filtered or recursive op,
+  `[(~*&k=v#, +)]` or `~*a.x`, raised `TypeError` once something
+  matched (#65). It now keeps what the `~` matches as it is and, as
+  elsewhere, still updates the path after it: `[(~*&k=1#, +)].x`
+  updates `x` in the matching items.
+
 ## [0.49.3]
 
 ### Added

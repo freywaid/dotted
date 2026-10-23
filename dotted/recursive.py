@@ -400,7 +400,7 @@ class Recursive(BaseOp):
         node[k] = v
         return node
 
-    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), settings=base.SETTINGS):
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, depth=0, guard=None, seen=frozenset(), settings=base.SETTINGS, nop_from_unwrap=False):
         node_id = id(node)
         if node_id in seen:
             return node
@@ -411,7 +411,8 @@ class Recursive(BaseOp):
 
         for acc, k, v in items:
             # Recurse first (bottom-up)
-            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, settings=settings)
+            v = self._update_recursive(ops, v, val, has_defaults, _path, nop, depth + 1, guard, seen, settings=settings,
+                                       nop_from_unwrap=nop_from_unwrap)
             node = self._assign(acc, node, k, v)
             if self.filters and not any(True for _ in self.filtered((v,), settings)):
                 continue
@@ -421,13 +422,15 @@ class Recursive(BaseOp):
             if guard and not guard(v):
                 continue
             if ops:
-                node = self._assign(acc, node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], nop, settings=settings))
+                # a ~ on this op holds back only this op, not the ops after it
+                pass_nop = nop and not nop_from_unwrap
+                node = self._assign(acc, node, k, engine.updates(ops, v, val, has_defaults, _path + [(self, k)], pass_nop, settings=settings))
             elif not nop:
                 node = self._assign(acc, node, k, val)
         return node
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
-        return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings, nop_from_unwrap=nop_from_unwrap)
 
     def _remove_recursive(self, ops, node, val, nop, depth=0, guard=None, seen=frozenset(), settings=base.SETTINGS):
         node_id = id(node)

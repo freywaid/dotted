@@ -314,7 +314,7 @@ class TransformWrap(Wrap):
                 val = self.apply(val, settings)
             except base.UnresolvedReference:
                 return node
-        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, settings=settings)
+        return self.inner.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         return self.inner.do_remove(ops, node, val, nop, settings=settings)
@@ -543,7 +543,8 @@ class ValueGuard(Wrap):
         nop = self._nop(nop)
         if self.inner.is_recursive():
             return self.inner._update_recursive(
-                ops, node, val, has_defaults, _path, nop, guard=self._guard(settings), settings=settings)
+                ops, node, val, has_defaults, _path, nop, guard=self._guard(settings), settings=settings,
+                nop_from_unwrap=nop_from_unwrap)
         if not ops and not nop:
             # the leaf: upsert() has no settings, and the guard needs them
             for k in list(self.keys(node, settings=settings)):
@@ -788,8 +789,9 @@ class FilterWrap(Wrap):
             return self
         return FilterWrap(new_inner, new_filters)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):
-        return access.BaseOp.do_update(self, ops, node, val, has_defaults, _path, nop, settings=settings)
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return access.BaseOp.do_update(
+            self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)

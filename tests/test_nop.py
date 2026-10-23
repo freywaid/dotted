@@ -261,3 +261,39 @@ def test_nop_continuation_op_group_first():
     r = dotted.update(copy.deepcopy(data), 'x~(.a,.b)?', 99)
     assert r['x']['a'] == 1  # NOP preserved
     assert r['x']['b'] == 2  # NOP preserved
+
+
+# ~ around a filter or a recursive op (#65)
+
+def test_nop_filter_group_matched():
+    """
+    [(~*&k=v#, +)]: a matching item is kept as it is, nothing appended.
+    """
+    path = 'emails[(~*&email=/(?i)Ann@Example\\.com/#, +)]'
+    data = {'emails': [{'email': 'ann@example.com'}]}
+    r = dotted.update(copy.deepcopy(data), path, {'email': 'Ann@Example.com'})
+    assert r == data
+
+
+def test_nop_filter_group_unmatched():
+    path = 'emails[(~*&email=/(?i)Ann@Example\\.com/#, +)]'
+    r = dotted.update({'emails': [{'email': 'bob@example.com'}]}, path, {'email': 'Ann@Example.com'})
+    assert r == {'emails': [{'email': 'bob@example.com'}, {'email': 'Ann@Example.com'}]}
+
+
+def test_nop_filter_subpath():
+    """
+    ~ on a filtered slot protects only the item: the sub-path still updates.
+    """
+    data = [{'k': 1, 'x': 1}, {'k': 2, 'x': 2}]
+    r = dotted.update(copy.deepcopy(data), '[(~*&k=1#, +)].x', 99)
+    assert r == [{'k': 1, 'x': 99}, {'k': 2, 'x': 2}]
+
+
+def test_nop_recursive_subpath():
+    """
+    ~ on a recursive op protects only what it matches: the sub-path still updates.
+    """
+    data = {'a': {'a': {'x': 1}, 'x': 2}}
+    r = dotted.update(copy.deepcopy(data), '~*a.x', 9)
+    assert r == {'a': {'a': {'x': 9}, 'x': 9}}
