@@ -3,6 +3,45 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- A slice bound may be a reference or a substitution: `b[:$$(i)]`,
+  `b[$(n):]`, `b[$0:$1]`, `b[::$$(step)]`. It resolves as a slot's does,
+  so `b[:$$(i)]|sum` is a running total with `i` bound per element
+  (#64). A reference that does not resolve matches nothing.
+- A reference may hold parentheses of its own: `$$()` runs to the `)`
+  that closes it, so a group or a pack works inside, `$$(a.(b,c))`,
+  `$$((a[*];))`. A `)` inside quotes does not count.
+- A reference inside a container value, `=[1, $$(x)]`, `={"k": $$(x)}`,
+  `="ab"...$$(x)`, `=(1, $$(x))`, resolves as a whole guard or filter
+  value does. One whose path is a pattern branches the container, once
+  per value; pack it, `$$((x[*];))`, to compare with the tuple instead.
+  In a string or bytes glob it must resolve to `str` or `bytes`, else
+  `TypeError`; `$$(x|str)` coerces.
+- A reference in a filter key part, `[*&$$(field)="bob"]`,
+  `[*&tags[$$(^^i)]="b"]`, `[*&xs[:$$(^^n)]=[1]]`, resolves against the
+  node that part is looked up in, as `^`; in the first part that is the
+  item. A pattern reference tries each key it resolves to.
+
+### Fixed
+- An unresolved substitution inside a container value, `=[1, $(x)]`,
+  makes the path an unresolved template, so `get` and the rest raise
+  `TypeError` as for any other unresolved `$N`, rather than matching
+  nothing.
+- Resolving a recursive op's substitutions, `**&x=$(v)` or
+  `*($(k), [*])&x=1`, now resolves those in its filters, keeps the
+  filters, and keeps `*?`/`**?` first-match. `is_template` and
+  `is_reference` see a recursive op's accessors and filters, so an
+  unresolved `$N` there raises and a `$$(^^…)` gets its parents.
+- Resolving `$N` in a string or bytes glob no longer turns a `$$(path)`
+  part into the literal text of its path.
+- A slice's repr shows its step, `[1:5:2]`, rather than repeating its
+  stop.
+- `make native` on macOS, and on Linux from Python 3.14: `setup.py`
+  runs `setup()` under a `__main__` guard, since Cython's spawned
+  workers import it again.
+
 ## [0.49.2]
 
 ### Added
