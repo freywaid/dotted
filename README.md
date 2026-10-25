@@ -227,6 +227,18 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.50.0
+- **Nothing is read through `[+]` or `[+?]`.** They are the slot past the
+  end, so `get(d, 'a[+]')` is the default, not the last item; use `a[-1]`.
+  `has` is `False`, `remove`, `pluck` and `expand` through them find
+  nothing, a guard on them never passes, and `setdefault` always appends
+  (`[+?]` only when the value is absent). See
+  [The append `+` operator](#the-append--operator).
+- **An append branch in a group always applies in an update.**
+  `(a, b[+])` appends to `b` whether or not it is empty; it used to append
+  only when `b` already had items. With a cut, `[(*&k=1#, +)]`, the append
+  is still the fallback.
+
 ### v0.49.0
 - **`;` is now a reserved character**: it packs a group, `(a,b;)` (see
   [Packing](#packing)). If you have keys containing a literal `;`, quote
