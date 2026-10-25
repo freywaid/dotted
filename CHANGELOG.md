@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.50.0]
 
 ### Changed
 - **Breaking**: `[+]` and `[+?]` are the slot past the end, so nothing
