@@ -742,11 +742,79 @@ def test_slot_special_items_empty_list():
 
 def test_slot_special_get_non_empty():
     """
-    Test that [+] on get returns last element.
+    [+] is the slot past the end: nothing is there to get.
     """
     data = [1, 2, 3]
-    result = dotted.get(data, '[+]')
-    assert result == 3
+    assert dotted.get(data, '[+]') is None
+    assert dotted.get(data, '[+]', default='nope') == 'nope'
+    assert dotted.get(data, '[+?]') is None
+
+
+def test_slot_special_has():
+    assert not dotted.has([1, 2, 3], '[+]')
+
+
+def test_slot_special_setdefault_appends():
+    """
+    Nothing is at [+], so setdefault always appends, and returns what it set.
+    """
+    data = [1, 2]
+    assert dotted.setdefault(data, '[+]', 3) == 3
+    assert dotted.setdefault(data, '[+]', 3) == 3
+    assert data == [1, 2, 3, 3]
+
+
+def test_slot_special_setdefault_unique():
+    data = [1, 2]
+    assert dotted.setdefault(data, '[+?]', 2) == 2
+    assert dotted.setdefault(data, '[+?]', 3) == 3
+    assert data == [1, 2, 3]
+
+
+def test_slot_special_remove_subpath():
+    """
+    Nothing is at [+], so a remove through it removes nothing.
+    """
+    data = [{'k': 1}, {'k': 2}]
+    assert dotted.remove(data, '[+].k') == [{'k': 1}, {'k': 2}]
+
+
+def test_slot_special_guard():
+    """
+    A guard on [+] has no value to pass: the update does nothing.
+    """
+    assert dotted.update([1, 2], '[+]=2', 5) == [1, 2]
+
+
+def test_slot_group_append_branch_with_match():
+    """
+    A disjunction updates every branch that applies; an append always does.
+    """
+    data = [{'k': 1}, {'k': 2}]
+    assert dotted.update(data, '[(*&k=1, +)]', {'k': 9}) == [{'k': 9}, {'k': 2}, {'k': 9}]
+
+
+def test_slot_group_append_branch_cut():
+    data = [{'k': 1}, {'k': 2}]
+    assert dotted.update(data, '[(*&k=1#, +)]', {'k': 9}) == [{'k': 9}, {'k': 2}]
+
+
+def test_slot_group_append_branch_softcut():
+    data = [{'k': 1}, {'k': 2}]
+    assert dotted.update(data, '[(*&k=1##, +)]', {'k': 9}) == [{'k': 9}, {'k': 2}, {'k': 9}]
+
+
+def test_group_append_branch_empty_list():
+    """
+    The append branch applies whether or not the list is empty.
+    """
+    assert dotted.update({'a': 1, 'b': []}, '(a, b[+])', 9) == {'a': 9, 'b': [9]}
+    assert dotted.update({'a': 1, 'b': [1]}, '(a, b[+])', 9) == {'a': 9, 'b': [1, 9]}
+
+
+def test_group_first_append_branch():
+    assert dotted.update({'a': 1, 'b': [1]}, '(a, b[+])?', 9) == {'a': 9, 'b': [1]}
+    assert dotted.update({'b': [1]}, '(a, b[+])?', 9) == {'b': [1, 9]}
 
 
 # =============================================================================

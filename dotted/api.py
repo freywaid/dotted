@@ -8,6 +8,7 @@ import threading
 import pyparsing as pp
 from . import grammar
 from . import engine
+from . import groups
 from . import results
 from . import transforms
 from . import base
@@ -556,7 +557,9 @@ def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=Non
     if has(obj, ops, strict=strict, resolver=resolver):
         return get(obj, ops, apply_transforms=apply_transforms, strict=strict, resolver=resolver)
     obj = update(obj, ops, val, apply_transforms=apply_transforms, strict=strict, resolver=resolver)
-    return get(obj, ops, apply_transforms=False, strict=strict, resolver=resolver)
+    # an append slot, [+], has nothing to read back: what was set is val
+    default = val if groups.appends(ops) else None
+    return get(obj, ops, default=default, apply_transforms=False, strict=strict, resolver=resolver)
 
 
 def setdefault_multi(obj, pathvalues, apply_transforms=True, strict=False, bindings=None, resolver=None):

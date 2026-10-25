@@ -2355,6 +2355,18 @@ sequence. You may append an item or slice to the end a sequence.
     >>> dotted.update(d, '*.there[+:]', [999])
     {'hi': {'there': [1, 2, 3, 8, 999]}, 'bye': {'there': [4, 5, 6, 8, 999]}}
 
+`[+]` is the slot past the end, so nothing is ever there to read: a `get`
+through it is the default, and `[-1]` is the last item. A write to it always
+applies, so in a group an append branch is updated along with any branch
+that matches:
+
+    >>> dotted.get(d, 'hi.there[+]') is None
+    True
+    >>> dotted.update([{'k': 1}, {'k': 2}], '[(*&k=1, +)]', {'k': 9})
+    [{'k': 9}, {'k': 2}, {'k': 9}]
+    >>> dotted.update([{'k': 1}, {'k': 2}], '[(*&k=1#, +)]', {'k': 9})
+    [{'k': 9}, {'k': 2}]
+
 <a id="the-append-unique--operator"></a>
 ### The append-unique `+?` operator
 

@@ -5,7 +5,7 @@ from . import matchers
 from . import wrappers
 from . import engine
 from . import results
-from .access import AccessOp, Key, Attr, Slot
+from .access import AccessOp, Key, Attr, Slot, SlotSpecial
 
 
 def leading_keys(path):
@@ -415,12 +415,12 @@ class OpGroupOr(OpGroup):
                 if softcut_paths and path and softcut_paths.overlaps(path):
                     continue
                 paths.append(path)
-            if not paths:
+            if not paths and not appends(item):
                 continue
             matched_any = True
             if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
-            if softcut_paths:
+            if softcut_paths and paths:
                 branch_nop = nop or any(isinstance(op, wrappers.NopWrap) for op in item)
                 for path in paths:
                     node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, settings=settings)
@@ -524,7 +524,7 @@ class OpGroupFirst(OpGroup):
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if base.has_any(engine.gets(branch_ops, node, settings=settings)):
+            if appends(branch) or base.has_any(engine.gets(branch_ops, node, settings=settings)):
                 return engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
         return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, settings=settings)
 
@@ -966,6 +966,15 @@ def _attr_branch(branch):
     if isinstance(branch, tuple) and branch and type(branch[0]) is Key:
         return (Attr(*branch[0].args),) + branch[1:]
     return branch
+
+
+def appends(ops):
+    """
+    True if ops hold an append slot, [+] or [+?]. Nothing is ever there to
+    read, but a write always applies, so in an update a group branch that
+    holds one counts as matched.
+    """
+    return any(isinstance(op.most_inner, SlotSpecial) for op in ops)
 
 
 def _is_concrete_path(branch_ops):

@@ -816,16 +816,30 @@ class SlotSpecial(Slot):
         return []
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
-        return self._last_item(node)
-
-    def _last_item(self, node):
-        try:
-            yield -1, node[-1]
-        except (TypeError, IndexError):
-            pass
+        """
+        Nothing: an append slot is the one past the end, so there is never
+        a value there to read. A write to it always applies (see update).
+        """
+        return iter(())
 
     def is_empty(self, node):
         return True
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        """
+        In a default skeleton (has_defaults, see engine.build_default),
+        upsert already appended this slot's placeholder, so the rest of the
+        path is written into that last item instead of a new one.
+        """
+        if not (ops and has_defaults):
+            return super().do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
+        try:
+            last = node[-1]
+        except (TypeError, IndexError):
+            return node
+        pass_nop = nop and not nop_from_unwrap
+        built = engine.updates(ops, last, val, True, _path + [(self, -1)], pass_nop, settings=settings.below(node))
+        return self.update(node, -1, built)
 
     def update(self, node, key, val):
         if not isinstance(key, str):

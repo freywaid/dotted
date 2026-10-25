@@ -3,6 +3,24 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Changed
+- **Breaking**: `[+]` and `[+?]` are the slot past the end, so nothing
+  is ever there to read. `get` through them is the default, not the
+  last item (use `[-1]`); `has` is `False`; `setdefault` always appends,
+  `[+?]` only when the value is absent, and returns the value it set;
+  `remove`, `pluck` and `expand` through them find nothing; a guard on
+  them, `[+]=2`, never passes.
+- In an update, a group branch holding `[+]` always applies, since a
+  write to it always does. `[(*&k=1, +)]` updates the match and appends,
+  as before, and `(a, b[+])` now appends to `b` when it is empty too;
+  with a cut, `[(*&k=1#, +)]`, the append is still the fallback.
+
+### Fixed
+- `update` through a softcut group with an append branch,
+  `[(*&k=1##, +)]`, raised `AttributeError` once the filter matched.
+
 ## [0.49.4]
 
 ### Fixed

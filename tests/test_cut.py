@@ -246,7 +246,9 @@ def test_get_slot_cut_second_branch():
     # [(*&x=1#, +)] on list with no x=1: *&x=1 yields nothing, so try +
     d = {'items': [1, 2, 3]}
     r = dotted.get(d, 'items[(*&x=99#,+)]')
-    # *&x=99 matches nothing; + yields last
+    # *&x=99 matches nothing; + is past the end, so nothing is there either
+    assert r == ()
+    r = dotted.get(d, 'items[(*&x=99#,-1)]')
     assert r == (3,)
 
 
