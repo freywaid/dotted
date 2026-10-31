@@ -686,8 +686,11 @@ guard_value = (value + _ends) | Lexed('guards', value, _value_stops, end=True)
 _key_atom = _commons | numeric_extended | non_integer | numeric_key | word
 _slot_atom = _commons | numeric_extended | numeric_slot
 
-# Transform: |name or |name:param — defined early so filters and guards can reference it
-targ = concrete_value | _arg_sigil | var | quoted | ppc.number | none | true | false | pp.CharsNotIn('|:')
+# Transform: |name or |name:param — defined early so filters and guards can reference it.
+# A param dotted has no reading for is offered to the lexer before it is
+# taken as a plain string, so a lexer answering None leaves it one.
+_targ_read = concrete_value | _arg_sigil | var | quoted | ppc.number | none | true | false
+targ = (_targ_read + _ends) | Lexed('transforms', _targ_read, '|:', end=True) | pp.CharsNotIn('|:')
 param = (colon + targ) | colon.copy().set_parse_action(lambda: [None])
 transform = (transform_name.copy() + ZM(param)).set_parse_action(lambda s, loc, t: base.Transform(*t))
 transforms = ZM(pipe + transform)

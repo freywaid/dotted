@@ -83,6 +83,28 @@ def test_lex_guard_value():
     assert r.offered == [('c.cur', 'guards'), ('k', 'guards')]
 
 
+def test_lex_transform_argument():
+    """
+    A bare transform argument is lexed, on the fast path as off it.
+    """
+    r = Names()
+    assert dotted.get(ROOT, 'n|add:n', resolver=r) == 4
+    assert dotted.get(ROOT, 'items[0]|add:lots[1].v', resolver=r) == 12
+    dotted.set_simple_fastpath(False)
+    try:
+        assert dotted.get(ROOT, 'n|add:n', resolver=r) == 4
+    finally:
+        dotted.set_simple_fastpath(True)
+    assert r.offered == [('n', 'transforms'), ('lots[1].v', 'transforms')]
+
+
+def test_lex_transform_argument_none_stays_string():
+    """
+    A transform argument lex has no reading for stays a plain string.
+    """
+    assert parse('a|str:nope', resolver=Names()).assemble() == parse('a|str:nope').assemble()
+
+
 def test_lex_writes():
     """
     update runs on the lexed path.
@@ -99,7 +121,7 @@ def test_lex_offers_only_unread_tokens():
     r = Names()
     for path in ('a.b', 'merged["k"]', 'merged[0]', 'items[:2]', 'items[1:-1]', 'm[$x]',
                  'a.$x.b', 'lots[*&cur="EUR"]', 'lots[cur=1]', 'merged[a.b=1]', 'a=5',
-                 'a|sub:taken', 'a=null'):
+                 'a|sub:$taken', 'a|sub:3', 'a|sub:"taken"', 'a=null'):
         parse(path, resolver=r)
     assert r.offered == []
     assert parse('merged[a.b=1]', resolver=r).assemble() == parse('merged[a.b=1]').assemble()

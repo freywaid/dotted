@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `ReferenceResolver.lex` is offered a bare transform argument too,
+  `|sub:taken`, in the position `'transforms'`. Answering `None` leaves
+  it the plain string it was.
+
 ## [0.51.0]
 
 ### Added

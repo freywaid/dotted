@@ -155,8 +155,8 @@ class NOP(metaclass=MetaNOP):
 LITERALS = ('segments', 'transforms', 'guards', 'filters')
 
 # The positions a resolver's lex() may be offered a token in: a slot, a
-# slice bound, a filter value and a guard value.
-LEXED = ('slots', 'slices', 'filters', 'guards')
+# slice bound, a filter value, a guard value and a transform argument.
+LEXED = ('slots', 'slices', 'filters', 'guards', 'transforms')
 
 
 class Resolver:
@@ -203,7 +203,8 @@ class Resolver:
         position it stands in, one of LEXED. A dotted name is one token,
         merged[a.b] offering 'a.b'. It answers with dotted text to read
         in the token's place, '$$(k)' making the path merged[$$(k)], or
-        None to leave the path unparsed; raising fails the parse at the
+        None to leave the path unparsed (a transform argument, |sub:k,
+        a plain string, as it was); raising fails the parse at the
         token. The text is read in that position as one token, and is
         not offered to lex() again. A token dotted reads is never
         offered: a host that means something else by one says so at run
