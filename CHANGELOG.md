@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.51.0]
 
 ### Added
 - `ReferenceResolver.lex(text, position)`, a parse-time hook for the
