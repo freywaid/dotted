@@ -187,3 +187,19 @@ def test_simple_get_miss_returns_marker():
     from dotted import base
     chain = parse('a.b').simple_chain
     assert engine.simple_get(chain, {'a': {}}) is base.marker
+
+
+def test_fast_path_transform_keeps_strict():
+    """
+    A resolver answering a transform argument on the fast path sees the
+    call's strict, as it does on the full traversal.
+    """
+    seen = []
+
+    class Seen(dotted.ReferenceResolver):
+        def resolve(self, ref, settings, node=None, parents=()):
+            seen.append(settings.strict)
+            return super().resolve(ref, settings, node, parents)
+
+    assert dotted.get({'v': 1, 'n': 2}, 'v|add:$$(n)', strict=True, resolver=Seen()) == 3
+    assert seen == [True]

@@ -389,6 +389,17 @@ Get the value at a dotted path. See the Paths, Patterns, and Operators sections 
     >>> dotted.get({'a': {'b': {'c': {'d': 'nested'}}}}, 'a.b.c.d')
     'nested'
 
+A path read many times can be made into a **getter** once: a callable
+`obj -> value` that returns what `get` would, with the parse, the resolver's
+hooks and the fast-path decision settled when it is made, against the
+resolver in force then. It takes `get`'s arguments, the object aside.
+
+    >>> d_of = dotted.getter('a.b.c.d', default='none')
+    >>> d_of({'a': {'b': {'c': {'d': 'nested'}}}})
+    'nested'
+    >>> d_of({})
+    'none'
+
 <a id="update"></a>
 ### Update
 

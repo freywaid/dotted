@@ -511,8 +511,25 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
     >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
     (7,)
     """
+    ops, chain = _get_setup(path, bindings, resolver)
+    return _get_read(obj, ops, chain, default, pattern_default, apply_transforms, strict, resolver)
+
+
+def _get_setup(path, bindings, resolver):
+    """
+    What a read of path settles before it sees an object: the parsed path,
+    with its resolver's lex and fold, and the fast path's chain, None when
+    the read takes the full traversal.
+    """
     ops = _prepare(parse(path, bindings=bindings, partial=False, resolver=resolver), resolver)
     chain = ops.simple_chain if _SIMPLE_FASTPATH and not _literals(resolver) else None
+    return ops, chain
+
+
+def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, strict, resolver):
+    """
+    A read of obj through ops, set up by _get_setup.
+    """
     if chain is not None:
         val = engine.simple_get(chain, obj, strict=strict)
         if val is not engine.SIMPLE_BAIL:
@@ -521,13 +538,38 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
             if not (apply_transforms and ops.transforms):
                 return val
             try:
-                return ops.apply(val, base.Settings(obj, resolver=resolver))
+                return ops.apply(val, base.Settings(obj, strict, resolver=resolver))
             except base.UnresolvedReference:
                 return default
     found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms))
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
+
+
+def getter(path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None, resolver=None):
+    """
+    A read of path as a callable obj -> value, as get(obj, path, ...)
+    returns it. The parse, the resolver's lex, fold and literals and the
+    fast-path decision are settled once, here, against the resolver in
+    force now, so a call is the read and nothing else.
+
+    >>> first = getter('hello.there[0]')
+    >>> first({'hello': {'there': [1, 2]}})
+    1
+    >>> getter('[*].a')([{'a': 1}, {'a': 2}])
+    (1, 2)
+    """
+    r = base.RESOLVER if resolver is None else resolver
+    ops, chain = _get_setup(path, bindings, r)
+
+    def read(obj):
+        """
+        obj read through the getter's path.
+        """
+        return _get_read(obj, ops, chain, default, pattern_default, apply_transforms, strict, r)
+
+    return read
 
 
 def get_multi(obj, iterable, apply_transforms=True, strict=False, bindings=None, resolver=None):

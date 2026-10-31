@@ -3,6 +3,19 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `getter(path, ...)`: a read of `path` as a callable `obj -> value`,
+  returning what `get(obj, path, ...)` would, with the parse, the
+  resolver's `lex`, `fold` and `literals` and the fast-path decision
+  settled once when it is made, so repeated reads skip `get`'s setup.
+
+### Fixed
+- On `get`'s fast path, a resolver answering a reference in a trailing
+  transform's argument saw `settings.strict` as `False` whatever the
+  call's `strict`.
+
 ## [0.51.1]
 
 ### Added

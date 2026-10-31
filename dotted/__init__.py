@@ -71,7 +71,7 @@ from .api import \
     expand, expand_multi, \
     match, match_multi, replace, overlaps, translate, translate_multi, \
     apply, apply_multi, \
-    get, get_multi, \
+    get, get_multi, getter, \
     has, setdefault, setdefault_multi, \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
@@ -82,7 +82,7 @@ from .base import Resolver as ReferenceResolver, UnresolvedReference
 
 __all__ = [
     # Core
-    'get', 'update', 'remove', 'has', 'setdefault',
+    'get', 'getter', 'update', 'remove', 'has', 'setdefault',
     'ReferenceResolver', 'UnresolvedReference', 'set_resolver', 'get_resolver',
     # Multi
     'get_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
