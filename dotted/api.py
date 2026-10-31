@@ -99,21 +99,35 @@ def set_parse_cache(size=CACHE_SIZE):
 
 
 @functools.lru_cache(CACHE_SIZE)
-def _parse(ops):
-    with _parse_lock:
+def _parse(ops, lexer=None):
+    with _parse_lock, grammar.lexing(lexer):
         try:
             parsed = grammar.template.parse_string(ops, parse_all=True)
-        except pp.ParseException as e:
+        except pp.ParseBaseException as e:
             raise ParseError(f"Invalid dotted notation: {e.msg}\n  {repr(ops)}\n  {' ' * e.loc}^") from None
     return results.Dotted({'ops': parsed['ops']})
 
 
-def parse(path, bindings=None, partial=True):
+def _lexer(resolver):
+    """
+    The resolver whose lex() a parse offers what dotted cannot read: the
+    call's own or the process default, or None when it keeps the default,
+    which lexes nothing, so the parse is cached by path alone.
+    """
+    r = base.RESOLVER if resolver is None else resolver
+    if type(r).lex is base.Resolver.lex:
+        return None
+    return r
+
+
+def parse(path, bindings=None, partial=True, resolver=None):
     """
     Parse dotted notation. Results are LRU-cached (same path string reuses cached parse).
 
     If bindings is provided, resolve substitutions against them.
     If partial is False, raise TypeError on unresolved templates.
+    A token dotted cannot read is offered to the resolver's lex(), the
+    call's own or the process default (see ReferenceResolver).
 
     >>> parse('hello.there|str:"=%s"')
     Dotted([hello, there|str:'=%s'])
@@ -123,7 +137,7 @@ def parse(path, bindings=None, partial=True):
     elif isinstance(path, tuple):
         ops = results.Dotted({'ops': path, 'transforms': ()})
     else:
-        ops = _parse(path)
+        ops = _parse(path, _lexer(resolver))
     if bindings is not None:
         ops = ops.resolve(bindings, partial=partial)
     if not partial and _is_template(ops):
@@ -367,7 +381,7 @@ def mutable(obj, path, strict=False, bindings=None, resolver=None):
     >>> mutable(((1, 2),), '[0][0]')
     False
     """
-    ops = parse(path, bindings=bindings, partial=False)
+    ops = parse(path, bindings=bindings, partial=False, resolver=resolver)
 
     # Empty path can never mutate (can't rebind caller's variable)
     if len(ops) == 1 and isinstance(ops[0], access.Empty):
@@ -428,7 +442,7 @@ def build_multi(obj, paths, strict=False, bindings=None, resolver=None):
     if obj is AUTO:
         obj = _auto_root(((p, None) for p in paths))
     for path in paths:
-        ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
+        ops = _prepare(parse(path, bindings=bindings, partial=False, resolver=resolver), resolver)
         built = engine.build(ops, obj, strict=strict, resolver=resolver)
         # walked paths are concrete: nothing for update() to resolve or check
         for found, val in _pluck_parsed(built, ops, strict=strict, resolver=resolver):
@@ -497,7 +511,7 @@ def get(obj, path, default=None, pattern_default=(), apply_transforms=True, stri
     >>> get({'a': {'b': 7, 'c': 3}}, '**=7')
     (7,)
     """
-    ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
+    ops = _prepare(parse(path, bindings=bindings, partial=False, resolver=resolver), resolver)
     chain = ops.simple_chain if _SIMPLE_FASTPATH and not _literals(resolver) else None
     if chain is not None:
         val = engine.simple_get(chain, obj, strict=strict)
@@ -551,7 +565,7 @@ def setdefault(obj, path, val, apply_transforms=True, strict=False, bindings=Non
     >>> setdefault({}, 'a.b.c', 7)
     7
     """
-    ops = _prepare(parse(path, bindings=bindings, partial=False), resolver)
+    ops = _prepare(parse(path, bindings=bindings, partial=False, resolver=resolver), resolver)
     if obj is AUTO:
         obj = _auto_root_from_path(ops)
     if has(obj, ops, strict=strict, resolver=resolver):
@@ -593,7 +607,7 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     """
     parsed = path
     if obj is AUTO:
-        parsed = parse(path)
+        parsed = parse(path, resolver=resolver)
         obj = _auto_root_from_path(parsed)
     if not mutable and _is_mutable_container(obj):
         obj = utils.deepcopy(obj)
@@ -602,7 +616,7 @@ def update_if(obj, path, val, pred=lambda val: val is not None, mutable=True, ap
     if pred is not None and not pred(val):
         return obj
 
-    ops = _prepare(parse(parsed, bindings=bindings, partial=False), resolver)
+    ops = _prepare(parse(parsed, bindings=bindings, partial=False, resolver=resolver), resolver)
     return engine.updates(ops, obj, val, strict=strict, resolver=resolver, transforms=apply_transforms)
 
 
@@ -697,7 +711,7 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     """
     parsed = path
     if obj is AUTO:
-        parsed = parse(path)
+        parsed = parse(path, resolver=resolver)
         obj = _auto_root_from_path(parsed)
     if not mutable and _is_mutable_container(obj):
         obj = utils.deepcopy(obj)
@@ -706,7 +720,7 @@ def remove_if(obj, path, pred=lambda path: path is not None, val=ANY, mutable=Tr
     if pred is not None and not pred(path):
         return obj
 
-    ops = _prepare(parse(parsed, bindings=bindings, partial=False), resolver)
+    ops = _prepare(parse(parsed, bindings=bindings, partial=False, resolver=resolver), resolver)
     return engine.removes(ops, obj, val, strict=strict, resolver=resolver)
 
 
@@ -1074,7 +1088,7 @@ def expand_multi(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     seen = {}
     for pat in patterns:
-        ops = _prepare(parse(pat, bindings=bindings, partial=False), resolver)
+        ops = _prepare(parse(pat, bindings=bindings, partial=False, resolver=resolver), resolver)
         paths = (o.assemble() for o in engine.expands(ops, obj, strict=strict, resolver=resolver))
         for found in paths:
             if found in seen:
@@ -1109,7 +1123,7 @@ def apply_multi(obj, patterns, strict=False, bindings=None, resolver=None):
     seen = {}
     _marker = object()
     for pat in patterns:
-        for ops in engine.expands(_prepare(parse(pat, bindings=bindings, partial=False), resolver), obj, strict=strict, resolver=resolver):
+        for ops in engine.expands(_prepare(parse(pat, bindings=bindings, partial=False, resolver=resolver), resolver), obj, strict=strict, resolver=resolver):
             if ops in seen:
                 continue
             seen[ops] = None
@@ -1150,7 +1164,7 @@ def _pluck_written(obj, patterns, strict=False, bindings=None, resolver=None):
     """
     seen = {}
     for pattern in patterns:
-        ops = _prepare(parse(pattern, bindings=bindings, partial=False), resolver)
+        ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
         for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
             if path is utypes.CUT_SENTINEL:
                 break
@@ -1170,7 +1184,7 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None, resolver=None
     >>> pluck(d, 'a.b')
     ('a.b', 'seven')
     """
-    parsed = parse(pattern)
+    parsed = parse(pattern, resolver=resolver)
     out = tuple(pluck_multi(obj, (parsed,), default=default, strict=strict, resolver=resolver, bindings=bindings))
     if not out:
         return ()
@@ -1188,7 +1202,7 @@ def walk(obj, pattern, strict=False, bindings=None, resolver=None):
     >>> list(walk(d, 'a.*'))
     [('a.b', 1), ('a.c', 2)]
     """
-    ops = _prepare(parse(pattern, bindings=bindings, partial=False), resolver)
+    ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
     for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
         if path is utypes.CUT_SENTINEL:
             break

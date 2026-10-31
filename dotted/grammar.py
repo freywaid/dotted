@@ -1,5 +1,6 @@
 """
 """
+import contextlib
 import decimal
 import re
 import pyparsing as pp
@@ -288,10 +289,134 @@ var = _escaped_dollar | _reference | _paren_subst | _raw_subst | _dollar_word
 # |min:$amount.value or =^lots.taken: one string, for a resolver to read
 # whole. In a segment position the . separates segments, so not there.
 _arg_sigil = pp.Regex(r'(?:\$(?![0-9($])|\^)[^' + re.escape(reserved.replace('.', '')) + r' \t\n\r]+').set_parse_action(matchers.Word)
+
+# ---------------------------------------------------------------------------
+# Lexed tokens: what dotted cannot read in a slot, a slice bound, a filter
+# value or a guard value is offered to the resolver's lex() (see
+# base.Resolver.lex), last, once dotted's own readings have failed.
+# ---------------------------------------------------------------------------
+
+# The resolver a path is being parsed for, when it lexes, and its answers
+# so far, by (text, position): reading an answer resets pyparsing's
+# packrat cache, so the parse may come back to a token it has lexed.
+LEXER = None
+_ANSWERS = {}
+
+_WORD_CHARS = frozenset(pp.alphanums + '_')
+
+
+@contextlib.contextmanager
+def lexing(lexer):
+    """
+    Parse with lexer offered what dotted cannot read (see Lexed); None
+    for no lexer. Not reentrant: api._parse holds its lock around it.
+    """
+    global LEXER
+    LEXER = lexer
+    _ANSWERS.clear()
+    try:
+        yield
+    finally:
+        LEXER = None
+        _ANSWERS.clear()
+
+
+def _token_end(s, loc, stops):
+    """
+    Where the token at loc ends: at the first of stops, whitespace or a
+    closing bracket outside the brackets and quotes it opens itself.
+    """
+    depth = 0
+    quote = None
+    i = loc
+    while i < len(s):
+        c = s[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in '"\'':
+            quote = c
+        elif c in '([{':
+            depth += 1
+        elif depth:
+            if c in ')]}':
+                depth -= 1
+        elif c in stops or c in ')]}' or c.isspace():
+            return i
+        i += 1
+    return i
+
+
+class Lexed(pp.Token):
+    """
+    A token dotted has no reading for at position, offered to LEXER. It
+    runs to the first of stops (see _token_end) and is offered only when
+    one of follow, or with end the end of the path, comes after it. The
+    text the lexer answers is read whole with reading, without LEXER.
+    """
+    def __init__(self, position, reading, stops, follow=None, end=False):
+        super().__init__()
+        self.position = position
+        self.reading = reading
+        self.stops = stops
+        self.follow = stops if follow is None else follow
+        self.end = end
+        self.mayReturnEmpty = False
+        self.mayIndexError = False
+        self.errmsg = f'Expected a token in {position}'
+
+    def _generateDefaultName(self):
+        return f'Lexed({self.position})'
+
+    def parseImpl(self, instring, loc, do_actions=True):
+        global LEXER
+        lexer = LEXER
+        if lexer is None:
+            raise pp.ParseException(instring, loc, self.errmsg, self)
+        stop = _token_end(instring, loc, self.stops)
+        if stop == loc:
+            raise pp.ParseException(instring, loc, self.errmsg, self)
+        if stop == len(instring) and not self.end:
+            raise pp.ParseException(instring, loc, self.errmsg, self)
+        if stop < len(instring) and instring[stop] not in self.follow:
+            raise pp.ParseException(instring, loc, self.errmsg, self)
+        text = instring[loc:stop]
+        key = (text, self.position)
+        if key not in _ANSWERS:
+            try:
+                _ANSWERS[key] = lexer.lex(text, self.position)
+            except Exception as e:
+                raise pp.ParseFatalException(instring, loc, f'{text!r} in {self.position}: {e}') from e
+        lexed = _ANSWERS[key]
+        if lexed is None:
+            raise pp.ParseException(instring, loc, self.errmsg, self)
+        LEXER = None
+        try:
+            tokens = self.reading.parse_string(lexed, parse_all=True)
+        except pp.ParseBaseException:
+            raise pp.ParseFatalException(
+                instring, loc, f'{text!r} lexed as {lexed!r}, not one token in {self.position}') from None
+        finally:
+            LEXER = lexer
+        return stop, list(tokens)
+
+
+# After a token dotted reads, while a lexer is in force: no word character
+# follows, so null in =nullable or 3 in [:3x] is not read as a prefix of
+# the token, which is the lexer's to read whole.
+_ends = pp.Empty().leave_whitespace().add_condition(
+    lambda s, loc, t: LEXER is None or s[loc:loc + 1] not in _WORD_CHARS, call_during_try=True)
+
 # A slice bound: an integer, + (the length), or a $$(path) reference or
-# $(name)/$N substitution standing for one.
-_slice_bound = integer | plus | _reference | _paren_subst | _raw_subst
-slice = pp.Optional(_slice_bound) + ':' + pp.Optional(_slice_bound) \
+# $(name)/$N substitution standing for one. A start bound is lexed only
+# before its :, so [k] is not offered as one.
+_slice_read = integer | plus | _reference | _paren_subst | _raw_subst
+_slice_bound = (_slice_read + _ends) | Lexed('slices', _slice_read, ':]')
+_slice_start = (_slice_read + _ends) | Lexed('slices', _slice_read, ':]', follow=':')
+slice = pp.Optional(_slice_start) + ':' + pp.Optional(_slice_bound) \
          + pp.Optional(':') + pp.Optional(_slice_bound)
 
 _common_pats = wildcard_first | wildcard | var | regex_first | regex
@@ -548,6 +673,11 @@ value = pp.Forward()
 _value_group_inner = value + OM(_ccomma + value)
 value_group = (S('(') + _value_group_inner + S(')')).set_parse_action(lambda t: [ct.ValueGroup(*t)])
 value <<= value_group | container_value | string_glob | bytes_literal | string | wildcard | _arg_sigil | var | regex | numeric_quoted | none | true | false | numeric_extended | numeric_slot
+# A filter's or guard's value, else a token for the lexer: it runs to what
+# may follow a value, a dot not among them, so =lot.x is one token.
+_value_stops = '&,)]|?#;'
+filter_value = (value + _ends) | Lexed('filters', value, _value_stops, end=True)
+guard_value = (value + _ends) | Lexed('guards', value, _value_stops, end=True)
 # ---------------------------------------------------------------------------
 # Concat: part+part for key construction using Python's native + operator.
 # Each part can carry per-part transforms: part|xform+part|xform
@@ -631,7 +761,7 @@ def _filter_single_action(t):
     cls = flt.FILTER_PRED_CLS[op_str]
     return cls(rest + [val])
 
-_filter_single_all = (filter_key + ZM(pipe + transform) + _pred_op_re + value).set_parse_action(_filter_single_action)
+_filter_single_all = (filter_key + ZM(pipe + transform) + _pred_op_re + filter_value).set_parse_action(_filter_single_action)
 
 # Recursive filter expression with grouping
 filter_expr = pp.Forward()
@@ -735,6 +865,12 @@ slotspecial = (lb + (appender_unique | appender) + rb).set_parse_action(access.S
 slicecmd = (lb + Opt(L('~')) + Opt(slice) + rb).set_parse_action(
     lambda t: wrappers.NopWrap(access.Slice(*t[1:])) if t and t[0] == '~' else access.Slice(*t))
 slicefilter = (lb + filters + ZM(amp + filters) + rb).set_parse_action(access.SliceFilter)
+
+# A slot dotted cannot read, [k] or [a.b], offered to the lexer: tried
+# after every other bracket, so [a.b=1] stays a filter.
+_slot_read = _slot_concat | _commons | numeric_extended | numeric_slot
+lexedcmd = (lb + Opt(L('~')) + Lexed('slots', _slot_read, ']&') + ZM(amp + filters) + rb
+            + Opt(_seg_mid)).set_parse_action(_slotcmd_action)
 
 # Cut markers: ## = soft cut, # = hard cut (try ## first so ## isn't parsed as # + #)
 softcut_marker = L('##')
@@ -983,7 +1119,7 @@ _at_nop_grouped = _at_nop_grouped.set_parse_action(
 )
 
 # NOP (~): match but don't update
-_nop_inner = inner_grouped_first | inner_grouped | recursive_op | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd
+_nop_inner = inner_grouped_first | inner_grouped | recursive_op | keycmd | attrcmd | slotgroup_first | slotgroup | slotcmd | slotspecial | slicefilter | slicecmd | lexedcmd
 _nop_wrap = (tilde + _nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
 # Explicit NOP (~): like _nop_wrap but inner must start with an access op (./@/[]).
@@ -998,7 +1134,7 @@ _explicit_nop_inner = (
     attrcmd |
     slotgroup_first | slotgroup |
     slotcmd |
-    slotspecial | slicefilter | slicecmd
+    slotspecial | slicefilter | slicecmd | lexedcmd
 )
 _explicit_nop_wrap = (tilde + _explicit_nop_inner).set_parse_action(lambda t: wrappers.NopWrap(t[1]))
 
@@ -1015,7 +1151,7 @@ _op_seq_cont_items = (
     attrcmd |
     slotgroup_first | slotgroup |
     slotcmd |
-    slotspecial | slicefilter | slicecmd
+    slotspecial | slicefilter | slicecmd | lexedcmd
 )
 _op_seq_cont << _op_seq_cont_items
 _continues <<= pp.FollowedBy(_op_seq_cont)
@@ -1034,7 +1170,7 @@ _op_seq_first_items = (
     attrcmd |
     slotgroup_first | slotgroup |
     slotcmd |
-    slotspecial | slicefilter | slicecmd
+    slotspecial | slicefilter | slicecmd | lexedcmd
 )
 # First item also allows bare grouped expressions — (a,b) with bare keys.
 # This is valid at the start of a path (top-level inference).
@@ -1051,7 +1187,7 @@ op_seq_item << (inner_grouped_first | inner_grouped | _op_seq_first_items)
 # guard, they transform the value.
 # ---------------------------------------------------------------------------
 
-_postfix = Opt(type_restriction) + ZM(amp + filters) + ZM(pipe + transform) + Opt(_pred_op_re + value + ZM(pipe + transform))
+_postfix = Opt(type_restriction) + ZM(amp + filters) + ZM(pipe + transform) + Opt(_pred_op_re + guard_value + ZM(pipe + transform))
 
 
 def _split_postfix(tokens):
@@ -1148,7 +1284,7 @@ _explicit_op_seq_cont_items = (
     attrcmd |
     slotgroup_first | slotgroup |
     slotcmd |
-    slotspecial | slicefilter | slicecmd
+    slotspecial | slicefilter | slicecmd | lexedcmd
 )
 _explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
 _explicit_inner_atom = _explicit_op_seq

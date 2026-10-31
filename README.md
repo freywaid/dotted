@@ -1721,6 +1721,29 @@ A path handed in already parsed goes through `fold()` again, so a hook must
 be content to see its own output. `Dotted.segments()` gives any parsed
 path's segment values, and a slice of a parsed path, `ops[1:]`, is a path.
 
+A host's own names may stand where dotted has no reading for a bare token:
+a slot, `merged[k]`, a slice bound, `items[:n]`, a filter value,
+`[*&cur=want]`, or a guard value, `a=k`. The parse-time hook
+`lex(text, position)` is offered each such token as written, a dotted name
+whole, with its position, one of `'slots'`, `'slices'`, `'filters'` or
+`'guards'`. It answers with dotted text to read in the token's place, `None`
+to leave the `ParseError`, or raises to fail the parse at the token. The
+answer must be one token dotted reads there, and is not offered again.
+
+    >>> class Names(dotted.ReferenceResolver):
+    ...     def lex(self, text, position):
+    ...         return f'$$({text})'
+    >>> d = {'merged': {'x': 1, 'y': 2}, 'k': 'x', 'c': {'account': 'y'}}
+    >>> dotted.get(d, 'merged[k]', resolver=Names())
+    1
+    >>> dotted.get(d, 'merged[c.account]', resolver=Names())
+    2
+
+A token dotted reads, `m[$x]` or `|sub:taken`, is never offered to `lex()`;
+a host that means something else by one remaps it at run time, through
+`literals`. `parse` takes `resolver=` too, and a path is cached per resolver
+that lexes.
+
 <a id="escaping"></a>
 ### Escaping
 

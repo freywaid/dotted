@@ -3,6 +3,18 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `ReferenceResolver.lex(text, position)`, a parse-time hook for the
+  tokens dotted's grammar cannot read: a slot, `merged[k]`, a slice
+  bound, `items[:n]`, a filter value, `[*&cur=lot.cur]`, or a guard
+  value, `a=k`. A dotted name is one token. It answers with dotted text
+  read in the token's place (`'$$(k)'`), `None` to leave the
+  `ParseError`, or raises to fail the parse at the token. Tokens dotted
+  reads are never offered; `literals` remaps those at run time. `parse`
+  takes `resolver=`, and the calls taking one parse with it (#66).
+
 ## [0.50.0]
 
 ### Changed

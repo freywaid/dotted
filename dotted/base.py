@@ -154,6 +154,10 @@ class NOP(metaclass=MetaNOP):
 # and filter values.
 LITERALS = ('segments', 'transforms', 'guards', 'filters')
 
+# The positions a resolver's lex() may be offered a token in: a slot, a
+# slice bound, a filter value and a guard value.
+LEXED = ('slots', 'slices', 'filters', 'guards')
+
 
 class Resolver:
     """
@@ -163,6 +167,7 @@ class Resolver:
     in and that node's ancestors. This default reads it as dotted does:
     a path against the root, or with ^ against the node, ^^ its parent,
     and so on. Raises UnresolvedReference when there is nothing there.
+    Its lex() is the parse-time hook for tokens dotted cannot read.
     """
 
     # True to be offered every plain token in a var-permitting position as
@@ -190,6 +195,21 @@ class Resolver:
             return
         check_literals(literals)
         self.literals = literals
+
+    def lex(self, text, position):
+        """
+        The parse-time hook, offered a token dotted's grammar has no
+        reading for: text as written, merged[k] offering 'k', and the
+        position it stands in, one of LEXED. A dotted name is one token,
+        merged[a.b] offering 'a.b'. It answers with dotted text to read
+        in the token's place, '$$(k)' making the path merged[$$(k)], or
+        None to leave the path unparsed; raising fails the parse at the
+        token. The text is read in that position as one token, and is
+        not offered to lex() again. A token dotted reads is never
+        offered: a host that means something else by one says so at run
+        time, through literals. The default lexes nothing.
+        """
+        return None
 
     def fold(self, segments):
         """
