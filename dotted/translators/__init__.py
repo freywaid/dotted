@@ -1,5 +1,5 @@
 """
-Translate dotted paths into SQL clause components.
+Translate dotted paths into other query languages.
 
 Public API:
     sqlize             — translate a path into a driver-specific
@@ -18,13 +18,15 @@ Public API:
     TranslationError   — raised on unsupported paths or malformed
                          `build` calls.
 
-Layout: flavor-neutral types live in `.core`; each flavor lives in a
-sibling module (`.pg` for Postgres) exposing a `<Flavor>Mixin` and
-one `Resolver` subclass per supported driver. Importing this package
-imports `.pg` for the side effect of registering its driver classes.
+Layout (flat): `.core` holds the target-neutral walker (`Translator`)
+and `TranslationError`; `.sql` holds the flavor-neutral SQL types;
+each SQL flavor lives in a sibling `sql_<flavor>` module (`.sql_pg`
+for Postgres) exposing a `<Flavor>Mixin` and one `Resolver` subclass
+per supported driver. Importing this package imports `.sql_pg` for
+the side effect of registering its driver classes.
 """
-from .core import (
-    TranslationError,
+from .core import TranslationError
+from .sql import (
     ParamStyle,
     ParamPool,
     SQLFragment,
@@ -35,7 +37,7 @@ from .core import (
     driver,
     drivers,
 )
-from . import pg  # side effect: registers Postgres drivers
+from . import sql_pg  # side effect: registers Postgres drivers
 
 __all__ = [
     'sqlize',

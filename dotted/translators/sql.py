@@ -1,14 +1,16 @@
 """
-Flavor-neutral core of dotted.sql.
+Flavor-neutral SQL types for dotted.translators.
 
-Defines the public types — `SQLFragment`, `Resolver`, `ParamStyle`,
-`TranslationError` — plus the driver registry (`driver()`, `drivers()`,
-`_DRIVERS`) and the `sqlize(path, driver=...)` entry point.
+Defines the public types — `SQLFragment`, `Resolver`, `ParamStyle` —
+plus the driver registry (`driver()`, `drivers()`, `_DRIVERS`) and the
+`sqlize(path, driver=...)` entry point. `TranslationError` lives in
+`.core` and is re-exported here.
 
 Translation itself is flavor-specific and lives in sibling modules
-(`pg.py` for Postgres). Each flavor contributes:
+(`sql_pg.py` for Postgres). Each flavor contributes:
 
-  - a mixin class supplying `translate()` and `cast_fn()` methods,
+  - a mixin class (a `.core.Translator` subclass) supplying
+    `translate()` and `cast_fn()` methods,
   - one `Resolver` subclass per driver it supports, each setting
     `paramstyle` and the `cast` boolean as classvars, registered via
     `@driver('driver-name')`.
@@ -25,14 +27,7 @@ import re
 import string as _string
 
 from ..api import parse
-
-
-class TranslationError(Exception):
-    """
-    Raised when a dotted path cannot be translated to SQL or when a
-    `Resolver.build` call is malformed.
-    """
-    pass
+from .core import TranslationError
 
 
 # ---- Marker syntax ---------------------------------------------------
@@ -142,7 +137,7 @@ _PARAMSTYLES = tuple(ps.value for ps in ParamStyle)
 # ---- Driver registry ------------------------------------------------
 
 # driver name (str) → Resolver subclass. Populated by `@register` in
-# dialect modules (e.g. pg.py). `sqlize(..., driver='<name>')` looks
+# dialect modules (e.g. sql_pg.py). `sqlize(..., driver='<name>')` looks
 # the class up here.
 _DRIVERS = {}
 

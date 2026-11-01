@@ -9,7 +9,7 @@ import pytest
 import dotted
 from dotted import groups
 from dotted.api import ParseError
-from dotted.sql import TranslationError, sqlize
+from dotted.translators import TranslationError, sqlize
 
 
 D = {

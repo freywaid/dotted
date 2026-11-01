@@ -34,7 +34,7 @@ except ImportError:
 
 
 # Driver names the `query` fixture parametrizes over. Each must be
-# registered in the dotted.sql driver registry — tests pass the
+# registered in the dotted.translators driver registry — tests pass the
 # name straight into `sqlize(path, driver=...)`, and paramstyle/cast
 # come from the Resolver subclass.
 _DRIVERS = ('asyncpg', 'psycopg2')

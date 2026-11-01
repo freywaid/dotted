@@ -1,10 +1,11 @@
 """
-Postgres dialect for dotted.sql.
+Postgres dialect for dotted.translators.
 
-Defines the `PostgresMixin` — the flavor's translation methods and
-cast-inference — and a `Resolver` subclass per supported Postgres
-driver (`asyncpg`, `psycopg2`, `psycopg` aka v3). Driver classes are
-registered with the core via `@driver('<driver-name>')`.
+Defines the `PostgresMixin` — the flavor's hooks for the neutral
+`Translator` walk, plus cast-inference — and a `Resolver` subclass
+per supported Postgres driver (`asyncpg`, `psycopg2`, `psycopg` aka
+v3). Driver classes are registered with `.sql` via
+`@driver('<driver-name>')`.
 
 Also registers `_dollar_cast` with the legacy `_DIALECT_CAST_FNS`
 hook so `Resolver.build(sql, paramstyle='dollar-numeric')` keeps
@@ -21,10 +22,9 @@ from .. import matchers
 from .. import predicates
 from .. import recursive as _recursive
 from .. import wrappers
-from ..api import parse
 
-from .core import (
-    TranslationError,
+from .core import TranslationError, Translator
+from .sql import (
     SQLFragment,
     Resolver,
     ParamPool,
@@ -114,18 +114,6 @@ _PRED_JSONPATH = {
 }
 
 
-def _op_is_pattern_like(op):
-    """
-    True if the op introduces a set-returning or recursive element
-    that can't be expressed as a literal JSON path — requires JSONPath.
-    """
-    if isinstance(op, access.SliceFilter):
-        return True
-    if hasattr(op, 'is_pattern') and op.is_pattern():
-        return True
-    return False
-
-
 # ---- Cast inference for Postgres ------------------------------------
 #
 # Postgres drivers that use server-side prepared statements (asyncpg
@@ -171,11 +159,12 @@ _register_dialect_cast('dollar-numeric', _dollar_cast)
 
 # ---- Postgres mixin -------------------------------------------------
 
-class PostgresMixin:
+class PostgresMixin(Translator):
     """
-    Postgres-flavored translation methods and cast inference. Mix into
+    Postgres-flavored translation hooks and cast inference. Mix into
     a `Resolver` subclass to get Postgres JSONB / JSONPath SQL
-    generation.
+    generation. The walk itself is `Translator`'s; the hooks below
+    return marker-form SQL text.
 
     Shared across all Postgres drivers — each driver subclass only
     needs to set `paramstyle` and toggle `cast` on/off according to
@@ -238,48 +227,6 @@ class PostgresMixin:
         """
         return _dollar_cast(value)
 
-    # ---- core walk --------------------------------------------------
-
-    def _translate(self, ops):
-        """
-        Inner translation entry point — returns a dict of text
-        fragments (`select`, `where`, ...). Shares `self._state`
-        with the caller so nested invocations (group branches,
-        reference subpaths) hoist params into the same pool.
-        """
-        if not ops:
-            raise TranslationError('empty path')
-        col_op = ops[0]
-        rest = ops[1:]
-        # Column-level guard: `status = "active"` has one op, a
-        # ValueGuard wrapping the column key.
-        if isinstance(col_op, wrappers.ValueGuard):
-            if rest:
-                raise TranslationError('path continues after column-level guard')
-            col_name = self._column_name(col_op.inner)
-            col_ident = _quote_ident(col_name)
-            where = self._scalar_predicate(col_op, col_ident)
-            return self._result(select=col_ident, where=where)
-        # Top-level group: each branch is a complete path with its own column.
-        if isinstance(col_op, _groups.OpGroup):
-            if rest:
-                raise TranslationError('path continues after top-level group')
-            where = self._translate_top_group(col_op)
-            return self._result(where=where)
-        # Otherwise first op must be a plain Key naming the column.
-        col_name = self._column_name(col_op)
-        col_ident = _quote_ident(col_name)
-        result = self._walk(col_ident, (), rest)
-        return self._result(**result)
-
-    def _result(self, **kw):
-        """
-        Carry intermediate translation output. Keys are fragment names
-        (`select`, `where`, `from_`), values are marker-form SQL text
-        strings.
-        """
-        return {k: v for k, v in kw.items() if v is not None}
-
     def _hoist_value(self, value):
         """
         Hoist a concrete literal into `self._state.params`; return the
@@ -294,84 +241,67 @@ class PostgresMixin:
         """
         return self._state.hoist_named(name)
 
-    def _column_name(self, op):
-        """
-        Extract the column name (a SQL identifier) from the first op
-        of a path. Reject matchers that can't name a column.
-        """
-        if not isinstance(op, access.Key):
-            raise TranslationError(
-                f'first path segment must be a column key, got {type(op).__name__}'
-            )
-        matcher = op.op
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError('unresolved substitution in column position')
-        if isinstance(matcher, matchers.Reference):
-            raise TranslationError('reference in column position')
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                'pattern/wildcard in column position — no "all columns" in SQL'
-            )
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(
-                f'unsupported column matcher: {type(matcher).__name__}'
-            )
-        value = matcher.value
-        if not isinstance(value, str):
-            value = str(value)
-        return value
+    # ---- Translator hooks -------------------------------------------
 
-    def _walk(self, col_ident, prefix, ops):
+    _CAST_MAP = {
+        'int': 'int',
+        'float': 'float',
+        'str': 'text',
+        'bool': 'bool',
+    }
+
+    def _column(self, name):
         """
-        Walk the remaining path ops after the column, accumulating
-        literal segments in `prefix`. Dispatches to group /
-        pattern-mode / scalar-guard / jsonb-guard paths as needed.
+        Quote the column name as a SQL identifier.
         """
-        if not ops:
-            return {'select': self._path_expr(col_ident, prefix, text=bool(prefix))}
-        op = ops[0]
-        rest = ops[1:]
-        # value transforms, a.b|int, have no SQL side: translate the op under them
-        if isinstance(op, wrappers.TransformWrap):
-            op = op.inner
-        if isinstance(op, wrappers.TypeRestriction):
-            raise TranslationError('type restriction not supported')
-        if isinstance(op.most_inner, _groups.Pack):
-            raise TranslationError('packed group not supported')
-        # Groups: each branch is walked independently, so dispatch first
-        # (OpGroup has is_pattern=True but shouldn't take the pattern-mode
-        # path wholesale).
-        if isinstance(op, _groups.OpGroup):
-            if rest:
-                raise TranslationError('path continues after group')
-            return self._translate_group(op, col_ident, prefix)
-        # If any remaining op introduces a pattern-like segment (wildcard,
-        # recursive, filter bracket), switch to JSONPath mode. Pattern
-        # paths produce three fragments: a WHERE predicate (via
-        # jsonb_path_exists), a LATERAL clause (via jsonb_path_query),
-        # and a select expression that references the lateral's alias.
-        # The engine picks which to compose — filter-style from `where`
-        # or extract-style from `lateral` + `select`.
-        if any(_op_is_pattern_like(o) for o in ops):
-            jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
-                col_ident, prefix, ops)
-            where = self._pattern_where(col_ident, jsonpath_sql, jvars)
-            alias = self._state.alloc_pattern_alias()
-            lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
-            select = f'{alias}.value'
-            return {'select': select, 'where': where, 'lateral': lateral}
-        if isinstance(op, wrappers.ValueGuard):
-            if rest:
-                raise TranslationError('path continues after value guard')
-            segment = self._segment_from_key(op.inner)
-            full = prefix + (segment,)
-            select = self._path_expr(col_ident, full, text=True)
-            where = self._jsonb_predicate(op, col_ident, full)
-            return {'select': select, 'where': where}
-        if isinstance(op, access.Key):
-            segment = self._segment_from_key(op)
-            return self._walk(col_ident, prefix + (segment,), rest)
-        raise TranslationError(f'unsupported op: {type(op).__name__}')
+        return _quote_ident(name)
+
+    def _select_expr(self, col_ident, prefix):
+        """
+        Text extraction for a non-empty prefix; the bare column for an
+        empty one.
+        """
+        return self._path_expr(col_ident, prefix, text=bool(prefix))
+
+    def _nested_predicate(self, guard_op, col_ident, prefix):
+        """
+        Guards inside a column are JSONB guards.
+        """
+        return self._jsonb_predicate(guard_op, col_ident, prefix)
+
+    def _combine_and(self, preds):
+        """
+        Parenthesized predicates joined with AND.
+        """
+        return ' AND '.join(f'({p})' for p in preds)
+
+    def _combine_or(self, preds):
+        """
+        Parenthesized predicates joined with OR.
+        """
+        return ' OR '.join(f'({p})' for p in preds)
+
+    def _combine_not(self, pred):
+        """
+        NOT over the parenthesized predicate.
+        """
+        return f'NOT ({pred})'
+
+    def _pattern(self, col_ident, prefix, ops):
+        """
+        Pattern paths produce three fragments: a WHERE predicate (via
+        jsonb_path_exists), a LATERAL clause (via jsonb_path_query),
+        and a select expression that references the lateral's alias.
+        The engine picks which to compose — filter-style from `where`
+        or extract-style from `lateral` + `select`.
+        """
+        jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
+            col_ident, prefix, ops)
+        where = self._pattern_where(col_ident, jsonpath_sql, jvars)
+        alias = self._state.alloc_pattern_alias()
+        lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
+        select = f'{alias}.value'
+        return {'select': select, 'where': where, 'lateral': lateral}
 
     # ---- Pattern paths via jsonb_path_exists ------------------------
 
@@ -715,45 +645,6 @@ class PostgresMixin:
 
     # ---- scalar (non-pattern) path helpers --------------------------
 
-    def _segment_from_key(self, key_op):
-        """
-        Turn a `Key` op inside a path into a `(kind, value)` tuple:
-        `('lit', 'user')` for a plain key, or `('expr', sql)` for a
-        reference whose subpath is recursively translated.
-        """
-        if not isinstance(key_op, access.Key):
-            raise TranslationError(
-                f'expected Key inside path, got {type(key_op).__name__}'
-            )
-        matcher = key_op.op
-        if isinstance(matcher, matchers.Reference):
-            if matcher.depth != 0:
-                raise TranslationError(
-                    'relative/parent references not supported in v1'
-                )
-            subpath = matcher.inner_path
-            if not subpath:
-                raise TranslationError('empty reference path')
-            sub_parsed = parse(subpath, partial=True)
-            # Recurse on self — self._state is already live and the
-            # sub-translation hoists into the same pool.
-            sub_result = self._translate(sub_parsed.ops)
-            sub_expr = sub_result.get('select')
-            if sub_expr is None:
-                raise TranslationError('reference subpath has no select expression')
-            return ('expr', sub_expr)
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError(
-                f'unresolved substitution in path position: {matcher}'
-            )
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                f'pattern segments not supported in v1: {matcher}'
-            )
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(f'unsupported matcher: {type(matcher).__name__}')
-        return ('lit', str(matcher.value))
-
     def _path_expr(self, col_ident, prefix, text):
         """
         Build the Postgres extraction expression for a `prefix` tuple.
@@ -904,99 +795,6 @@ class PostgresMixin:
         if not hasattr(val, 'value'):
             raise TranslationError(f'unsupported guard value: {type(val).__name__}')
         return f'{lhs} {pred.op} {self._hoist_value(val.value)}'
-
-    _CAST_MAP = {
-        'int': 'int',
-        'float': 'float',
-        'str': 'text',
-        'bool': 'bool',
-    }
-
-    def _transforms_to_cast(self, transforms):
-        """
-        Map a path-level transform (like `|int`) to the Postgres cast
-        that should be applied to the text extraction. Only a narrow
-        set is supported today.
-        """
-        if len(transforms) != 1:
-            raise TranslationError(
-                'only single-transform casts supported in v1'
-            )
-        name = transforms[0].name
-        cast = self._CAST_MAP.get(name)
-        if cast is None:
-            raise TranslationError(
-                f'transform not supported as SQL cast: {name}'
-            )
-        return cast
-
-    def _translate_top_group(self, group_op):
-        """
-        Translate a group op at the top of a path — each branch is a
-        complete path starting from its own column. Branches share
-        `self._state` via the recursive call, so hoisted literals are
-        unified.
-        """
-        wheres = []
-        for branch in group_op.branches:
-            if not isinstance(branch, tuple):
-                raise TranslationError(
-                    f'unsupported branch form: {type(branch).__name__}'
-                )
-            br_result = self._translate(branch)
-            where = br_result.get('where')
-            if where is None:
-                raise TranslationError(
-                    'top-level group branch has no predicate'
-                )
-            wheres.append(where)
-        if isinstance(group_op, _groups.OpGroupAnd):
-            return ' AND '.join(f'({w})' for w in wheres)
-        if isinstance(group_op, _groups.OpGroupOr):
-            return ' OR '.join(f'({w})' for w in wheres)
-        if isinstance(group_op, _groups.OpGroupNot):
-            if len(wheres) != 1:
-                raise TranslationError(
-                    'negation group must have exactly one branch'
-                )
-            return f'NOT ({wheres[0]})'
-        raise TranslationError(
-            f'unsupported group type: {type(group_op).__name__}'
-        )
-
-    def _translate_group(self, group_op, col_ident, prefix):
-        """
-        Translate a group op nested inside a path — each branch is a
-        tail continuation sharing the outer column and prefix.
-        """
-        branch_results = []
-        for branch in group_op.branches:
-            if not isinstance(branch, tuple):
-                raise TranslationError(
-                    f'unsupported branch form: {type(branch).__name__}'
-                )
-            br = self._walk(col_ident, prefix, branch)
-            if 'where' not in br:
-                raise TranslationError(
-                    'group branch without a guard (bare traversal) not supported in v1'
-                )
-            branch_results.append(br)
-        if isinstance(group_op, _groups.OpGroupAnd):
-            joined = ' AND '.join(f'({r["where"]})' for r in branch_results)
-        elif isinstance(group_op, _groups.OpGroupOr):
-            joined = ' OR '.join(f'({r["where"]})' for r in branch_results)
-        elif isinstance(group_op, _groups.OpGroupNot):
-            if len(branch_results) != 1:
-                raise TranslationError(
-                    'negation group must have exactly one branch'
-                )
-            joined = f'NOT ({branch_results[0]["where"]})'
-        else:
-            raise TranslationError(
-                f'unsupported group type: {type(group_op).__name__}'
-            )
-        select = self._path_expr(col_ident, prefix, text=bool(prefix))
-        return {'select': select, 'where': joined}
 
 
 # ---- Driver classes -------------------------------------------------

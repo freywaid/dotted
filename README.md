@@ -3592,7 +3592,7 @@ parameters (`$1`, `%(name)s`, etc.). For the cases where the "value"
 is actually a **SQL expression** — a column reference, a subquery,
 a function call — bind to a `Raw` wrapper instead:
 
-    >>> from dotted.sql import Raw, Col
+    >>> from dotted.translators import Raw, Col
     >>> r = dotted.sqlize('customer = $(matched.customer)', driver='asyncpg')
     >>> r.build(r.where, **{'matched.customer': Raw('matched.customer')})
     ('customer = matched.customer', [])
@@ -3637,15 +3637,15 @@ time — the only difference is construction-time validation.
 
 ### Adding a driver
 
-Drivers are registered via the `@dotted.sql.driver('<name>')`
+Drivers are registered via the `@dotted.translators.driver('<name>')`
 decorator on a `Resolver` subclass that mixes in a flavor (today just
-`PostgresMixin` in `dotted.sql.pg`). Each subclass declares its
+`PostgresMixin` in `dotted.translators.sql_pg`). Each subclass declares its
 paramstyle and whether it needs explicit casts:
 
     import dotted
-    from dotted.sql.pg import PostgresMixin
+    from dotted.translators.sql_pg import PostgresMixin
 
-    @dotted.sql.driver('my-driver')
+    @dotted.translators.driver('my-driver')
     class MyDriverResolver(PostgresMixin, dotted.Resolver):
         paramstyle = 'pyformat'    # one of 'named' | 'pyformat' |
                                    # 'qmark' | 'format' | 'numeric' |
@@ -3654,7 +3654,7 @@ paramstyle and whether it needs explicit casts:
                                    # in polymorphic jsonb_build_object contexts
 
 Once registered, `dotted.sqlize(path, driver='my-driver')` dispatches
-to it. `dotted.sql.drivers()` returns the names of all currently
+to it. `dotted.translators.drivers()` returns the names of all currently
 registered drivers (built-ins + anything third-party code has added).
 
 ### Resolver attributes

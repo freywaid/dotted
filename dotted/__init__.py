@@ -76,7 +76,7 @@ from .api import \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
-from .sql import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
+from .translators import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
 # the run-time reference resolver; sqlize's Resolver, above, has the plain name
 from .base import Resolver as ReferenceResolver, UnresolvedReference
 

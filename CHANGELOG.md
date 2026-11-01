@@ -3,6 +3,20 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Changed (breaking)
+- Package `dotted.sql` → `dotted.translators` (`dotted.sqlize` and the
+  top-level re-exports are unchanged). `dotted.sql.pg` is now
+  `dotted.translators.sql_pg`; `Raw`, `Col`, `driver` and `drivers`
+  import from `dotted.translators`.
+
+### Internal
+- The walk over a path's ops moved out of `PostgresMixin` into a
+  target-neutral `Translator` (`dotted.translators.core`), which
+  `PostgresMixin` now subclasses, supplying hooks. SQL output is
+  unchanged.
+
 ## [0.51.2]
 
 ### Added

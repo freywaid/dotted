@@ -1,5 +1,5 @@
 """
-Tests for dotted.sql — dotted path → SQL clause components.
+Tests for dotted.translators (sqlize) — dotted path → SQL clause components.
 
 sqlize(path, driver=...) returns a driver-specific Resolver with SQL
 fragments. `r.build(sql, **bindings)` uses the driver's paramstyle;
@@ -12,7 +12,7 @@ runs. Every concrete render in this file goes through the classmethod
 `Resolver.build(paramstyle=...)` which ignores the driver's paramstyle.
 """
 import pytest
-from dotted.sql import (
+from dotted.translators import (
     sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, ParamPool,
     Raw, Col, TranslationError,
 )
@@ -920,12 +920,12 @@ def test_pool_mixed_literal_and_substitution_across_resolvers():
 
 def test_pool_is_public():
     """
-    `ParamPool` is re-exported from both `dotted.sql` and `dotted`.
+    `ParamPool` is re-exported from both `dotted.translators` and `dotted`.
     """
     import dotted
-    import dotted.sql
+    import dotted.translators
     assert ParamPool is dotted.ParamPool
-    assert ParamPool is dotted.sql.ParamPool
+    assert ParamPool is dotted.translators.ParamPool
 
 
 # ---------------- Raw / Col substitution values ----------------
@@ -1067,12 +1067,12 @@ def test_col_in_build():
 
 def test_raw_col_are_public():
     """
-    Raw and Col are re-exported from both `dotted.sql` and the top-
+    Raw and Col are re-exported from both `dotted.translators` and the top-
     level namespace is submodule-only by design.
     """
-    import dotted.sql
-    assert Raw is dotted.sql.Raw
-    assert Col is dotted.sql.Col
+    import dotted.translators
+    assert Raw is dotted.translators.Raw
+    assert Col is dotted.translators.Col
 
 
 def test_raw_rejects_non_string():
@@ -1285,7 +1285,7 @@ def test_psycopg3_appears_in_drivers_list():
     """
     Both names are registered.
     """
-    from dotted.sql import drivers
+    from dotted.translators import drivers
     names = drivers()
     assert 'psycopg' in names
     assert 'psycopg3' in names
@@ -1328,8 +1328,8 @@ def test_cast_under_named_paramstyle_with_driver_cast_true():
     driver's `cast_fn` is active — not just dollar-numeric. Verify the
     named-style renderer inherits the same fix.
     """
-    from dotted.sql import Resolver
-    from dotted.sql.pg import PostgresMixin
+    from dotted.translators import Resolver
+    from dotted.translators.sql_pg import PostgresMixin
 
     # Spin up an ad-hoc named-style driver with cast on, using
     # PostgresMixin's cast_fn. (Don't register — this is unit-test

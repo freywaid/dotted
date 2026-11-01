@@ -1,5 +1,5 @@
 """
-End-to-end integration tests: run dotted.sql output against the
+End-to-end integration tests: run sqlize output against the
 seeded Postgres schema and verify row-level semantics.
 
 The seeded table `dotted_test.items` has columns:
