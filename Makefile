@@ -5,7 +5,7 @@ VENV_BIN := $(VENV)/bin
 # Extra args passed to pytest. e.g.:  make test PYTEST_ARGS=-x
 PYTEST_ARGS ?=
 
-.PHONY: install test test.python test.native test.wheel test.integration bench bench.python bench.native native native.clean clean
+.PHONY: install test test.python test.native test.wheel test.integration test.spark bench bench.python bench.native native native.clean clean
 
 # Create the local venv and install dotted (with all optional extras),
 # pytest, and integration-test deps. Other targets depend on this.
@@ -47,6 +47,15 @@ test.wheel: install
 # DOTTED_TEST_DSN, defaults to postgres://postgres:postgres@localhost:5432/postgres).
 test.integration: install
 	$(VENV_BIN)/pytest tests/integration/ $(PYTEST_ARGS)
+
+# sparkize tests against a local SparkSession (needs a JVM). Installs
+# pyspark 3.5 into the venv first, the version tested against;
+# venv/bin/pyspark is its stamp.
+test.spark: $(VENV_BIN)/pyspark
+	$(VENV_BIN)/pytest tests/spark/ $(PYTEST_ARGS)
+
+$(VENV_BIN)/pyspark: $(VENV_BIN)/pytest
+	$(VENV_BIN)/pip install 'pyspark==3.5.*'
 
 # Benchmarks on both engines, side by side, building the compiled engine
 # first. e.g.:  make bench BENCH_ARGS='update remove'

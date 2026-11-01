@@ -24,7 +24,8 @@ Flavor hooks (each flavor mixin implements them):
 
 A prefix is a tuple of `('lit', value)` segments for plain keys and
 `('expr', <flavor expression>)` segments for references, whose
-subpath is translated through the same walk.
+subpath is translated through the same walk. A literal's value is a
+string unless the flavor overrides `_segment_value`.
 
 Expressions are opaque to the walk: whatever the hooks return is
 carried through and handed back to other hooks. The walk returns a
@@ -212,7 +213,15 @@ class Translator:
             )
         if not hasattr(matcher, 'value'):
             raise TranslationError(f'unsupported matcher: {type(matcher).__name__}')
-        return ('lit', str(matcher.value))
+        return ('lit', self._segment_value(key_op, matcher.value))
+
+    def _segment_value(self, key_op, value):
+        """
+        The literal segment for a plain key whose matcher holds `value`.
+        Its string form by default; a flavor that tells list indexes
+        (`[0]`) from keys overrides this.
+        """
+        return str(value)
 
     def _transforms_to_cast(self, transforms):
         """

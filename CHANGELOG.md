@@ -5,6 +5,18 @@ the ones listed are omitted — browse git history for earlier entries.
 
 ## [Unreleased]
 
+### Added
+- `sparkize(path, *, flavor, bindings=None)` — *under development*:
+  the Spark counterpart of `sqlize`, translating a path into PySpark
+  `Column` expressions over native struct, array and map columns.
+  `r.where` / `r.select` are `ColumnFragment`s (composable with `&`,
+  `|`, `~`); `r.build(fragment, **bindings)` makes the Column, so
+  `$(name)` substitutions bind late as in sqlize. Pattern paths
+  (`[*]`, a map's `*`, bracket filters) use `exists` / `transform` /
+  `filter`; `**` and `*` over struct fields raise `TranslationError`.
+  `'pyspark'` is the only flavor. New `spark` extra (`pyspark>=3.4`);
+  translation itself never imports pyspark.
+
 ### Changed (breaking)
 - Package `dotted.sql` → `dotted.translators` (`dotted.sqlize` and the
   top-level re-exports are unchanged). `dotted.sql.pg` is now

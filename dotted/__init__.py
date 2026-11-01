@@ -76,7 +76,7 @@ from .api import \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
     pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
-from .translators import sqlize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
+from .translators import sqlize, sparkize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
 # the run-time reference resolver; sqlize's Resolver, above, has the plain name
 from .base import Resolver as ReferenceResolver, UnresolvedReference
 
@@ -98,8 +98,8 @@ __all__ = [
     'is_indeterminate', 'is_simple',
     'is_inverted', 'is_mutable', 'mutable',
     'set_simple_fastpath', 'set_parse_cache',
-    # SQL
-    'sqlize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
+    # Translators
+    'sqlize', 'sparkize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
     # Constants
     'ANY', 'AUTO', 'Attrs', 'GroupMode',
 ]

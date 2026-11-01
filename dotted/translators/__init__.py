@@ -15,15 +15,22 @@ Public API:
     ParamPool          — shared bind-parameter pool passed across
                          multiple `sqlize()` calls so composed
                          fragments don't have marker collisions.
+    sparkize           — translate a path into a flavor-specific
+                         `SparkResolver`. Signature:
+                         `sparkize(path, *, flavor, bindings=None)`.
+    SparkResolver      — its base class + container.
+    ColumnFragment     — a deferred Spark Column.
     TranslationError   — raised on unsupported paths or malformed
                          `build` calls.
 
 Layout (flat): `.core` holds the target-neutral walker (`Translator`)
-and `TranslationError`; `.sql` holds the flavor-neutral SQL types;
-each SQL flavor lives in a sibling `sql_<flavor>` module (`.sql_pg`
-for Postgres) exposing a `<Flavor>Mixin` and one `Resolver` subclass
-per supported driver. Importing this package imports `.sql_pg` for
-the side effect of registering its driver classes.
+and `TranslationError`; `.sql` holds the flavor-neutral SQL types and
+`.spark` the flavor-neutral Spark ones. Each flavor lives in a sibling
+`sql_<flavor>` / `spark_<flavor>` module (`.sql_pg` for Postgres,
+`.spark_pyspark` for PySpark) exposing a `<Flavor>Mixin` and its
+registered resolver classes. Importing this package imports both for
+the side effect of registering them; neither imports a database driver
+or pyspark until it is used.
 """
 from .core import TranslationError
 from .sql import (
@@ -37,7 +44,15 @@ from .sql import (
     driver,
     drivers,
 )
+from .spark import (
+    ColumnFragment,
+    SparkResolver,
+    sparkize,
+    flavor,
+    flavors,
+)
 from . import sql_pg  # side effect: registers Postgres drivers
+from . import spark_pyspark  # side effect: registers the PySpark flavor
 
 __all__ = [
     'sqlize',
@@ -50,4 +65,9 @@ __all__ = [
     'TranslationError',
     'driver',
     'drivers',
+    'sparkize',
+    'SparkResolver',
+    'ColumnFragment',
+    'flavor',
+    'flavors',
 ]

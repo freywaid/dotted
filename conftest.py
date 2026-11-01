@@ -1,6 +1,7 @@
 """
 Root conftest. Adds the `--all` flag and the skip logic for integration
-tests. Tests under `tests/integration/` auto-mark themselves via that
+tests. Tests under `tests/integration/` (live Postgres) and
+`tests/spark/` (local SparkSession) auto-mark themselves via their
 directory's conftest; by default they're skipped. They run when either
 `--all` is passed or the caller explicitly targets the directory.
 
@@ -29,14 +30,14 @@ def pytest_addoption(parser):
         action='store_true',
         default=False,
         help='Run all tests including integration tests that require a '
-             'live Postgres (see DOTTED_TEST_DSN).',
+             'live Postgres (see DOTTED_TEST_DSN) or a local SparkSession.',
     )
 
 
 def pytest_configure(config):
     config.addinivalue_line(
         'markers',
-        'integration: test requires a live Postgres connection',
+        'integration: test requires a live Postgres connection or a SparkSession',
     )
 
 
@@ -86,8 +87,9 @@ def pytest_collection_modifyitems(config, items):
     # `--all` opts into everything.
     if config.getoption('--all'):
         return
-    # Explicit targeting of tests/integration also opts in.
-    if any('tests/integration' in str(arg) for arg in config.args):
+    # Explicit targeting of tests/integration or tests/spark also opts in.
+    if any(d in str(arg) for arg in config.args
+           for d in ('tests/integration', 'tests/spark')):
         return
     # Otherwise skip anything carrying the integration marker.
     skip = pytest.mark.skip(

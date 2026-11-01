@@ -147,6 +147,7 @@ For faster `mutable=False` updates and removes, install the
   - [Container transform arguments](#container-transform-arguments)
   - [Custom Transforms](#custom-transforms)
 - [SQL Translation (`sqlize`)](#sqlize) — *under development*
+- [Spark Translation (`sparkize`)](#sparkize) — *under development*
 - [Constants and Exceptions](#constants-and-exceptions)
 - [CLI (`dq`)](#cli-dq)
   - [File input](#file-input)
@@ -3724,6 +3725,111 @@ strings at `Resolver.build` — enum members normalize internally:
     (<ParamStyle.named: 'named'>, <ParamStyle.dollar_numeric: 'dollar-numeric'>)
 
 Unsupported features and pattern paths raise `dotted.TranslationError`.
+
+<a id="sparkize"></a>
+## Spark Translation (`sparkize`)
+
+> **Under development.** The API shape and supported subset of dotted
+> features may still change. PySpark only (classic and Spark Connect).
+> Needs `pip install dotted-notation[spark]` (`pyspark>=3.4`).
+
+`dotted.sparkize(path, flavor='pyspark')` translates a dotted path into
+PySpark `Column` expressions for `df.where(...)` / `df.select(...)`. It
+is the Spark counterpart of `sqlize`, on the same translation walk:
+`r.select` and `r.where` are fragments, and `r.build(fragment,
+**bindings)` makes the `Column`.
+
+Columns are native Spark types. The first path segment is the column;
+further segments reach into structs, maps and arrays. A JSON string
+column isn't parsed for you: give the DataFrame real struct columns
+(read them that way, or `from_json` with your own schema) first.
+
+    import dotted
+
+    r = dotted.sparkize('data.user.age >= 30', flavor='pyspark')
+    df.where(r.build(r.where))
+
+    r = dotted.sparkize('data.user.name', flavor='pyspark')
+    df.select(r.build(r.select))
+
+`flavor=` is required, as `driver=` is for `sqlize`; the examples
+below leave it out for brevity.
+
+| dotted | Spark |
+|--------|-------|
+| `col.a.b` | struct field / map key extraction |
+| `col[0]`, `col[-1]` | array index (0-based, negative from the end; out of range is null) |
+| `= != < <= > >=` | the Column comparison against `lit(value)` |
+| `= None`, `!= None` | `isNull()`, `isNotNull()` |
+| `= /re/`, `!= /re/` | `rlike(re)`, `~rlike(re)` |
+| `\|int \|float \|str \|bool` | `cast('int' \| 'double' \| 'string' \| 'boolean')` |
+| `(a & b)`, `(a, b)`, `!(a)` | `&`, `\|`, `~` |
+| `tags.$$(pick)` | map lookup by another column's value |
+| `arr[*].x = v`, `arr[x = v]` | `exists(arr, ...)` in `where`; `transform` / `filter` in `select` |
+| `map.*` | every value of a map (`map_values`) |
+
+### Pattern paths
+
+`[*]`, a map's `*` and bracket filters work on both sides. `where` is
+whether any element matches; `select` is the array of the matches, in
+order:
+
+    r = dotted.sparkize('data.users[*].age >= 30')
+    df.where(r.build(r.where))      # rows with some user aged 30+
+    df.select(r.build(r.select))    # per row, the ages that are 30+
+
+    r = dotted.sparkize('data.users[active = True].age')
+    df.select(r.build(r.select))    # per row, the active users' ages
+
+`**`, and `*` over a struct's fields, need the schema — Spark can't
+iterate struct fields at run time — and raise `TranslationError`.
+
+### Substitutions (late binding)
+
+As with `sqlize`, `$(name)` stays unbound until `build`, or resolves
+up front with `bindings=`:
+
+    r = dotted.sparkize('age >= $(min_age)')
+    r.unbound                        # {'min_age': 'min_age'}
+    df.where(r.build(r.where, min_age=30))
+
+    r = dotted.sparkize('age >= $(min_age)', bindings={'min_age': 30})
+    df.where(r.build(r.where))
+
+A binding may be any value `lit` accepts, a `Column` included, which is
+used as is: `r.build(r.where, min_age=F.col('floor'))`. A binding of
+`None` is a null test, as a literal `None` is.
+
+### Composing fragments
+
+A `Column` can't hold a placeholder, so `r.where` is a
+`ColumnFragment`: a Column not made yet. Fragments compose with `&`,
+`|` and `~` before `build`; their unbound substitutions merge:
+
+    a = dotted.sparkize('age >= $(min_age)')
+    b = dotted.sparkize('status = "active"')
+    df.where(a.build(a.where & b.where, min_age=30))
+
+### API reference
+
+`dotted.sparkize(path, *, flavor, bindings=None)`
+
+- `path` — dotted path string or pre-parsed result.
+- `flavor` — **required**. Name of a registered flavor (`'pyspark'`).
+  An unknown flavor raises `TranslationError`.
+  `dotted.translators.flavors()` lists them.
+- `bindings` — resolve substitutions at sparkize time. Path-position
+  substitutions must be resolved here.
+
+`r.build(fragment, **bindings)`
+
+- `fragment` — a `ColumnFragment` (`r.where`, `r.select`, or a
+  composition of fragments).
+- `**bindings` — values for substitutions, keyed by original
+  substitution name. An unknown or missing binding raises
+  `TranslationError`.
+
+Translation never imports pyspark; only `build` does.
 
 <a id="constants-and-exceptions"></a>
 ## Constants and Exceptions

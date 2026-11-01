@@ -66,6 +66,9 @@ all = [
     "tomli>=1.0",
     "tomli_w>=1.0",
 ]
+# Not in `all`: pyspark is large and needs a JVM. 3.4 brings `get` and
+# null on a missing map key under ANSI mode.
+spark = ["pyspark>=3.4"]
 
 [project.scripts]
 dq = "dotted.cli.main:main"
