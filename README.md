@@ -228,6 +228,13 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### Unreleased
+- **`!` negates the whole path.** `!(metadata.*)` yields everything
+  outside `metadata.*`, and `!a.b` is the complement of `a.b`; it no
+  longer negates `a` and continues into `b`, which is written `(!a).b`.
+  A guard or filter after it applies to what it yields: `!a.b=5` is
+  `(!a.b)=5`. See [Negation](#negation-not).
+
 ### v0.50.0
 - **Nothing is read through `[+]` or `[+?]`.** They are the slot past the
   end, so `get(d, 'a[+]')` is the default, not the last item; use `a[-1]`.
@@ -2311,6 +2318,22 @@ Updates and removes apply to all non-matching keys:
     >>> dotted.remove(d, 'a(!.x)')
     {'a': {'x': 1}}
 
+`!` negates a whole path. `!P` yields the largest subtrees that hold no
+match of `P`: a subtree `P` runs through is split, one `P` ends at is
+dropped, and one `P` never reaches is yielded whole:
+
+    >>> d = {'metadata': {'modfin': {'hello': 'there'}, 'x': 1}, 'stuff': 7}
+    >>> dotted.pluck(d, '!(metadata.modfin)')
+    (('metadata.x', 1), ('stuff', 7))
+    >>> dotted.pluck(d, '!(metadata.*)')
+    (('stuff', 7),)
+    >>> dotted.remove(d, '!(metadata.modfin)')
+    {'metadata': {'modfin': {'hello': 'there'}}}
+
+The complement is of what `P` actually matches, so `!(a#,b)` excludes
+only `a` when `a` is there. To negate one segment and continue past it,
+parenthesize the negation: `(!a).b`.
+
 **Note**: For De Morgan's law with filter expressions, see the Filters section below.
 
 <a id="precedence"></a>
@@ -2345,14 +2368,16 @@ yields one value, so `(a,b;)|sum` applies to that tuple once.
     >>> dotted.get({'a': '1', 'b': '2'}, 'a,b|int')
     ('1', 2)
 
-Since access ops bind tightest, `!a.b` negates `a` and continues into `b`
-from every other key, and `!a.b&x` conjoins that with `x`:
+Since access ops bind tightest, `!a.b` negates the whole path `a.b`;
+`(!a).b` negates `a` and continues into `b` from every other key. `~` is
+the exception: it wraps only the next segment, so `~a.b` is `(~a).b` (see
+[The NOP `~` operator](#the-nop--operator)):
 
     >>> d = {'a': {'b': 1}, 'c': {'b': 2}, 'x': 3}
     >>> dotted.get(d, '!a.b')
+    ({'b': 2}, 3)
+    >>> dotted.get(d, '(!a).b')
     (2,)
-    >>> dotted.get(d, '!a.b&x')
-    (2, 3)
 
 A `:` after a transform name is always a parameter, `a|int:16`; to type a
 transformed value, parenthesize: `(a|int):int`.
@@ -2449,11 +2474,16 @@ The NOP operator means "match but don't update." At `update` and `remove` time, 
 marked with `~` are matched for traversal but the mutation is skipped at that segment.
 NOP applies only to the segment it wraps; child segments are unaffected.
 
+`~` is special: unlike `!`, it does not take the whole path. `!a.b` is
+`!(a.b)`, but `~a.b` is `(~a).b`. On a group, `~` applies to every
+segment in it and to nothing after it: `~(a.b)` is `~a.~b`, so update
+and remove leave `a.b` alone, and `~(a.b).c` still writes `.c`.
+
 | Syntax | Meaning |
 |--------|---------|
 | `~a.b` | NOP at `a`, then `.b` |
 | `a.~b` | NOP at `b` (dot segment) |
-| `~(name.first)` | NOP on grouped path |
+| `~(name.first)` | NOP on every segment of the group |
 | `[~*]` or `~[*]` | NOP on slot (canonical: `[~stuff]`) |
 | `@~attr` or `~@attr` | NOP on attr |
 

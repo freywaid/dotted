@@ -63,7 +63,6 @@ cdef class TraversalOp(Op):
     cpdef update_items(self, node, settings=*)
     cpdef to_branches(self)
     cpdef leaf_op(self)
-    cpdef excluded_keys(self, node)
 
 
 cdef class MatchOp(Op):

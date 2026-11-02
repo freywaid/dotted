@@ -599,17 +599,96 @@ def test_top_level_negate_wildcard():
 
 def test_top_level_negate_vs_paren_negate_then_traverse():
     """
-    !a.b is !(a.b): negate a, then traverse .b from every other key, which
-    is also what (!a).b does.
+    !a.b is !(a.b), the complement of the whole path a.b; (!a).b negates
+    a, then traverses .b from every other key.
     """
     d = {'a': {'b': 1, 'c': 2}, 'x': 3}
+    assert dotted.get(d, '!a.b') == (2, 3)
+    assert dotted.get(d, '!(a.b)') == (2, 3)
     # x is 3, so there is no .b to traverse into
-    assert dotted.get(d, '!a.b') == ()
     assert dotted.get(d, '(!a).b') == ()
     d = {'a': {'b': 1}, 'c': {'b': 2}, 'x': 3}
-    assert dotted.get(d, '!a.b') == (2,)
-    assert dotted.get(d, '!(a.b)') == (2,)
+    assert dotted.get(d, '!a.b') == ({'b': 2}, 3)
     assert dotted.get(d, '(!a).b') == (2,)
+
+
+def test_negate_whole_path():
+    """
+    !P yields the largest subtrees holding no match of P: a subtree P
+    runs through is split, one P ends at is dropped.
+    """
+    d = {'metadata': {'modfin': {'hello': 'there'}}, 'stuff': 7}
+    assert dotted.pluck(d, '!(metadata.*)') == (('stuff', 7),)
+    assert dotted.pluck(d, '!metadata.*') == (('stuff', 7),)
+    d = {'metadata': {'modfin': {'hello': 'there'}, 'x': 1}, 'stuff': 7}
+    assert dotted.pluck(d, '!(metadata.modfin)') == (('metadata.x', 1), ('stuff', 7))
+
+
+def test_negate_whole_path_unmatched_subtree_is_whole():
+    """
+    A subtree P could run into but does not match in is yielded whole.
+    """
+    d = {'metadata': {}, 'stuff': 7}
+    assert dotted.pluck(d, '!(metadata.*)') == (('metadata', {}), ('stuff', 7))
+
+
+def test_negate_whole_path_through_slots():
+    """
+    The complement splits lists as it does dicts.
+    """
+    d = {'items': [{'a': 1, 'b': 2}, {'a': 3}], 'z': 1}
+    assert dotted.pluck(d, '!items[*].a') == (('items[0].b', 2), ('z', 1))
+    assert dotted.remove(d, '!items[*].a') == {'items': [{'a': 1}, {'a': 3}]}
+
+
+def test_negate_group_counts_only_its_matches():
+    """
+    The complement is of what the group matches: a cut, a first-match or
+    a conjunction that lets a branch through excludes only that.
+    """
+    d = {'a': 1, 'b': 2, 'c': 3}
+    assert dotted.get(d, '!(a#,b)') == (2, 3)
+    assert dotted.get(d, '!(a,b)?') == (2, 3)
+    d = {'a': {'x': 1}, 'c': 3}
+    assert dotted.get(d, '!(a&b)') == ({'x': 1}, 3)
+
+
+def test_update_whole_path_negation():
+    """
+    update writes every subtree of the complement.
+    """
+    d = {'metadata': {'modfin': {'hello': 'there'}, 'x': 1}, 'stuff': 7}
+    r = dotted.update(d, '!(metadata.modfin)', 0)
+    assert r == {'metadata': {'modfin': {'hello': 'there'}, 'x': 0}, 'stuff': 0}
+
+
+def test_remove_whole_path_negation():
+    """
+    remove keeps only P and the containers on the way to it.
+    """
+    d = {'metadata': {'modfin': {'hello': 'there'}, 'x': 1}, 'stuff': 7}
+    r = dotted.remove(d, '!(metadata.modfin)')
+    assert r == {'metadata': {'modfin': {'hello': 'there'}}}
+
+
+def test_remove_whole_path_negation_with_value():
+    """
+    remove with a value removes only the complement's values equal to it.
+    """
+    d = {'a': {'x': 1, 'y': 2}, 'c': 2, 'e': 3}
+    assert dotted.remove(d, '!(a.x)', 2) == {'a': {'x': 1}, 'e': 3}
+
+
+def test_match_whole_path_negation():
+    """
+    A path matches !P when it leaves P at some segment: the subtree ends
+    there and the rest of the pattern continues from it.
+    """
+    assert dotted.match('!(a.x)', 'a.y', partial=False) == 'a.y'
+    assert dotted.match('!(a.x)', 'c', partial=False) == 'c'
+    assert dotted.match('!(a.x)', 'a.x') is None
+    assert dotted.match('!(a.x)', 'a.x.z') is None
+    assert dotted.match('(!a).x', 'b.x', partial=False) == 'b.x'
 
 
 # =============================================================================

@@ -3,6 +3,30 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Changed (breaking)
+- `!` negates the whole path: `!P` yields the largest subtrees that
+  hold no match of `P`. On `{'metadata': {'modfin': {...}}, 'stuff': 7}`,
+  `!(metadata.*)` is `stuff`, where it was nothing; `!(a.x)` splits `a`
+  and yields its other keys. `!a.b` is `!(a.b)`, so it no longer negates
+  `a` and continues into `b` — that reading is written `(!a).b`.
+- The complement is of what `P` actually matches, so `!(a#,b)`,
+  `!(a,b)?` and `!(a&b)` exclude only the branches the cut, first-match
+  or conjunction lets through.
+- A guard, filter, type or transform after a negation applies to what
+  it yields: `!a.b=5` is `(!a.b)=5`, where it was `(!a).(b=5)`.
+- `update` and `remove` through `!P` write each subtree of the
+  complement; `remove(obj, '!P')` keeps `P` and the containers on the way
+  to it, and `remove(obj, '!P', val)` removes only values equal to `val`.
+
+### Fixed
+- `~` on a group applies to every segment in it and to nothing after it.
+  `remove` through `~(a.b)` removed `a.b`; it now leaves it, as `update`
+  does. `update` through `~(a.b).c` did not write `.c`; it now does, as
+  `~a.b.c` does. A soft-cut branch under `~` is held back on `remove` as
+  on `update`.
+
 ## [0.52.0]
 
 ### Added

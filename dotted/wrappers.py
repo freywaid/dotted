@@ -169,10 +169,24 @@ class NopWrap(Wrap):
             return self
         return NopWrap(new_inner)
 
+    def _group(self):
+        """
+        The group this ~ wraps with a ~ on each of its segments, or None
+        when it wraps a single op.
+        """
+        nop_segments = getattr(self.inner, 'nop_segments', None)
+        return nop_segments() if nop_segments is not None else None
+
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        group = self._group()
+        if group is not None:
+            return group.do_update(ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
         return self.inner.do_update(ops, node, val, has_defaults, _path, nop=True, nop_from_unwrap=True, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        group = self._group()
+        if group is not None:
+            return group.do_remove(ops, node, val, nop, settings=settings)
         return self.inner.do_remove(ops, node, val, nop=True, settings=settings)
 
 
@@ -318,6 +332,15 @@ class TransformWrap(Wrap):
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
         return self.inner.do_remove(ops, node, val, nop, settings=settings)
+
+
+def _both(test, other):
+    """
+    A one-argument test that passes when test and other (if any) do.
+    """
+    if other is None:
+        return test
+    return lambda v: test(v) and other(v)
 
 
 def _guard_repr(guard):
@@ -532,6 +555,22 @@ class ValueGuard(Wrap):
         """
         return functools.partial(self._guard_matches, settings=settings)
 
+    def _collect_matches(self, node, paths, prefix=(), settings=base.SETTINGS):
+        """
+        The inner op's matches at any depth that pass the guard.
+        """
+        return [(cp, v, terminal) for cp, v, terminal in self.inner._collect_matches(
+            node, paths, prefix=prefix, settings=settings) if self._guard_matches(v, settings)]
+
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, guard=None, settings=base.SETTINGS, nop_from_unwrap=False):
+        return self.inner._update_recursive(
+            ops, node, val, has_defaults, _path, self._nop(nop), guard=_both(self._guard(settings), guard), settings=settings,
+            nop_from_unwrap=nop_from_unwrap)
+
+    def _remove_recursive(self, ops, node, val, nop, guard=None, settings=base.SETTINGS):
+        return self.inner._remove_recursive(
+            ops, node, val, self._nop(nop), guard=_both(self._guard(settings), guard), settings=settings)
+
     def _nop(self, nop):
         """
         True if this guard must not mutate: a ~ outside it (nop) or one
@@ -717,16 +756,24 @@ class FilterWrap(Wrap):
             return d
         return d
 
+    def is_recursive(self):
+        return self.inner.is_recursive()
+
     def items(self, node, settings=base.SETTINGS):
         """
         Apply filters to the inner items stream, preserving stream
         semantics (e.g. first-match filters only yield the first hit).
         """
         pairs = list(self.inner.items(node, settings=settings))
-        below = settings.below(node)
+        return iter(self._passing(pairs, settings.below(node)))
+
+    def _passing(self, pairs, settings):
+        """
+        The (x, value) pairs whose values pass the filters, in order.
+        """
         for f in self.filters:
             vals = [v for _, v in pairs]
-            filtered_vals = list(f.filtered(iter(vals), below))
+            filtered_vals = list(f.filtered(iter(vals), settings))
             # Build a set of object ids that survived filtering.
             # Use a counter to handle duplicate objects correctly.
             surviving = {}
@@ -740,7 +787,7 @@ class FilterWrap(Wrap):
                     new_pairs.append((k, v))
                     surviving[vid] -= 1
             pairs = new_pairs
-        return iter(pairs)
+        return pairs
 
     def values(self, node, settings=base.SETTINGS):
         return (v for _, v in self.items(node, settings=settings))
@@ -766,10 +813,38 @@ class FilterWrap(Wrap):
                 node = self.inner.pop(node, k)
         return node
 
+    def _collect_matches(self, node, paths, prefix=(), settings=base.SETTINGS):
+        """
+        The inner op's matches at any depth that pass the filters.
+        """
+        pairs = [((cp, terminal), v) for cp, v, terminal in self.inner._collect_matches(
+            node, paths, prefix=prefix, settings=settings)]
+        return [(cp, v, terminal) for (cp, terminal), v in self._passing(pairs, settings)]
+
+    def _guard(self, settings):
+        """
+        The filters as the one-argument callback the recursive update and
+        remove take.
+        """
+        return lambda v: bool(self._passing([(None, v)], settings))
+
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, guard=None, settings=base.SETTINGS, nop_from_unwrap=False):
+        return self.inner._update_recursive(
+            ops, node, val, has_defaults, _path, nop, guard=_both(self._guard(settings), guard), settings=settings,
+            nop_from_unwrap=nop_from_unwrap)
+
+    def _remove_recursive(self, ops, node, val, nop, guard=None, settings=base.SETTINGS):
+        return self.inner._remove_recursive(ops, node, val, nop, guard=_both(self._guard(settings), guard), settings=settings)
+
     def push_children(self, stack, frame, paths):
         """
         Push only children that pass the filter.
         """
+        if self.inner.is_recursive():
+            matches = self._collect_matches(frame.node, paths, prefix=frame.prefix, settings=frame.settings)
+            for cp, v, terminal in reversed(matches):
+                stack.push(base.Frame(() if terminal else frame.ops, v, cp, settings=frame.settings))
+            return ()
         children = list(self.items(frame.node, settings=frame.settings))
         for k, v in reversed(children):
             cp = frame.prefix + (self.inner.concrete(k),) if paths else frame.prefix
@@ -790,10 +865,14 @@ class FilterWrap(Wrap):
         return FilterWrap(new_inner, new_filters)
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        if self.inner.is_recursive():
+            return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings, nop_from_unwrap=nop_from_unwrap)
         return access.BaseOp.do_update(
             self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=nop_from_unwrap, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
+        if self.inner.is_recursive():
+            return self._remove_recursive(ops, node, val, nop, settings=settings)
         return access.BaseOp.do_remove(self, ops, node, val, nop, settings=settings)
 
     def match(self, op, specials=False):

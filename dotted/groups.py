@@ -168,6 +168,16 @@ class OpGroup(base.TraversalOp):
     def to_opgroup(self, cut_after=None):
         return self
 
+    def nop_segments(self):
+        """
+        This group with a ~ on every op of every branch, what ~ on the
+        group means: ~(a.b) is (~a.~b), and the ops after the group are
+        not held back.
+        """
+        return type(self)(*(
+            item if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) else tuple(wrappers.NopWrap(op) for op in item)
+            for item in self.branches))
+
     def operator(self, top=False):
         return self._render(top)
 
@@ -319,16 +329,6 @@ class OpGroupOr(OpGroup):
                 return branch[0].leaf_op()
         return self
 
-    def excluded_keys(self, node):
-        """
-        Union of excluded keys across all non-cut branches.
-        """
-        excluded = set()
-        for branch in base.branches_only(self.branches):
-            if branch:
-                excluded.update(branch[0].excluded_keys(node))
-        return excluded
-
     def _render(self, top=True):
         parts = []
         for item in self.branches:
@@ -455,8 +455,10 @@ class OpGroupOr(OpGroup):
             if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
-                for path in paths:
-                    node = engine.removes(list(path), node, val, settings=settings)
+                # the walked paths lose their ~, so a branch with one is held back whole, as in do_update
+                if not (nop or any(isinstance(op, wrappers.NopWrap) for op in item)):
+                    for path in paths:
+                        node = engine.removes(list(path), node, val, settings=settings)
             else:
                 node = engine.removes(branch_ops, node, val, settings=settings)
             if marker is base.BRANCH_CUT:
@@ -485,16 +487,6 @@ class OpGroupFirst(OpGroup):
             if branch:
                 return branch[0].leaf_op()
         return self
-
-    def excluded_keys(self, node):
-        """
-        Union of excluded keys across all non-cut branches.
-        """
-        excluded = set()
-        for branch in base.branches_only(self.branches):
-            if branch:
-                excluded.update(branch[0].excluded_keys(node))
-        return excluded
 
     def _render(self, top=True):
         branch_strs = [''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(b)) for b in base.branches_only(self.branches)]
@@ -555,16 +547,6 @@ class OpGroupAnd(OpGroup):
         if self.branches:
             return self.branches[0][0].leaf_op()
         return self
-
-    def excluded_keys(self, node):
-        """
-        Union of excluded keys across all branches of the conjunction.
-        """
-        excluded = set()
-        for branch in self.branches:
-            if branch:
-                excluded.update(branch[0].excluded_keys(node))
-        return excluded
 
     def _render(self, top=True):
         branch_strs = []
@@ -644,14 +626,22 @@ class OpGroupAnd(OpGroup):
 
 class OpGroupNot(OpGroup):
     """
-    Negation of operation sequences - returns values from paths NOT matching the inner pattern.
+    Negation of a path - yields what the inner path does NOT reach.
 
-    This enables syntax like:
-        a(!.b)       - from a, get all keys except b
-        a(!(.b,.c))  - from a, get all keys except b and c
+    !P is the complement of the whole path P: the largest subtrees that
+    hold no match of P. So on {'a': {'x': 1, 'y': 2}, 'c': 3}:
+        !a           - c
+        !(a.x)       - a.y and c; a itself holds a match, so it is split
+        !(a.*)       - c; everything in a is matched
+        a(!.x)       - from a, every key but x
 
-    Works by using the inner op's items(filtered=False) to enumerate all items via the
-    proper data-access layer, then excluding keys that match the inner pattern.
+    The complement is taken from what P actually matches, so a cut, a
+    first-match or a conjunction in P counts only the matches it lets
+    through. (!a).b is the old reading: every key but a, then .b.
+
+    Its matches lie at any depth, so a guard, filter or type after it
+    reaches them as it does those of **: through _collect_matches,
+    _update_recursive and _remove_recursive.
 
     TODO: `!*` always evaluates to empty — the parser should recognize this and emit
     something that evaluates to empty directly, rather than going through negation.
@@ -661,6 +651,19 @@ class OpGroupNot(OpGroup):
         # For negation, we have a single inner expression to negate
         self.inner = self.branches[0] if self.branches else ()
 
+    def is_recursive(self):
+        """
+        True: the complement's matches lie at any depth.
+        """
+        return True
+
+    def nop_segments(self):
+        """
+        None: a ~ on a negation holds back the complement's writes as
+        they are made, in _update_recursive and _remove_recursive.
+        """
+        return None
+
     def leaf_op(self):
         """
         Recurse into the inner pattern.
@@ -669,14 +672,6 @@ class OpGroupNot(OpGroup):
             return self.inner[0].leaf_op()
         return self
 
-    def excluded_keys(self, node):
-        """
-        Delegate to the inner pattern.
-        """
-        if self.inner:
-            return self.inner[0].excluded_keys(node)
-        return set()
-
     def _render(self, top=True):
         inner_str = ''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(self.inner))
         return f'(!{inner_str})'
@@ -684,45 +679,77 @@ class OpGroupNot(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
-    def _not_items(self, node, settings=base.SETTINGS):
+    def _matched(self, node, settings):
         """
-        Yield (key, value) pairs for keys NOT excluded by the inner pattern.
+        The paths, relative to node, of the inner pattern's matches, up to
+        a cut, each segment unwrapped to its access op.
+        """
+        out = []
+        for path, _ in engine.walk(self.inner, node, True, settings=settings):
+            if path is base.CUT_SENTINEL:
+                break
+            out.append(tuple(seg.most_inner for seg in path))
+        return out
 
-        Uses items(filtered=False) on the leaf op to enumerate all items via the
-        proper data-access layer, then subtracts keys matched by the inner pattern.
+    def _complement(self, node, settings):
         """
-        inner = self.inner
-        if not inner:
+        Yield (path, value, settings) for each largest subtree of node that
+        holds no match of the inner pattern; path is relative to node.
+        """
+        if not self.inner:
             return
-        first_op = inner[0]
-        leaf = first_op.leaf_op()
-        excluded = first_op.excluded_keys(node)
-        for k, v in leaf.items(node, filtered=False, settings=settings):
-            if k not in excluded:
-                yield (k, v)
+        yield from self._split(node, self._matched(node, settings), self.inner[0].leaf_op(), (), settings)
+
+    def _split(self, node, matched, acc, prefix, settings):
+        """
+        The children of node, enumerated by acc, less the matched paths:
+        a child no path reaches is yielded whole, one a path ends at is
+        dropped, and one a path runs through is split in turn.
+        """
+        below = settings.below(node)
+        for k, v in acc.items(node, filtered=False, settings=settings):
+            seg = acc.concrete(k)
+            rest = [p[1:] for p in matched if p[0] == seg]
+            if not rest:
+                yield prefix + (seg,), v, below
+                continue
+            if any(not p for p in rest):
+                continue
+            yield from self._split(v, rest, rest[0][0], prefix + (seg,), below)
+
+    def _collect_matches(self, node, paths, prefix=(), settings=base.SETTINGS):
+        """
+        Yield (prefix, value, terminal) for each subtree of the complement,
+        as Recursive does for a guard wrapping it.
+        """
+        for cp, v, _ in self._complement(node, settings):
+            yield (prefix + cp if paths else prefix), v, False
 
     def push_children(self, stack, frame, paths):
-        inner = self.inner
-        if not inner:
-            return ()
-        leaf = inner[0].leaf_op()
-        # the rest of the negated branch continues from each complement item
-        ops = tuple(inner[1:]) + tuple(frame.ops)
-        below = frame.settings.below(frame.node)
-        children = list(self._not_items(frame.node, settings=frame.settings))
-        for k, v in reversed(children):
-            cp = frame.prefix + (leaf.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(ops, v, cp, settings=below))
+        found = list(self._complement(frame.node, frame.settings))
+        for cp, v, below in reversed(found):
+            stack.push(base.Frame(frame.ops, v, frame.prefix + cp if paths else frame.prefix, settings=below))
         return ()
 
-    # Data access for a guard, filter or transform wrapping a negation,
-    # (!a)=5: the complement's items through the negated op's leaf.
+    # Data access for a filter or transform wrapping a negation: the
+    # complement's items one level down.
 
     def _leaf(self):
         """
         The data-access op of the negated branch.
         """
         return self.inner[0].leaf_op()
+
+    def _not_items(self, node, settings=base.SETTINGS):
+        """
+        Yield (key, value) for each subtree of the complement that is a
+        child of node.
+        """
+        children = [cp[0] for cp, _, _ in self._complement(node, settings) if len(cp) == 1]
+        leaf = self._leaf()
+        for k, v in leaf.items(node, filtered=False, settings=settings):
+            if leaf.concrete(k) in children:
+                yield k, v
 
     def items(self, node, settings=base.SETTINGS, filtered=True):
         if not filtered:
@@ -736,25 +763,19 @@ class OpGroupNot(OpGroup):
         return (v for _, v in self._not_items(node, settings=settings))
 
     def is_empty(self, node):
-        return not any(True for _ in self._not_items(node))
+        return not any(True for _ in self._complement(node, base.SETTINGS))
 
     def update(self, node, key, val):
         return self._leaf().update(node, key, val)
 
     def upsert(self, node, val):
-        for k in list(self.keys(node)):
-            node = self.update(node, k, val)
-        return node
+        return self._update_recursive((), node, val, False, [], False)
 
     def pop(self, node, key):
         return self._leaf().pop(node, key)
 
     def remove(self, node, val, settings=base.SETTINGS):
-        leaf = self._leaf()
-        for k, v in reversed(list(self._not_items(node, settings=settings))):
-            if val is base.ANY or v == val:
-                node = leaf.pop(node, k)
-        return node
+        return self._remove_recursive((), node, val, False, settings=settings)
 
     def concrete(self, val):
         return self._leaf().concrete(val)
@@ -764,22 +785,20 @@ class OpGroupNot(OpGroup):
 
     def do_match(self, rest_pats, path_ops, partial):
         """
-        Match one path segment NOT matched by the inner pattern's first op,
-        then continue with the rest of the inner branch and remaining ops.
+        Match the segments of one subtree of the complement: they follow
+        the inner branch op by op until one does not match, and that one
+        ends the subtree; then continue with the remaining ops. A path
+        the whole branch matches is in the negated pattern, not out of it.
         """
         inner = self.inner
-        if not inner:
-            return None
-        if not path_ops:
-            return None
-        kop = path_ops[0]
-        if base.match_ops([inner[0]], [kop], False) is not None:
-            return None
-        rest = base.match_ops(list(inner[1:]) + list(rest_pats), path_ops[1:], partial)
-        if rest is None:
-            return None
-        seg_val = getattr(getattr(kop, 'op', kop), 'value', kop)
-        return [(seg_val, True)] + rest
+        for i, kop in enumerate(path_ops[:len(inner)]):
+            if base.match_ops([inner[i]], [kop], False) is not None:
+                continue
+            rest = base.match_ops(rest_pats, path_ops[i + 1:], partial)
+            if rest is None:
+                return None
+            return [(getattr(getattr(seg, 'op', seg), 'value', seg), True) for seg in path_ops[:i + 1]] + rest
+        return None
 
     def do_match_path(self, pats, rest_path, partial):
         """
@@ -814,32 +833,40 @@ class OpGroupNot(OpGroup):
         """
         return isinstance(matcher, matchers.Wildcard)
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
-        inner = self.inner
-        if not inner:
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, guard=None, settings=base.SETTINGS, nop_from_unwrap=False):
+        """
+        Write each subtree of the complement that passes guard: val at a
+        leaf, else through the ops after the negation.
+        """
+        if not ops and nop:
             return node
-        leaf = inner[0].leaf_op()
-        remaining_ops = list(inner[1:]) + list(ops)
-        for k, v in self._not_items(node, settings=settings):
-            if remaining_ops:
-                node = leaf.update(node, k, engine.updates(remaining_ops, v, val, has_defaults, _path + [(leaf, k)], nop, settings=settings))
-            else:
-                node = leaf.update(node, k, val)
+        # a ~ on this op holds back only this op, not the ops after it
+        pass_nop = nop and not nop_from_unwrap
+        for cp, v, _ in list(self._complement(node, settings)):
+            if guard and not guard(v):
+                continue
+            node = engine.updates(cp + tuple(ops), node, val, has_defaults, _path, pass_nop, settings=settings)
+        return node
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings, nop_from_unwrap=nop_from_unwrap)
+
+    def _remove_recursive(self, ops, node, val, nop, guard=None, settings=base.SETTINGS):
+        """
+        Remove each subtree of the complement that passes guard (and
+        equals val), or remove through the ops after the negation; last
+        first, so a removal does not shift the slots still to come.
+        """
+        if not ops and nop:
+            return node
+        for cp, v, _ in reversed(list(self._complement(node, settings))):
+            if guard and not guard(v):
+                continue
+            node = engine.removes(cp + tuple(ops), node, val, nop=False, settings=settings)
         return node
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
-        inner = self.inner
-        if not inner:
-            return node
-        leaf = inner[0].leaf_op()
-        remaining_ops = list(inner[1:]) + list(ops)
-        items = list(self._not_items(node, settings=settings))
-        for k, v in reversed(items):
-            if remaining_ops:
-                node = leaf.update(node, k, engine.removes(remaining_ops, v, val, settings=settings))
-            else:
-                node = leaf.pop(node, k)
-        return node
+        return self._remove_recursive(ops, node, val, nop, settings=settings)
 
 
 # =============================================================================

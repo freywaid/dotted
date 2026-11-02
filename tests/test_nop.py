@@ -297,3 +297,45 @@ def test_nop_recursive_subpath():
     data = {'a': {'a': {'x': 1}, 'x': 2}}
     r = dotted.update(copy.deepcopy(data), '~*a.x', 9)
     assert r == {'a': {'a': {'x': 9}, 'x': 9}}
+
+
+def test_nop_group_covers_its_segments():
+    """
+    ~(a.b) is ~ on each segment of the group: neither update nor remove
+    touches a.b.
+    """
+    data = {'a': {'b': {'c': 1}}, 'x': 2}
+    assert dotted.update(copy.deepcopy(data), '~(a.b)', 9) == data
+    assert dotted.remove(copy.deepcopy(data), '~(a.b)') == data
+    assert dotted.update(copy.deepcopy(data), '~(a.b,x)', 9) == data
+    assert dotted.remove(copy.deepcopy(data), '~(a.b,x)') == data
+
+
+def test_nop_group_does_not_hold_back_what_follows():
+    """
+    ~(a.b).c holds back only a and b, as ~a.b.c holds back only a: .c is
+    updated and removed.
+    """
+    data = {'a': {'b': {'c': 1}}}
+    assert dotted.update(copy.deepcopy(data), '~(a.b).c', 9) == {'a': {'b': {'c': 9}}}
+    assert dotted.remove(copy.deepcopy(data), '~(a.b).c') == {'a': {'b': {}}}
+    assert dotted.update(copy.deepcopy(data), '~a.b.c', 9) == {'a': {'b': {'c': 9}}}
+
+
+def test_nop_group_does_not_create():
+    """
+    A segment under ~ is not created, in a group as on its own.
+    """
+    assert dotted.update({}, '~(a).b', 1) == {}
+    assert dotted.update({'a': {}}, '~(a).b', 1) == {'a': {'b': 1}}
+
+
+def test_nop_soft_cut_remove_matches_update():
+    """
+    A soft-cut branch under ~ is held back on remove as on update.
+    """
+    data = {'a': {'b': 1}, 'x': 2}
+    assert dotted.update(copy.deepcopy(data), '~(a.b##,x)', 9) == data
+    assert dotted.remove(copy.deepcopy(data), '~(a.b##,x)') == data
+    assert dotted.update(copy.deepcopy(data), '(a.~b##,x)', 9) == {'a': {'b': 1}, 'x': 9}
+    assert dotted.remove(copy.deepcopy(data), '(a.~b##,x)') == {'a': {'b': 1}}

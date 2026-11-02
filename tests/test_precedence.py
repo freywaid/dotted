@@ -125,14 +125,32 @@ def test_filter_and_transform_after_negation():
     assert dotted.get({'a': 1, 'b': '2'}, '!a|int') == (2,)
 
 
-def test_negation_continues_into_the_rest_of_the_path():
+def test_negation_takes_the_whole_path():
     """
-    !a.b negates a and continues into b from every other key.
+    !a.b negates the whole path a.b; (!a).b negates a and continues into
+    b from every other key.
     """
     d = {'a': {'b': 1}, 'c': {'b': 2}, 'x': 3}
-    assert dotted.get(d, '!a.b') == (2,)
-    assert dotted.get(d, '!a.b=2') == (2,)
-    assert dotted.get(d, '!a.b&x') == (2, 3)
+    assert dotted.get(d, '!a.b') == ({'b': 2}, 3)
+    assert dotted.get(d, '(!a).b') == (2,)
+    assert dotted.get(d, '(!a).b=2') == (2,)
+
+
+def test_postfix_after_negation_applies_to_what_it_yields():
+    """
+    A guard, filter, type or transform after !a.b applies to the
+    complement of a.b, at whatever depth its subtrees lie.
+    """
+    assert parse('!a.x=2').assemble() == '(!a.x)=2'
+    d = {'a': {'x': 1, 'y': 2}, 'c': 2, 'e': 3}
+    assert dotted.get(d, '!a.x=2') == (2, 2)
+    assert dotted.get(d, '!a.x:int') == (2, 2, 3)
+    assert dotted.update(d, '!a.x=2', 0) == {'a': {'x': 1, 'y': 0}, 'c': 0, 'e': 3}
+    d = {'a': {'x': 1, 'y': 2}, 'c': 2, 'e': 3}
+    assert dotted.remove(d, '!a.x=2') == {'a': {'x': 1}, 'e': 3}
+    d = {'a': {'x': 1, 'y': {'k': 1}}, 'c': {'k': 2}}
+    assert dotted.get(d, '!a.x&k=1') == ({'k': 1},)
+    assert dotted.get({'a': {'x': 1, 'y': '2'}, 'c': '3'}, '!a.x|int') == (2, 3)
 
 
 def test_negation_binds_above_conjunction():

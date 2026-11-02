@@ -1213,12 +1213,9 @@ def _decorate(op, tr, filters, gxf, pred_op, guard, vxf):
     op with the postfix on it: the type guard, then filters, then the
     guard with its transforms, then the value transforms. A , & or ?
     group gets it on the last op of every branch, through ~ on the group;
-    a negation gets it on the last op of its branch when the branch
-    continues past the negated op, else on the negation itself, so (!a)=5
-    is the non-a values equal to 5.
+    a negation gets it on itself, so (!a.b)=5 is the values of the
+    complement of a.b equal to 5.
     """
-    if isinstance(op, groups.OpGroupNot) and len(op.inner) > 1:
-        return groups.OpGroupNot(op.inner[:-1] + (_decorate(op.inner[-1], tr, filters, gxf, pred_op, guard, vxf),))
     if isinstance(op, groups.OpGroup) and not isinstance(op, groups.OpGroupNot):
         branches = []
         for b in op.branches:

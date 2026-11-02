@@ -430,13 +430,6 @@ class TraversalOp(Op):
         """
         return self
 
-    def excluded_keys(self, node):
-        """
-        Collect the set of keys excluded by a negation pattern's first op.
-        Simple ops return their own keys; groups recurse into branches.
-        """
-        return set(self.keys(node))
-
     def is_template(self):
         """
         True if this op contains unresolved substitution references.
