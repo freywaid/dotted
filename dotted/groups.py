@@ -99,7 +99,17 @@ class OpGroup(base.TraversalOp):
         return self.__class__ == other.__class__ and self.branches == other.branches
 
     def is_pattern(self):
-        return True
+        """
+        True if the group can match more than once: more than one branch,
+        or a branch holding a pattern. (a) and (a.b) are not patterns.
+        """
+        branches = list(base.branches_only(self.branches))
+        if len(branches) != 1:
+            return True
+        for op in branches[0]:
+            if op.is_pattern():
+                return True
+        return False
 
     def is_variadic(self):
         return True
@@ -466,6 +476,22 @@ class OpGroupOr(OpGroup):
         return node
 
 
+class OpGroupTuple(OpGroupOr):
+    """
+    A disjunction written with a trailing comma, (a,): a pattern even
+    with one concrete branch, as (a,) is a tuple in Python where (a) is
+    not.
+    """
+    def is_pattern(self):
+        return True
+
+    def as_attrs(self):
+        return OpGroupTuple(*OpGroupOr.as_attrs(self).branches)
+
+    def _render(self, top=True):
+        return OpGroupOr._render(self, top)[:-1] + ',)'
+
+
 class OpGroupFirst(OpGroup):
     """
     First-match operation group - returns only first matching value across all branches.
@@ -654,6 +680,12 @@ class OpGroupNot(OpGroup):
     def is_recursive(self):
         """
         True: the complement's matches lie at any depth.
+        """
+        return True
+
+    def is_pattern(self):
+        """
+        True: the complement holds any number of subtrees.
         """
         return True
 
@@ -1027,11 +1059,25 @@ def _can_update_conjunctive_branch(branch_ops, node):
         return True
     if not _is_concrete_path(branch_ops):
         return False
-    first_op = branch_ops[0]
-    cur = first_op.inner if isinstance(first_op, wrappers.Wrap) else first_op
-    if isinstance(cur, Key) and getattr(cur, 'filters', ()):
-        return False
-    return True
+    return not _has_filter(branch_ops)
+
+
+def _has_filter(ops):
+    """
+    True if any of ops, or of the ops in a group among them, carries a
+    filter: a path that would have to pass one is not created when missing.
+    """
+    for op in ops:
+        cur = op
+        while isinstance(cur, wrappers.Wrap):
+            if isinstance(cur, wrappers.FilterWrap):
+                return True
+            cur = cur.inner
+        if isinstance(cur, Key) and getattr(cur, 'filters', ()):
+            return True
+        if isinstance(cur, OpGroup) and any(_has_filter(b) for b in base.branches_only(cur.branches)):
+            return True
+    return False
 
 
 def _disjunction_fallback(cur, ops, node, val, has_defaults, _path, nop, settings=base.SETTINGS):

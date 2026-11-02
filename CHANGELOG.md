@@ -5,7 +5,15 @@ the ones listed are omitted — browse git history for earlier entries.
 
 ## [Unreleased]
 
+### Added
+- A trailing comma makes a one-branch group a pattern, as in a Python
+  tuple: `get(d, '(a.b,)')` is `(value,)`.
+
 ### Changed (breaking)
+- A group with one branch and no pattern in it is not a pattern:
+  `(a)`, `(a.b)` and `(a).b` are the same as `a`, `a.b` and `a.b`, so
+  `get` returns the value where it returned a 1-tuple. Groups with more
+  than one branch, a pattern inside, or `!` are patterns as before.
 - `!` negates the whole path: `!P` yields the largest subtrees that
   hold no match of `P`. On `{'metadata': {'modfin': {...}}, 'stuff': 7}`,
   `!(metadata.*)` is `stuff`, where it was nothing; `!(a.x)` splits `a`

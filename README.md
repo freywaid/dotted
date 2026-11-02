@@ -229,6 +229,9 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 ## Breaking Changes
 
 ### Unreleased
+- **A group with one branch and no pattern is not a pattern.** `get(d,
+  '(a.b)')` returns the value, as `get(d, 'a.b')` does, where it returned
+  a 1-tuple. Write `(a.b,)` for the tuple.
 - **`!` negates the whole path.** `!(metadata.*)` yields everything
   outside `metadata.*`, and `!a.b` is the complement of `a.b`; it no
   longer negates `a` and continues into `b`, which is written `(!a).b`.
@@ -2098,7 +2101,9 @@ At top level, bare keys infer `.`, so `(a,b)` is equivalent to `(.a,.b)`:
     (2, 3)
 
 Parentheses are needed to continue after the group (`(a,b).c`) or to
-nest groups inside paths.
+nest groups inside paths. A group with one branch and no pattern in it is
+not a pattern, `(a.b)` is `a.b`; write a trailing comma, `(a.b,)`, for one
+that is (see [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)).
 
 #### Mid-path groups
 
@@ -4092,6 +4097,16 @@ See [Recursive Traversal](#recursive-traversal), [Filters](#filters), and
 
 - Any path segment is a pattern (e.g. wildcard `*`, regex), or
 - The path uses path grouping: disjunction `(a,b)`, conjunction `(a&b)`, or negation `(!a)`.
+
+Parentheses alone do not make a pattern: `(a)` and `(a.b)` are the same as
+`a` and `a.b`. A trailing comma does, as in a Python tuple: `(a,)` yields
+`(value,)`.
+
+    >>> d = {'a': {'b': 1}}
+    >>> dotted.get(d, '(a.b)')
+    1
+    >>> dotted.get(d, '(a.b,)')
+    (1,)
 
 Filters (e.g. `key=value`, `*=None`) can use patterns but do **not** make the path a pattern; only the path segments and path-level operators do. So `name.first&first=None` is non-pattern (single value), while `name.*&first=None` is pattern (tuple), even though both can express "when name.first is None." Value guards (e.g. `name.first=None`) also preserve the pattern/non-pattern status of the underlying path segment.
 

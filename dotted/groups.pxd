@@ -22,6 +22,10 @@ cdef class OpGroupOr(OpGroup):
     cpdef _next_marker(self, i)
 
 
+cdef class OpGroupTuple(OpGroupOr):
+    cpdef is_pattern(self)
+
+
 cdef class OpGroupFirst(OpGroup):
     pass
 
@@ -32,3 +36,5 @@ cdef class OpGroupAnd(OpGroup):
 
 cdef class OpGroupNot(OpGroup):
     cdef public object inner
+
+    cpdef is_pattern(self)

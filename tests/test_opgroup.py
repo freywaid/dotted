@@ -882,3 +882,47 @@ def test_slot_grouping_remove():
     data = {'items': [1, 2, 3]}
     result = dotted.remove(data, 'items[(*)]')
     assert result == {'items': []}
+
+
+def test_single_concrete_group_is_not_a_pattern():
+    """
+    Parentheses alone do not make a pattern: (a.b) is a.b.
+    """
+    d = {'a': {'b': 1}}
+    assert dotted.is_pattern('(a.b)') is False
+    assert dotted.is_pattern('(a).b') is False
+    assert dotted.get(d, '(a.b)') == 1
+    assert dotted.get(d, '(a).b') == 1
+    assert dotted.get(d, 'a(.b)') == 1
+
+
+def test_group_with_a_pattern_or_branches_is_a_pattern():
+    """
+    More than one branch, a pattern inside, or a negation make a pattern.
+    """
+    for path in ('(*)', '(a.*)', '(a,b)', '(a&b)', '(!a)', '!a'):
+        assert dotted.is_pattern(path) is True
+
+
+def test_trailing_comma_makes_a_pattern():
+    """
+    (a,) is a pattern, as (a,) is a tuple in Python.
+    """
+    d = {'a': {'b': 1}}
+    assert dotted.is_pattern('(a.b,)') is True
+    assert dotted.get(d, '(a.b,)') == (1,)
+    assert dotted.get(d, '(a,).b') == (1,)
+    assert dotted.get(d, 'a(.b,)') == (1,)
+    assert dotted.get(d, '(a.b, )') == (1,)
+    assert dotted.update({'a': {'b': 1}}, '(a.b,)', 9) == {'a': {'b': 9}}
+
+
+def test_trailing_comma_assembles():
+    """
+    A one-branch group keeps its trailing comma; with more branches it is
+    dropped, (a,b,) being (a,b).
+    """
+    assert dotted.parse('(a.b,)').assemble() == '(a.b,)'
+    assert dotted.parse('(a,b,)').assemble() == '(a,b)'
+    assert dotted.parse('(a.b,)') != dotted.parse('(a.b)')
+
