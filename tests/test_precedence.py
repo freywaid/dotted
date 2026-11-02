@@ -28,7 +28,7 @@ def test_guard_after_group_distributes():
     d = {'first': 7, 'last': 3}
     assert parse('(first,last)>5').assemble() == '(first>5,last>5)'
     assert parse('(first&last)>5').assemble() == '(first>5&last>5)'
-    assert parse('(first,last)?>5').assemble() == '(first>5,last>5)?'
+    assert parse('(first,last)?>5').assemble() == '(first,last)?>5'
     assert dotted.get(d, '(first,last)>5') == (7,)
     assert dotted.get(d, '(first&last)>5') == ()
     assert dotted.get(d, '(first,last)?>5') == (7,)

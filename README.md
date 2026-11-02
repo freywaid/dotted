@@ -229,6 +229,10 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 ## Breaking Changes
 
 ### Unreleased
+- **A `?` group picks first, then continues.** `(a,b)?.c` is `.c` of the
+  first of `a`, `b`; `(a,b)?=5` is that first match if it equals 5, as
+  `*?=5` is. They were the first of `a.c`, `b.c` and of `a=5`, `b=5`;
+  write those `(a.c,b.c)?` and `((a,b)=5)?`.
 - **A group with one branch and no pattern is not a pattern.** `get(d,
   '(a.b)')` returns the value, as `get(d, 'a.b')` does, where it returned
   a 1-tuple. Write `(a.b,)` for the tuple.
@@ -2220,6 +2224,20 @@ fallback as disjunction—first concrete path (last to first):
     >>> dotted.update({'a': {}}, 'a(.x,.y)?', 99)    # nothing matches → creates last (.y)
     {'a': {'y': 99}}
 
+What follows the `?` acts on the match it picks, as with `*?`: a path
+continues from it, and a guard, filter or transform tests it. To test
+first and then pick, put the guard inside: `((a,b)=5)?`.
+
+    >>> d = {'a': {}, 'b': {'c': 2}}
+    >>> dotted.get(d, '(a,b)?.c')        # picks a, which has no c
+    ()
+    >>> dotted.get(d, '(a.c,b.c)?')      # first that has a c
+    (2,)
+    >>> dotted.get({'a': 6, 'b': 5}, '(a,b)?=5')      # picks a; 6 is not 5
+    ()
+    >>> dotted.get({'a': 6, 'b': 5}, '((a,b)=5)?')    # first equal to 5
+    (5,)
+
 #### Packing
 
 A group yields its matches one by one. A `;` just inside either paren
@@ -2358,8 +2376,10 @@ A guard, filter or transform applies to the whole expression on its left:
 an access path (on its last segment), a `!` expression (on what it
 yields), or a parenthesized group, where it is shorthand for writing it on
 every branch: `(a,b)=5` is `(a=5,b=5)` and `(a,b)|int` is `(a|int,b|int)`,
-which is also how `assemble` writes them. A [packed](#packing) group
-yields one value, so `(a,b;)|sum` applies to that tuple once.
+which is also how `assemble` writes them. After a `?` group it tests the
+match `?` picks, as `*?=5` does: `(a,b)?=5` is the first match, if it
+equals 5. A [packed](#packing) group yields one value, so `(a,b;)|sum`
+applies to that tuple once.
 
     >>> d = {'a': 1, 'b': 2, 'c': 3}
     >>> dotted.get(d, '!a&b,c')       # ((!a)&b), c

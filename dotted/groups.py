@@ -521,39 +521,106 @@ class OpGroupFirst(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
+    def is_recursive(self):
+        """
+        True: the first match lies at whatever depth its branch reaches,
+        so a guard, filter or type after the group reaches it as it does
+        a match of **.
+        """
+        return True
+
+    def _first(self, node, paths, settings):
+        """
+        The branch holding the first match from node and that match as
+        (path, value), path relative to node; None when nothing matches.
+        The match is of the branch alone: what follows the group runs
+        from it, as .c runs from the key *? picks in *?.c.
+        """
+        for branch in base.branches_only(self.branches):
+            if not branch:
+                continue
+            for path, v in engine.walk(branch, node, paths, settings=settings):
+                if path is base.CUT_SENTINEL:
+                    break
+                return branch, path, v
+        return None
+
+    def _collect_matches(self, node, paths, prefix=(), settings=base.SETTINGS):
+        """
+        The first match as (prefix, value, terminal), as Recursive yields
+        its matches for a guard wrapping it.
+        """
+        first = self._first(node, paths, settings)
+        if first is None:
+            return
+        _, path, v = first
+        yield (prefix + path if paths else prefix), v, False
+
     def push_children(self, stack, frame, paths):
         """
-        Try branches in order, return first result found.
+        The first match, with the ops after the group to run from it.
         """
-        for branch in base.branches_only(self.branches):
-            branch_ops = tuple(branch) + tuple(frame.ops)
-            if not branch_ops:
-                continue
-            stack.push_level()
-            stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
-            for pair in engine.process(stack, paths):
-                stack.pop_level()
-                return [pair]
-            stack.pop_level()
+        for cp, v, _ in self._collect_matches(frame.node, paths, prefix=frame.prefix, settings=frame.settings):
+            stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
         return ()
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+    def _branch(self, node, settings):
+        """
+        The branch to write and the value it first matches: the first
+        branch, in order, that appends or matches (its value then None
+        or the match); None when no branch does.
+        """
         for branch in base.branches_only(self.branches):
-            branch_ops = list(branch) + list(ops)
-            if not branch_ops:
+            if not branch:
                 continue
-            if appends(branch) or base.has_any(engine.gets(branch_ops, node, settings=settings)):
-                return engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
-        return _disjunction_fallback(self, ops, node, val, has_defaults, _path, nop, settings=settings)
+            if appends(branch):
+                return branch, None
+            for path, v in engine.walk(branch, node, False, settings=settings):
+                if path is base.CUT_SENTINEL:
+                    break
+                return branch, v
+        return None
+
+    def _update_recursive(self, ops, node, val, has_defaults, _path, nop, guard=None, settings=base.SETTINGS, nop_from_unwrap=False):
+        """
+        Write through the first match's branch, then the ops after the
+        group; with nothing matched and no guard, the disjunction's
+        fallback creates a concrete branch.
+        """
+        if not ops and nop:
+            return node
+        # a ~ on this op holds back only this op, not the ops after it
+        pass_nop = nop and not nop_from_unwrap
+        found = self._branch(node, settings)
+        if found is None:
+            if guard:
+                return node
+            return _disjunction_fallback(self, ops, node, val, has_defaults, _path, pass_nop, settings=settings)
+        branch, v = found
+        if guard and not guard(v):
+            return node
+        return engine.updates(list(branch) + list(ops), node, val, has_defaults, _path, pass_nop, settings=settings)
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        return self._update_recursive(ops, node, val, has_defaults, _path, nop, settings=settings, nop_from_unwrap=nop_from_unwrap)
+
+    def _remove_recursive(self, ops, node, val, nop, guard=None, settings=base.SETTINGS):
+        """
+        Remove through the first match's branch, then the ops after the
+        group.
+        """
+        if not ops and nop:
+            return node
+        first = self._first(node, False, settings)
+        if first is None:
+            return node
+        branch, _, v = first
+        if guard and not guard(v):
+            return node
+        return engine.removes(list(branch) + list(ops), node, val, settings=settings)
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
-        for branch in base.branches_only(self.branches):
-            branch_ops = list(branch) + list(ops)
-            if not branch_ops:
-                continue
-            if base.has_any(engine.gets(branch_ops, node, settings=settings)):
-                return engine.removes(branch_ops, node, val, settings=settings)
-        return node
+        return self._remove_recursive(ops, node, val, nop, settings=settings)
 
 
 class OpGroupAnd(OpGroup):

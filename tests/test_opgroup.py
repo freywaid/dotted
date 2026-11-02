@@ -6,6 +6,7 @@ OpGroup enables syntax like:
     a(.b.c,.d)   - from a, get both a.b.c and a.d
     x(.a,.b,.c)  - from x, get x.a, x.b, and x.c
 """
+import copy
 import pytest
 import dotted
 
@@ -925,4 +926,33 @@ def test_trailing_comma_assembles():
     assert dotted.parse('(a.b,)').assemble() == '(a.b,)'
     assert dotted.parse('(a,b,)').assemble() == '(a,b)'
     assert dotted.parse('(a.b,)') != dotted.parse('(a.b)')
+
+
+def test_first_match_group_continues_from_its_pick():
+    """
+    (a,b)?.c is .c of the first of a, b, as *?.c is .c of the first key.
+    """
+    d = {'a': {}, 'b': {'c': 2}}
+    assert dotted.get(d, '(a,b)?.c') == ()
+    assert dotted.get(d, '*?.c') == ()
+    assert dotted.get(d, '(a.c,b.c)?') == (2,)
+    assert dotted.get({'b': {'c': 2}}, '(a,b)?.c') == (2,)
+    assert dotted.update(copy.deepcopy(d), '(a,b)?.c', 9) == {'a': {'c': 9}, 'b': {'c': 2}}
+
+
+def test_first_match_group_guard_tests_its_pick():
+    """
+    (a,b)?=5 is the first match if it equals 5, as *?=5 and (*)?=5 are.
+    """
+    d = {'a': 6, 'b': 5}
+    assert dotted.get(d, '(a,b)?=5') == ()
+    assert dotted.get(d, '*?=5') == ()
+    assert dotted.get(d, '(*)?=5') == ()
+    assert dotted.get(d, '((a,b)=5)?') == (5,)
+    assert dotted.get({'a': 5, 'b': 6}, '(a,b)?=5') == (5,)
+    assert dotted.update(dict(d), '(a,b)?=5', 0) == d
+    assert dotted.remove(dict(d), '(a,b)?=5') == d
+    assert dotted.update({'a': 5, 'b': 6}, '(a,b)?=5', 0) == {'a': 0, 'b': 6}
+    assert dotted.remove({'a': 5, 'b': 6}, '(a,b)?=5') == {'b': 6}
+    assert dotted.parse('(a,b)?=5').assemble() == '(a,b)?=5'
 

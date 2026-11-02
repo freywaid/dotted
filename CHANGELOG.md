@@ -10,6 +10,12 @@ the ones listed are omitted — browse git history for earlier entries.
   tuple: `get(d, '(a.b,)')` is `(value,)`.
 
 ### Changed (breaking)
+- A `?` group picks its first match, then what follows acts on it, as
+  with `*?`: `(a,b)?.c` is `.c` of the first of `a`, `b`, and
+  `(a,b)?=5` is that match if it equals 5, so `(*)?=5` is `*?=5`. They
+  were the first of `a.c`, `b.c` and of `a=5`, `b=5`; write those
+  `(a.c,b.c)?` and `((a,b)=5)?`. `assemble` keeps the postfix outside
+  the group.
 - A group with one branch and no pattern in it is not a pattern:
   `(a)`, `(a.b)` and `(a).b` are the same as `a`, `a.b` and `a.b`, so
   `get` returns the value where it returned a 1-tuple. Groups with more
