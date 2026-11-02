@@ -228,19 +228,23 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
-### Unreleased
-- **A `?` group picks first, then continues.** `(a,b)?.c` is `.c` of the
-  first of `a`, `b`; `(a,b)?=5` is that first match if it equals 5, as
-  `*?=5` is. They were the first of `a.c`, `b.c` and of `a=5`, `b=5`;
-  write those `(a.c,b.c)?` and `((a,b)=5)?`.
-- **A group with one branch and no pattern is not a pattern.** `get(d,
-  '(a.b)')` returns the value, as `get(d, 'a.b')` does, where it returned
-  a 1-tuple. Write `(a.b,)` for the tuple.
+### v0.53.0
 - **`!` negates the whole path.** `!(metadata.*)` yields everything
   outside `metadata.*`, and `!a.b` is the complement of `a.b`; it no
   longer negates `a` and continues into `b`, which is written `(!a).b`.
   A guard or filter after it applies to what it yields: `!a.b=5` is
   `(!a.b)=5`. See [Negation](#negation-not).
+- **A `?` group picks first, then continues.** `(a,b)?.c` is `.c` of the
+  first of `a`, `b`; `(a,b)?=5` is that first match if it equals 5, as
+  `*?=5` is. They were the first of `a.c`, `b.c` and of `a=5`, `b=5`;
+  write those `(a.c,b.c)?` and `((a,b)=5)?`. See [First match](#first-match).
+- **A group with one branch and no pattern is not a pattern.** `get(d,
+  '(a.b)')` returns the value, as `get(d, 'a.b')` does, where it returned
+  a 1-tuple. Write `(a.b,)` for the tuple.
+- **`~` on a group covers only the group.** `~(a.b)` is `~a.~b`:
+  `update` through `~(a.b).c` writes `.c`, where it wrote nothing, and
+  `remove` through `~(a.b)` leaves `a.b`. See
+  [The NOP `~` operator](#the-nop--operator).
 
 ### v0.50.0
 - **Nothing is read through `[+]` or `[+?]`.** They are the slot past the

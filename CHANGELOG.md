@@ -3,23 +3,9 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
-
-### Added
-- A trailing comma makes a one-branch group a pattern, as in a Python
-  tuple: `get(d, '(a.b,)')` is `(value,)`.
+## [0.53.0]
 
 ### Changed (breaking)
-- A `?` group picks its first match, then what follows acts on it, as
-  with `*?`: `(a,b)?.c` is `.c` of the first of `a`, `b`, and
-  `(a,b)?=5` is that match if it equals 5, so `(*)?=5` is `*?=5`. They
-  were the first of `a.c`, `b.c` and of `a=5`, `b=5`; write those
-  `(a.c,b.c)?` and `((a,b)=5)?`. `assemble` keeps the postfix outside
-  the group.
-- A group with one branch and no pattern in it is not a pattern:
-  `(a)`, `(a.b)` and `(a).b` are the same as `a`, `a.b` and `a.b`, so
-  `get` returns the value where it returned a 1-tuple. Groups with more
-  than one branch, a pattern inside, or `!` are patterns as before.
 - `!` negates the whole path: `!P` yields the largest subtrees that
   hold no match of `P`. On `{'metadata': {'modfin': {...}}, 'stuff': 7}`,
   `!(metadata.*)` is `stuff`, where it was nothing; `!(a.x)` splits `a`
@@ -33,13 +19,30 @@ the ones listed are omitted — browse git history for earlier entries.
 - `update` and `remove` through `!P` write each subtree of the
   complement; `remove(obj, '!P')` keeps `P` and the containers on the way
   to it, and `remove(obj, '!P', val)` removes only values equal to `val`.
+- A `?` group picks its first match, then what follows acts on it, as
+  with `*?`: `(a,b)?.c` is `.c` of the first of `a`, `b`, and
+  `(a,b)?=5` is that match if it equals 5, so `(*)?=5` is `*?=5`. They
+  were the first of `a.c`, `b.c` and of `a=5`, `b=5`; write those
+  `(a.c,b.c)?` and `((a,b)=5)?`. `assemble` keeps the postfix outside
+  the group.
+- A group with one branch and no pattern in it is not a pattern:
+  `(a)`, `(a.b)` and `(a).b` are the same as `a`, `a.b` and `a.b`, so
+  `get` returns the value where it returned a 1-tuple. Groups with more
+  than one branch, a pattern inside, or `!` are patterns as before.
+- `~` on a group applies to every segment in it and to nothing after
+  it. `update` through `~(a.b).c` now writes `.c`, as `~a.b.c` does; it
+  wrote nothing.
+
+### Added
+- A trailing comma makes a one-branch group a pattern, as in a Python
+  tuple: `get(d, '(a.b,)')` is `(value,)`.
 
 ### Fixed
-- `~` on a group applies to every segment in it and to nothing after it.
-  `remove` through `~(a.b)` removed `a.b`; it now leaves it, as `update`
-  does. `update` through `~(a.b).c` did not write `.c`; it now does, as
-  `~a.b.c` does. A soft-cut branch under `~` is held back on `remove` as
-  on `update`.
+- `remove` through `~(a.b)` removed `a.b`; it now leaves it, as `update`
+  does. A soft-cut branch under `~` is held back on `remove` as on
+  `update`.
+- A missing `&` branch with a filter anywhere in it is no longer created
+  on `update`; only a filter on a leading key was checked.
 
 ## [0.52.0]
 
