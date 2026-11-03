@@ -90,6 +90,7 @@ For faster `mutable=False` updates and removes, install the
   - [Wildcards](#wildcards)
   - [Regular expressions](#regular-expressions)
   - [The match-first operator](#the-match-first-operator)
+  - [The aligned operator](#the-aligned-operator)
   - [Slicing vs Patterns](#slicing-vs-patterns)
 - [Substitutions and References](#substitutions-and-references)
   - [Substitution](#substitution)
@@ -1363,6 +1364,49 @@ the first match.
     >>> d = {'hi': {'there': [1, 2, 3]}, 'bye': {'there': [4, 5, 6]}}
     >>> dotted.get(d, '*?.there[2]')
     (3,)
+
+<a id="the-aligned-operator"></a>
+### The aligned operator
+
+A pattern yields only what it finds, so a match the rest of the path finds
+nothing under drops out. Postfix any pattern with a `+` to follow the
+cadence of the input instead: each match yields at least one result, the
+default where the rest of the path finds nothing.
+
+    >>> import dotted
+    >>> data = [{'hello': 'there'}, {}]
+    >>> dotted.get(data, '[*].hello')
+    ('there',)
+    >>> dotted.get(data, '[*+].hello')
+    ('there', None)
+    >>> dotted.get(data, '[*+].hello', default='-')
+    ('there', '-')
+
+A match yields everything the rest of the path finds, or the default once:
+
+    >>> dotted.get([{'tags': [1, 2]}, {'tags': []}, {}], '[*+].tags[*]')
+    (1, 2, None, None)
+
+A guard or filter on the pattern itself decides which items are matches;
+one after it decides what a match yields, and a match that yields nothing,
+missing or rejected, yields the default:
+
+    >>> data = [{'k': 'a', 'n': 1}, {'k': 'a'}, {'k': 'b', 'n': 3}]
+    >>> dotted.get(data, '[*+&k="a"].n')
+    (1, None)
+    >>> dotted.get(data, '[*+].n=1')
+    (1, None, None)
+
+`pluck` and `expand` report a fill at the match's path followed by the rest
+of the path as written, which is not a path that holds the value:
+
+    >>> dotted.pluck([{'tags': [1]}, {}], '[*+].tags[*]')
+    (('[0].tags[0]', 1), ('[1].tags[*]', None))
+
+`*+`, `/regex/+` and the recursive `**+` and `*key+` align the same way.
+Writes already follow the input, so `update` and `remove` treat a `+`
+pattern as the plain one. `sqlize` and `sparkize` translate it with NULL
+as the fill.
 
 <a id="slicing-vs-patterns"></a>
 ### Slicing vs Patterns

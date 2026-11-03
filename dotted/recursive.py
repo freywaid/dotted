@@ -487,3 +487,18 @@ class RecursiveFirst(Recursive):
             stack.push(base.Frame(ops, v, cp, settings=frame.settings))
             return ()
         return ()
+
+
+class RecursiveAligned(Recursive):
+    """
+    Aligned variant of Recursive -- each match yields at least one result.
+    """
+
+    def __repr__(self):
+        return super().__repr__() + '+'
+
+    def operator(self, top=False):
+        return super().operator(top) + '+'
+
+    def is_aligned(self):
+        return True

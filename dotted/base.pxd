@@ -34,6 +34,7 @@ cdef class Settings:
     cdef public object strict
     cdef public object transforms
     cdef public object resolver
+    cdef public object default
 
     cpdef below(self, node)
 

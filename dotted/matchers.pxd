@@ -59,11 +59,19 @@ cdef class WildcardFirst(Wildcard):
     pass
 
 
+cdef class WildcardAligned(Wildcard):
+    pass
+
+
 cdef class Regex(Pattern):
     pass
 
 
 cdef class RegexFirst(Regex):
+    pass
+
+
+cdef class RegexAligned(Regex):
     pass
 
 

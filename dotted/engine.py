@@ -93,13 +93,14 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, strict=False, settings=None, transforms=True, resolver=None):
+def values(ops, node, strict=False, settings=None, transforms=True, resolver=None, default=None):
     """
     Yield the value of every match, stopping at a cut. The same values as
     iter_until_cut(gets(...)), through one generator. transforms=False
-    skips the ops' transforms (apply_transforms=False).
+    skips the ops' transforms (apply_transforms=False); default is what an
+    aligned (+) match yields when the rest of the path finds nothing.
     """
-    for path, val in walk(ops, node, False, strict, settings, transforms, resolver):
+    for path, val in walk(ops, node, False, strict, settings, transforms, resolver, default):
         if path is base.CUT_SENTINEL:
             return
         yield val
@@ -136,27 +137,57 @@ def advance(frame, stack, paths):
     """
     op = frame.ops[0]
     frame.ops = frame.ops[1:]
+    if op.is_aligned():
+        return aligned(op, stack, frame, paths)
     return op.push_children(stack, frame, paths)
 
 
-def settings_for(ops, node, strict, settings, transforms=True, resolver=None):
+def aligned(op, stack, frame, paths):
+    """
+    The results of an aligned (+) op: each of its matches yields what the
+    rest of the path finds under it or, when that is nothing, the default
+    once, at the match's path followed by the rest of the path as written.
+    """
+    stack.push_level()
+    found = list(op.push_children(stack, frame, paths))
+    matches = []
+    while stack.current:
+        matches.append(stack.pop())
+    stack.pop_level()
+    for match in matches:
+        # processing takes the ops off the frame; the fill's path needs them
+        missing = match.prefix + match.ops if paths else None
+        stack.push_level()
+        stack.push(match)
+        results = list(process(stack, paths))
+        stack.pop_level()
+        found.extend(results)
+        if results and results[-1][0] is base.CUT_SENTINEL:
+            return found
+        if not results:
+            found.append((missing, match.settings.default))
+    return found
+
+
+def settings_for(ops, node, strict, settings, transforms=True, resolver=None, default=None):
     """
     The Settings a traversal of `ops` from `node` runs under: the ones
     passed in when this is a traversal within another, else new ones.
     """
     if settings is not None:
         return settings
-    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms, resolver)
+    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms, resolver, default)
 
 
-def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, resolver=None):
+def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, resolver=None, default=None):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     transforms=False skips the ops' transforms (apply_transforms=False);
-    resolver is the traversal's, else the process default.
+    resolver is the traversal's, else the process default; default is
+    what an aligned (+) match yields when the rest of the path finds nothing.
     """
-    settings = settings_for(ops, node, strict, settings, transforms, resolver)
+    settings = settings_for(ops, node, strict, settings, transforms, resolver, default)
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)

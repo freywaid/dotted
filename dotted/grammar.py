@@ -263,9 +263,11 @@ string = quoted.copy().set_parse_action(matchers.String)
 bytes_literal = (S(L('b')) + quoted).set_parse_action(matchers.Bytes)
 wildcard = pp.Literal('*').set_parse_action(matchers.Wildcard)
 wildcard_first = pp.Literal('*?').set_parse_action(matchers.WildcardFirst)
+wildcard_aligned = pp.Literal('*+').set_parse_action(matchers.WildcardAligned)
 _regex = slash + pp.Regex(r'(\\/|[^/])+') + slash
 regex = _regex.copy().set_parse_action(matchers.Regex)
 regex_first = (_regex + pp.Suppress(pp.Literal('?'))).set_parse_action(matchers.RegexFirst)
+regex_aligned = (_regex + pp.Suppress(pp.Literal('+'))).set_parse_action(matchers.RegexAligned)
 _escaped_dollar = pp.Regex(r'\\\$\${0,2}(\([^)]*\)|[0-9]*)').set_parse_action(
     lambda t: matchers.Word(t[0][1:]))
 # $$(path) runs to the ) that closes it, so the path may hold parentheses
@@ -426,7 +428,7 @@ _slice_start = (_slice_read + _ends) | Lexed('slices', _slice_read, ':]', follow
 slice = pp.Optional(_slice_start) + ':' + pp.Optional(_slice_bound) \
          + pp.Optional(':') + pp.Optional(_slice_bound)
 
-_common_pats = wildcard_first | wildcard | var | regex_first | regex
+_common_pats = wildcard_first | wildcard_aligned | wildcard | var | regex_first | regex_aligned | regex
 _commons = bytes_literal | string | _common_pats | numeric_quoted
 
 
@@ -982,7 +984,7 @@ _rec_depth_stop = colon + (integer | _rec_none)
 _rec_depth_step = colon + (integer | _rec_none)
 _rec_depth = _rec_depth_start + Opt(_rec_depth_stop + Opt(_rec_depth_step))
 
-def _make_recursive(t, first=False):
+def _make_recursive(t, first=False, aligned=False):
     t = list(t)
     inner = t[0]
     rest = t[1:]
@@ -1003,7 +1005,7 @@ def _make_recursive(t, first=False):
         depth_stop = depth_vals[1]
     if len(depth_vals) >= 3:
         depth_step = depth_vals[2]
-    cls = recursive.RecursiveFirst if first else recursive.Recursive
+    cls = recursive.RecursiveFirst if first else recursive.RecursiveAligned if aligned else recursive.Recursive
     # *(expr) form: inner is an OpGroup or TypeRestriction wrapping one
     accessors = None
     if isinstance(inner, (groups.OpGroup, wrappers.TypeRestriction)):
@@ -1087,6 +1089,12 @@ rec_dstar_first = (_dstar_body() + S('?')).set_parse_action(
 rec_pat_first = (_pat_body() + S('?')).set_parse_action(
     lambda t: _make_recursive(t, first=True))
 
+# Aligned: **+, *name+
+rec_dstar_aligned = (_dstar_body() + S('+')).set_parse_action(
+    lambda t: _make_recursive([matchers.Wildcard()] + list(t), aligned=True))
+rec_pat_aligned = (_pat_body() + S('+')).set_parse_action(
+    lambda t: _make_recursive(t, aligned=True))
+
 # Plain: **, *name
 rec_dstar = _dstar_body().set_parse_action(
     lambda t: _make_recursive([matchers.Wildcard()] + list(t)))
@@ -1094,7 +1102,7 @@ rec_pat = _pat_body().set_parse_action(
     lambda t: _make_recursive(t))
 
 recursive_op = (
-    rec_dstar_first | rec_dstar | rec_pat_first | rec_pat)
+    rec_dstar_first | rec_dstar_aligned | rec_dstar | rec_pat_first | rec_pat_aligned | rec_pat)
 
 empty = pp.Empty().set_parse_action(access.Empty)
 

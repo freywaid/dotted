@@ -3,6 +3,20 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `+` after a pattern aligns it to the input: each match yields at least
+  one result, the default where the rest of the path finds nothing.
+  `get([{'hello': 'there'}, {}], '[*+].hello')` is `('there', None)`.
+  Works on `[*+]`, `*+`, `/re/+`, `**+` and `*key+`; `get`, `getter`,
+  `pluck` and `expand` fill, with `pluck` and `expand` reporting the
+  match's path followed by the rest of the path as written. `update` and
+  `remove` treat it as the plain pattern. `sqlize` runs the rest of the
+  path under each match in a `LEFT JOIN LATERAL ... ON TRUE`, and
+  `sparkize` fills each match's empty result with a null, so the fill
+  is NULL there; `where` keeps the rows with a match.
+
 ## [0.53.0]
 
 ### Changed (breaking)

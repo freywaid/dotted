@@ -92,6 +92,11 @@ def _compare(lhs, op_str, value):
 #   ('each', 'array')  — every element of an array
 #   ('each', 'map')    — every value of a map
 #   ('cond', pred_fn)  — keep the node only where pred_fn(node, env)
+#
+# An aligned (+) `each` carries a third item, ('each', kind, 'aligned'):
+# each element yields what the rest of the steps reach, or one null.
+# The conditions straight after an `each` are its op's own guards and
+# filters, so they decide which elements are matches.
 
 def _elements(c, kind):
     """
@@ -127,9 +132,34 @@ def _exists(c, steps, env):
             if not rest:
                 return pred
             return pred & _exists(c, rest, env)
+        if len(step) > 2:
+            return _functions().exists(
+                _elements(c, step[1]), lambda x: _matches(x, rest, env))
         return _functions().exists(
             _elements(c, step[1]), lambda x: _exists(x, rest, env))
     return c.isNotNull()
+
+
+def _matches(c, steps, env):
+    """
+    Boolean Column: the element `c` of an aligned `each` is a match,
+    passing the conditions straight after it.
+    """
+    pred = _functions().lit(True)
+    for step in steps:
+        if step[0] != 'cond':
+            break
+        pred = pred & step[1](c, env)
+    return pred
+
+
+def _filled(found):
+    """
+    The array `found`, or one null where it is empty or null: what an
+    element of an aligned `each` yields.
+    """
+    F = _functions()
+    return F.when(F.size(found) > 0, found).otherwise(F.array(F.lit(None)))
 
 
 def _collect(c, steps, env):
@@ -157,6 +187,9 @@ def _collect(c, steps, env):
             rest = rest[1:]
         if not rest:
             return candidates
+        if len(step) > 2:
+            return F.flatten(
+                F.transform(candidates, lambda x: _filled(_collect(x, rest, env))))
         if all(s[0] == 'get' for s in rest):
             return F.transform(candidates, lambda x: _gets(x, rest, env))
         return F.flatten(
@@ -337,6 +370,8 @@ class PySparkMixin(Translator):
         """
         matcher = op.op
         if isinstance(matcher, matchers.Wildcard):
+            if matcher.is_aligned():
+                return [('each', each_kind, 'aligned')]
             return [('each', each_kind)]
         if isinstance(matcher, matchers.Subst):
             raise TranslationError(

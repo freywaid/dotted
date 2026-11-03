@@ -541,7 +541,7 @@ def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, stric
                 return ops.apply(val, base.Settings(obj, strict, resolver=resolver))
             except base.UnresolvedReference:
                 return default
-    found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms))
+    found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default))
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
@@ -1195,10 +1195,10 @@ def pluck_multi(obj, patterns, default=None, strict=False, bindings=None, resolv
     >>> list(pluck_multi(d, ('hello', 'a.b')))
     [('hello', 7), ('a.b', 'seven')]
     """
-    return ((field, val) for field, _, val in _pluck_written(obj, patterns, strict=strict, resolver=resolver, bindings=bindings))
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, strict=strict, resolver=resolver, bindings=bindings))
 
 
-def _pluck_written(obj, patterns, strict=False, bindings=None, resolver=None):
+def _pluck_written(obj, patterns, default=None, strict=False, bindings=None, resolver=None):
     """
     Yield deduped (field, parsed field, value) triples from obj matching any
     of `patterns`: what pluck_multi yields, plus each field already parsed,
@@ -1207,7 +1207,7 @@ def _pluck_written(obj, patterns, strict=False, bindings=None, resolver=None):
     seen = {}
     for pattern in patterns:
         ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
-        for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
+        for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False, default=default):
             if path is utypes.CUT_SENTINEL:
                 break
             field, parsed = results.Dotted({'ops': path}).written()

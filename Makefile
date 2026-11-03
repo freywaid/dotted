@@ -5,7 +5,7 @@ VENV_BIN := $(VENV)/bin
 # Extra args passed to pytest. e.g.:  make test PYTEST_ARGS=-x
 PYTEST_ARGS ?=
 
-.PHONY: install test test.python test.native test.wheel test.integration test.spark bench bench.python bench.native native native.clean clean
+.PHONY: install test test.python test.native test.wheel test.integration test.sql test.spark bench bench.python bench.native native native.clean clean
 
 # Create the local venv and install dotted (with all optional extras),
 # pytest, and integration-test deps. Other targets depend on this.
@@ -43,9 +43,12 @@ test.wheel: install
 	cd build/wheel && venv/bin/python -c "import dotted; print('engine:', 'native' if dotted.native.active() else 'python', dotted.__file__)"
 	cd build/wheel && venv/bin/pytest $(CURDIR)/tests -q -p no:cacheprovider --import-mode=importlib $(PYTEST_ARGS)
 
-# Integration tests only (requires a live Postgres reachable via
-# DOTTED_TEST_DSN, defaults to postgres://postgres:postgres@localhost:5432/postgres).
-test.integration: install
+# Integration tests only: the sqlize and the sparkize ones.
+test.integration: test.sql test.spark
+
+# sqlize tests against a live Postgres reachable via DOTTED_TEST_DSN,
+# defaults to postgres://postgres:postgres@localhost:5432/postgres.
+test.sql: install
 	$(VENV_BIN)/pytest tests/integration/ $(PYTEST_ARGS)
 
 # sparkize tests against a local SparkSession (needs a JVM). Installs

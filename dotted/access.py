@@ -236,6 +236,9 @@ class AccessOp(SimpleOp):
     def is_pattern(self):
         return self.op.is_pattern()
 
+    def is_aligned(self):
+        return self.op.is_aligned()
+
     def is_template(self):
         """
         True if the inner match op is a substitution.

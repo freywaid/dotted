@@ -22,3 +22,7 @@ cdef class Recursive(BaseOp):
 
 cdef class RecursiveFirst(Recursive):
     pass
+
+
+cdef class RecursiveAligned(Recursive):
+    pass

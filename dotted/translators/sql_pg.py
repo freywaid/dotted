@@ -114,6 +114,23 @@ _PRED_JSONPATH = {
 }
 
 
+def _aligned_segments(ops):
+    """
+    A pattern path's ops split after each aligned (+) op. The first
+    segment's matches are the rows; each later one runs under a match of
+    the one before, and a match it finds nothing under keeps a NULL row.
+    """
+    segments = []
+    start = 0
+    for i, op in enumerate(ops):
+        if op.is_aligned():
+            segments.append(ops[start:i + 1])
+            start = i + 1
+    if start < len(ops):
+        segments.append(ops[start:])
+    return segments
+
+
 # ---- Cast inference for Postgres ------------------------------------
 #
 # Postgres drivers that use server-side prepared statements (asyncpg
@@ -294,12 +311,25 @@ class PostgresMixin(Translator):
         and a select expression that references the lateral's alias.
         The engine picks which to compose — filter-style from `where`
         or extract-style from `lateral` + `select`.
+
+        An aligned (+) op splits the path: the rest runs under each of
+        its matches in a `LEFT JOIN LATERAL ... ON TRUE`, so a match the
+        rest finds nothing under yields one NULL.
         """
+        first, *rest = _aligned_segments(ops)
         jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
-            col_ident, prefix, ops)
+            col_ident, prefix, first)
         where = self._pattern_where(col_ident, jsonpath_sql, jvars)
         alias = self._state.alloc_pattern_alias()
         lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
+        for segment in rest:
+            source = f'{alias}.value'
+            jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
+                source, (), segment)
+            alias = self._state.alloc_pattern_alias()
+            lateral += (f' LEFT JOIN '
+                        f'{self._pattern_lateral(source, jsonpath_sql, jvars, alias)}'
+                        f' ON TRUE')
         select = f'{alias}.value'
         return {'select': select, 'where': where, 'lateral': lateral}
 

@@ -119,6 +119,13 @@ class Op:
         return False
     def is_slice(self):
         return False
+    def is_aligned(self):
+        """
+        True if this op is an aligned (+) pattern: each of its matches
+        yields at least one result, the default where the rest of the
+        path finds nothing.
+        """
+        return False
     def is_variadic(self):
         """
         True if this op can consume a variable number of path segments when
@@ -292,14 +299,15 @@ class Settings:
     and the resolver references go to. Made once by the engine and passed
     down every call; see SETTINGS for calls made without one.
     """
-    __slots__ = ('root', 'parents', 'strict', 'transforms', 'resolver')
+    __slots__ = ('root', 'parents', 'strict', 'transforms', 'resolver', 'default')
 
-    def __init__(self, root, strict=False, parents=None, transforms=True, resolver=None):
+    def __init__(self, root, strict=False, parents=None, transforms=True, resolver=None, default=None):
         self.root = root
         self.parents = parents
         self.strict = strict
         self.transforms = transforms  # False: apply_transforms=False, ops' transforms are skipped
         self.resolver = resolver  # None: the process default, RESOLVER, read when used
+        self.default = default  # what an aligned (+) match yields when the rest of the path finds nothing
 
     def below(self, node):
         """
@@ -308,7 +316,7 @@ class Settings:
         """
         if self.parents is None:
             return self
-        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver)
+        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver, self.default)
 
     def resolving(self):
         """

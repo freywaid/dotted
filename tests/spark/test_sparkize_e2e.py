@@ -155,6 +155,8 @@ def test_map_wildcard_select(df):
     ('data.users[active = True].age >= 50', [5]),
     ('data.users[age >= 30, active = False]', [1, 2, 3, 5]),
     ('data.users[*]', [1, 2, 3, 4, 5]),
+    ('data.users[*+].age >= 40', [1, 2, 3, 4, 5]),
+    ('data.users[*+&active=True].age', [1, 2, 4, 5]),
 ])
 def test_pattern_where(df, path, expected):
     """
@@ -170,6 +172,10 @@ def test_pattern_where(df, path, expected):
      {1: [25], 2: [35], 3: [], 4: [17], 5: [50, 18], 6: [], 7: []}),
     ('data.users[*].age >= 30',
      {1: [32], 2: [35], 3: [40], 4: [], 5: [50], 6: [], 7: []}),
+    ('data.users[*+].age >= 30',
+     {1: [None, 32], 2: [35], 3: [40], 4: [None], 5: [50, None], 6: [], 7: []}),
+    ('data.users[*+&active=True].age',
+     {1: [25], 2: [35], 3: [], 4: [17], 5: [50, 18], 6: [], 7: []}),
 ])
 def test_pattern_select(df, path, expected):
     """

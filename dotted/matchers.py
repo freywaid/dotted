@@ -352,6 +352,16 @@ class WildcardFirst(Wildcard):
         return iter(() if v is base.marker else (v,))
 
 
+class WildcardAligned(Wildcard):
+    _match_from = ('Const', 'Special', 'WildcardAligned', 'RegexAligned')
+
+    @property
+    def value(self):
+        return '*+'
+    def is_aligned(self):
+        return True
+
+
 class Regex(Pattern):
     _match_from = ('Const', 'Special', 'Regex')
 
@@ -386,6 +396,16 @@ class RegexFirst(Regex):
         iterable = super().matches(vals)
         v = next(iterable, base.marker)
         return iter(() if v is base.marker else (v,))
+
+
+class RegexAligned(Regex):
+    _match_from = ('Const', 'Special', 'RegexAligned')
+
+    @property
+    def value(self):
+        return f'/{self.args[0]}/+'
+    def is_aligned(self):
+        return True
 
 
 class Special(MatchOp):
