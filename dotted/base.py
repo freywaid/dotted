@@ -354,17 +354,62 @@ class UnresolvedReference(KeyError):
 
 class Frame:
     """
-    Stack frame for the traversal engine.
+    Stack frame for the traversal engine. pending holds the transform ops
+    whose transforms node has yet to pass through, innermost first: they
+    run when the frame is popped (settle), so a lazy read transforms each
+    match as it reaches it, not every match an op pushes.
     """
-    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'settings')
+    __slots__ = ('ops', 'node', 'prefix', 'depth', 'seen_paths', 'settings', 'pending')
 
-    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, settings=SETTINGS):
+    def __init__(self, ops, node, prefix, depth=0, seen_paths=None, settings=SETTINGS, pending=()):
         self.ops = ops
         self.node = node
         self.prefix = prefix
         self.depth = depth
         self.seen_paths = seen_paths
         self.settings = settings
+        self.pending = pending
+
+    def settle(self):
+        """
+        Run the pending transforms on node, with its parents as the
+        reference context. False when a reference in one does not
+        resolve: the frame is then dropped, as a value whose reference
+        does not resolve is left out.
+        """
+        node = self.node
+        parents = self.settings.parents or ()
+        try:
+            for op in self.pending:
+                node = op.apply(node, self.settings, parents)
+        except UnresolvedReference:
+            return False
+        self.node = node
+        self.pending = ()
+        return True
+
+
+class FrameSource:
+    """
+    The frames an op finds, drawn one at a time instead of all pushed at
+    once: it sits on the stack in their place, and each time the engine
+    pops it, it goes back under its next frame (engine.process). So **
+    reaches its second match only after the rest of the path has run
+    from its first.
+    """
+    __slots__ = ('frames',)
+
+    def __init__(self, frames):
+        self.frames = frames
+
+
+def frames_of(matches, ops, settings):
+    """
+    A Frame for each (path, value, terminal) match, as a FrameSource
+    draws them: a terminal match takes no further ops.
+    """
+    for cp, v, terminal in matches:
+        yield Frame(() if terminal else ops, v, cp, settings=settings)
 
 
 class DepthStack:

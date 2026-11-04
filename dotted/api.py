@@ -547,6 +547,26 @@ def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, stric
     return found if found else pattern_default
 
 
+def iget(obj, path, default=None, apply_transforms=True, strict=False, bindings=None, resolver=None):
+    """
+    Like get, but as a generator, for a concrete path as for a pattern. A
+    pattern yields each match; a concrete path yields its one value, or
+    default when it is missing. Nothing is read until the first next().
+
+    >>> list(iget([{'a': 1}, {'a': 2}], '[*].a'))
+    [1, 2]
+    >>> list(iget({'a': 1}, 'a'))
+    [1]
+    >>> list(iget({'a': 1}, 'b', default=0))
+    [0]
+    """
+    ops, chain = _get_setup(path, bindings, resolver)
+    if not is_pattern(ops):
+        yield _get_read(obj, ops, chain, default, (), apply_transforms, strict, resolver)
+        return
+    yield from engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default)
+
+
 def getter(path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None, resolver=None):
     """
     A read of path as a callable obj -> value, as get(obj, path, ...)
@@ -1120,18 +1140,24 @@ def assemble(segments):
     return next(assemble_multi((segments,)))
 
 
-def expand_multi(obj, patterns, strict=False, bindings=None, resolver=None):
+def expand_multi(obj, patterns, duplicates=False, strict=False, bindings=None, resolver=None):
     """
-    Yield deduped paths that match any of `patterns` in `obj`.
+    Yield the paths that match any of `patterns` in `obj`, each once
+    unless duplicates=True.
 
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
     >>> list(expand_multi(d, ('hello', '*')))
     ['hello', 'bye', '9', "'9'"]
+    >>> list(expand_multi(d, ('hello', '*'), duplicates=True))
+    ['hello', 'hello', 'bye', '9', "'9'"]
     """
     seen = {}
     for pat in patterns:
         ops = _prepare(parse(pat, bindings=bindings, partial=False, resolver=resolver), resolver)
         paths = (o.assemble() for o in engine.expands(ops, obj, strict=strict, resolver=resolver))
+        if duplicates:
+            yield from paths
+            continue
         for found in paths:
             if found in seen:
                 continue
@@ -1139,9 +1165,20 @@ def expand_multi(obj, patterns, strict=False, bindings=None, resolver=None):
             yield found
 
 
-def expand(obj, pattern, strict=False, bindings=None, resolver=None):
+def iexpand(obj, pattern, duplicates=False, strict=False, bindings=None, resolver=None):
     """
-    Return all paths that match `pattern` in `obj`
+    Like expand, but as a generator.
+
+    >>> list(iexpand({'a': 1, 'b': 2}, '*'))
+    ['a', 'b']
+    """
+    return expand_multi(obj, (pattern,), duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings)
+
+
+def expand(obj, pattern, duplicates=False, strict=False, bindings=None, resolver=None):
+    """
+    Return all paths that match `pattern` in `obj`, each once unless
+    duplicates=True.
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
     >>> expand(d, '*')
     ('hello', 'bye', '9', "'9'")
@@ -1152,7 +1189,7 @@ def expand(obj, pattern, strict=False, bindings=None, resolver=None):
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    return tuple(expand_multi(obj, (pattern,), strict=strict, resolver=resolver, bindings=bindings))
+    return tuple(iexpand(obj, pattern, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
 
 
 def apply_multi(obj, patterns, strict=False, bindings=None, resolver=None):
@@ -1187,21 +1224,24 @@ def apply(obj, pattern, strict=False, bindings=None, resolver=None):
     return apply_multi(obj, (pattern,), strict=strict, resolver=resolver, bindings=bindings)
 
 
-def pluck_multi(obj, patterns, default=None, strict=False, bindings=None, resolver=None):
+def pluck_multi(obj, patterns, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
     """
-    Yield deduped (field, value) pairs from obj matching any of `patterns`.
+    Yield (field, value) pairs from obj matching any of `patterns`, each
+    field once unless duplicates=True.
 
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
     >>> list(pluck_multi(d, ('hello', 'a.b')))
     [('hello', 7), ('a.b', 'seven')]
+    >>> list(pluck_multi(d, ('hello', 'hello'), duplicates=True))
+    [('hello', 7), ('hello', 7)]
     """
-    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, strict=strict, resolver=resolver, bindings=bindings))
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
 
 
-def _pluck_written(obj, patterns, default=None, strict=False, bindings=None, resolver=None):
+def _pluck_written(obj, patterns, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
     """
-    Yield deduped (field, parsed field, value) triples from obj matching any
-    of `patterns`: what pluck_multi yields, plus each field already parsed,
+    Yield (field, parsed field, value) triples from obj matching any of
+    `patterns`: what pluck_multi yields, plus each field already parsed,
     so a caller that needs the field as a path does not parse the string.
     """
     seen = {}
@@ -1211,15 +1251,34 @@ def _pluck_written(obj, patterns, default=None, strict=False, bindings=None, res
             if path is utypes.CUT_SENTINEL:
                 break
             field, parsed = results.Dotted({'ops': path}).written()
+            if duplicates:
+                yield (field, parsed, val)
+                continue
             if field in seen:
                 continue
             seen[field] = None
             yield (field, parsed, val)
 
 
-def pluck(obj, pattern, default=None, strict=False, bindings=None, resolver=None):
+def ipluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
     """
-    Return the concrete field,value pairs from obj given pattern
+    Like pluck, but as a generator, for a concrete path as for a pattern:
+    a concrete path yields its one (field, value) pair, or nothing when it
+    is missing.
+
+    >>> d = {'a': {'b': 1, 'c': 2}}
+    >>> list(ipluck(d, 'a.*'))
+    [('a.b', 1), ('a.c', 2)]
+    >>> list(ipluck(d, 'a.b'))
+    [('a.b', 1)]
+    """
+    return pluck_multi(obj, (pattern,), default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings)
+
+
+def pluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
+    """
+    Return the concrete field,value pairs from obj given pattern, each
+    field once unless duplicates=True.
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
     >>> pluck(d, 'a.*')
     (('a.b', 'seven'), ('a.c', 'nine'))
@@ -1227,7 +1286,7 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None, resolver=None
     ('a.b', 'seven')
     """
     parsed = parse(pattern, resolver=resolver)
-    out = tuple(pluck_multi(obj, (parsed,), default=default, strict=strict, resolver=resolver, bindings=bindings))
+    out = tuple(ipluck(obj, parsed, default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
     if not out:
         return ()
     if is_pattern(parsed):
@@ -1235,32 +1294,9 @@ def pluck(obj, pattern, default=None, strict=False, bindings=None, resolver=None
     return out[0]
 
 
-def walk(obj, pattern, strict=False, bindings=None, resolver=None):
-    """
-    Yield (path_string, value) pairs for all matches of pattern in obj.
-
-    Like pluck but as a lazy generator — no dedup, no materialization.
-    >>> d = {'a': {'b': 1, 'c': 2}}
-    >>> list(walk(d, 'a.*'))
-    [('a.b', 1), ('a.c', 2)]
-    """
-    ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
-    for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
-        if path is utypes.CUT_SENTINEL:
-            break
-        yield results.Dotted({'ops': path}).assemble(), val
-
-
-def walk_multi(obj, patterns, strict=False, bindings=None, resolver=None):
-    """
-    Yield (path_string, value) pairs for all matches of each pattern in obj.
-
-    >>> d = {'a': 1, 'b': {'c': 2}}
-    >>> list(walk_multi(d, ('a', 'b.c')))
-    [('a', 1), ('b.c', 2)]
-    """
-    for pattern in patterns:
-        yield from walk(obj, pattern, strict=strict, resolver=resolver, bindings=bindings)
+# walk is ipluck, and walk_multi pluck_multi, under their older names
+walk = ipluck
+walk_multi = pluck_multi
 
 
 def pack(pathvalues, apply_transforms=True, strict=False, bindings=None, resolver=None):

@@ -229,6 +229,12 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.55.0
+- **`walk` dedups.** It is now `ipluck`, and `walk_multi` is `pluck_multi`,
+  so a path a pattern reaches twice is yielded once, as `pluck` does:
+  `walk({'a': 1, 'b': 2}, '(a,*)')` yields `('a', 1)`, `('b', 2)`. Pass
+  `duplicates=True` for the old behavior. See [Walk](#walk).
+
 ### v0.53.0
 - **`!` negates the whole path.** `!(metadata.*)` yields everything
   outside `metadata.*`, and `!a.b` is the complement of `a.b`; it no
@@ -419,6 +425,17 @@ resolver in force then. It takes `get`'s arguments, the object aside.
     'nested'
     >>> d_of({})
     'none'
+
+`iget` is `get` as a generator. A pattern yields each match as it is found,
+and a concrete path yields its one value, or the default when it is missing,
+so the caller never has to ask which kind of path it holds.
+
+    >>> list(dotted.iget([{'a': 1}, {'a': 2}], '[*].a'))
+    [1, 2]
+    >>> list(dotted.iget({'a': 1}, 'a'))
+    [1]
+    >>> list(dotted.iget({'a': 1}, 'b', default=0))
+    [0]
 
 <a id="update"></a>
 ### Update
@@ -705,6 +722,16 @@ Expand a pattern into all matching paths in an object.
     >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
 
+A path the pattern reaches more than once is given once; pass
+`duplicates=True` to keep each. `iexpand` is `expand` as a generator.
+
+    >>> dotted.expand(d, '(bye,*)')
+    ('bye', 'hello')
+    >>> dotted.expand(d, '(bye,*)', duplicates=True)
+    ('bye', 'hello', 'bye')
+    >>> list(dotted.iexpand(d, '*'))
+    ['hello', 'bye']
+
 <a id="overlaps"></a>
 ### Overlaps
 
@@ -789,16 +816,27 @@ Extract (path, value) pairs from an object matching a pattern.
     >>> dotted.pluck(d, 'nested.*')
     (('nested.x', 10),)
 
+A path the pattern reaches more than once is given once; pass
+`duplicates=True` to keep each.
+
+    >>> dotted.pluck(d, '(a,*)')
+    (('a', 1), ('b', 2), ('nested', {'x': 10}))
+    >>> dotted.pluck(d, '(a,*)', duplicates=True)
+    (('a', 1), ('a', 1), ('b', 2), ('nested', {'x': 10}))
+
 <a id="walk"></a>
 ### Walk
 
-Like `pluck` but as a lazy generator — yields `(path, value)` pairs without
-materializing the full result. Useful for streaming or large structures.
+`ipluck` is `pluck` as a generator — it yields `(path, value)` pairs without
+materializing the full result, for a concrete path as for a pattern. Useful
+for streaming or large structures. `walk` is another name for it.
 
     >>> import dotted
     >>> d = {'a': {'b': 1, 'c': 2}, 'x': 3}
-    >>> list(dotted.walk(d, 'a.*'))
+    >>> list(dotted.ipluck(d, 'a.*'))
     [('a.b', 1), ('a.c', 2)]
+    >>> list(dotted.ipluck(d, 'a.b'))
+    [('a.b', 1)]
     >>> for path, val in dotted.walk(d, '*'):
     ...     print(f'{path} = {val}')
     a = {'b': 1, 'c': 2}

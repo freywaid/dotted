@@ -13,6 +13,7 @@ Use dotted to fetch, update, and remove data from deeply nested structures.
 Core Operations
 ---------------
 get(obj, path)          Get value at dotted path
+iget(obj, path)         Yield the values at dotted path (lazy)
 update(obj, path, val)  Update value at dotted path
 remove(obj, path)       Remove value at dotted path
 has(obj, path)          Check if path exists
@@ -24,13 +25,15 @@ Pattern Matching
 match(pattern, path)    Match pattern to path
 replace(template, bind) Substitute $N in template path
 expand(obj, pattern)    Expand pattern to concrete paths
+iexpand(obj, pattern)   Yield concrete paths for pattern (lazy)
 
 Building & Plucking
 -------------------
 build(obj, path)        Build default structure for path
 pack(pathvalues)        Build object from path-value pairs
 pluck(obj, pattern)     Extract (path, value) pairs
-walk(obj, pattern)      Yield (path, value) pairs (lazy)
+ipluck(obj, pattern)    Yield (path, value) pairs (lazy)
+walk(obj, pattern)      Alias of ipluck
 unpack(obj)             Extract to dotted normal form
 keys(obj)               Dotted paths of obj
 values(obj)             Leaf values of obj
@@ -68,28 +71,28 @@ from .api import \
     register, transform, set_resolver, get_resolver, \
     assemble, assemble_multi, \
     build, build_multi, \
-    expand, expand_multi, \
+    expand, expand_multi, iexpand, \
     match, match_multi, replace, overlaps, translate, translate_multi, \
     apply, apply_multi, \
-    get, get_multi, getter, \
+    get, get_multi, getter, iget, \
     has, setdefault, setdefault_multi, \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
-    pluck, pluck_multi, walk, walk_multi, unpack, keys, values, items
+    pluck, pluck_multi, ipluck, walk, walk_multi, unpack, keys, values, items
 from .translators import sqlize, sparkize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
 # the run-time reference resolver; sqlize's Resolver, above, has the plain name
 from .base import Resolver as ReferenceResolver, UnresolvedReference
 
 __all__ = [
     # Core
-    'get', 'getter', 'update', 'remove', 'has', 'setdefault',
+    'get', 'getter', 'iget', 'update', 'remove', 'has', 'setdefault',
     'ReferenceResolver', 'UnresolvedReference', 'set_resolver', 'get_resolver',
     # Multi
     'get_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern
-    'match', 'match_multi', 'replace', 'overlaps', 'translate', 'translate_multi', 'expand', 'expand_multi',
+    'match', 'match_multi', 'replace', 'overlaps', 'translate', 'translate_multi', 'expand', 'expand_multi', 'iexpand',
     # Build/Pluck
-    'build', 'build_multi', 'pluck', 'pluck_multi', 'walk', 'walk_multi', 'unpack', 'keys', 'values', 'items',
+    'build', 'build_multi', 'pluck', 'pluck_multi', 'ipluck', 'walk', 'walk_multi', 'unpack', 'keys', 'values', 'items',
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility

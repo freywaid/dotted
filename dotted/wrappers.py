@@ -296,33 +296,53 @@ class TransformWrap(Wrap):
 
     def push_children(self, stack, frame, paths):
         """
-        What the inner op pushes, transformed: each frame's node through
-        the transforms, with its parents as the reference context, and
-        its path segment carrying them; a frame whose reference does not
-        resolve is dropped.
+        What the inner op pushes, to be transformed: each frame's node is
+        put through the transforms when the frame is popped (Frame.settle),
+        and its path segment carries them now.
         """
         mark = len(stack.current)
         results = self.inner.push_children(stack, frame, paths)
         pushed = [stack.current.pop() for _ in range(len(stack.current) - mark)]
         for f in reversed(pushed):
-            try:
-                f.node = self.apply(f.node, f.settings, f.settings.parents or ())
-            except base.UnresolvedReference:
+            if type(f) is base.FrameSource:
+                stack.push(base.FrameSource(self._mark_each(f.frames, frame, paths)))
                 continue
-            if paths and len(f.prefix) > len(frame.prefix):
-                f.prefix = f.prefix[:-1] + (TransformWrap(f.prefix[-1], self.transforms),)
-            stack.push(f)
+            stack.push(self._mark(f, frame, paths))
         if not results or not frame.settings.transforms:
             return results
-        out = []
+        return self._transformed(results, frame.settings)
+
+    def _mark(self, f, frame, paths):
+        """
+        f, pushed by the inner op from frame, with these transforms pending
+        on its node and carried by its path segment.
+        """
+        f.pending = f.pending + (self,)
+        if paths and len(f.prefix) > len(frame.prefix):
+            f.prefix = f.prefix[:-1] + (TransformWrap(f.prefix[-1], self.transforms),)
+        return f
+
+    def _mark_each(self, frames, frame, paths):
+        """
+        _mark on each frame a FrameSource draws, as it is drawn.
+        """
+        for f in frames:
+            yield self._mark(f, frame, paths)
+
+    def _transformed(self, results, settings):
+        """
+        The inner op's results through the transforms, one at a time as
+        they are drawn; one whose reference does not resolve is left out.
+        """
         for path, val in results:
-            if path is not base.CUT_SENTINEL:
-                try:
-                    val = self.apply(val, frame.settings)
-                except base.UnresolvedReference:
-                    continue
-            out.append((path, val))
-        return out
+            if path is base.CUT_SENTINEL:
+                yield path, val
+                continue
+            try:
+                val = self.apply(val, settings)
+            except base.UnresolvedReference:
+                continue
+            yield path, val
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         if not ops:
@@ -522,7 +542,8 @@ class ValueGuard(Wrap):
     def push_children(self, stack, frame, paths):
         """
         Non-recursive: items() already filters by guard, push onto stack.
-        Recursive: collect matches from inner, filter by guard, push survivors.
+        Recursive: the inner op's matches that pass the guard, as a
+        FrameSource, so each is found only as the traversal reaches it.
         """
         if not self.inner.is_recursive():
             children = list(self.items(frame.node, settings=frame.settings))
@@ -530,12 +551,18 @@ class ValueGuard(Wrap):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
                 stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
             return ()
-        matches = [(cp, v, terminal) for cp, v, terminal in self.inner._collect_matches(
-            frame.node, paths, prefix=frame.prefix, settings=frame.settings) if self._guard_matches(v, frame.settings)]
-        for cp, v, terminal in reversed(matches):
-            ops = () if terminal else frame.ops
-            stack.push(base.Frame(ops, v, cp, settings=frame.settings))
+        matches = self._guarded(frame.node, paths, frame.prefix, frame.settings)
+        stack.push(base.FrameSource(base.frames_of(matches, frame.ops, frame.settings)))
         return ()
+
+    def _guarded(self, node, paths, prefix, settings):
+        """
+        The inner op's matches at any depth whose value passes the guard,
+        as they are found.
+        """
+        for cp, v, terminal in self.inner._collect_matches(node, paths, prefix=prefix, settings=settings):
+            if self._guard_matches(v, settings):
+                yield cp, v, terminal
 
     def resolve(self, bindings, partial=False):
         """

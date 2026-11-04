@@ -384,11 +384,13 @@ class Recursive(BaseOp):
                                              _below_match=True, _depths=_depths, settings=settings)
 
     def push_children(self, stack, frame, paths):
+        """
+        The matches as a FrameSource, so each is found only once the rest
+        of the path has run from the one before it.
+        """
         depths = {} if self._has_negative_depth() else None
-        matches = list(self._collect_matches(frame.node, paths, prefix=frame.prefix, _depths=depths, settings=frame.settings))
-        for cp, v, terminal in reversed(matches):
-            ops = () if terminal else frame.ops
-            stack.push(base.Frame(ops, v, cp, settings=frame.settings))
+        matches = self._collect_matches(frame.node, paths, prefix=frame.prefix, _depths=depths, settings=frame.settings)
+        stack.push(base.FrameSource(base.frames_of(matches, frame.ops, frame.settings)))
         return ()
 
     def _assign(self, acc, node, k, v):

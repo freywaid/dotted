@@ -124,6 +124,14 @@ def process(stack, paths):
     level = stack.level
     while stack.level >= level and stack.current:
         frame = stack.pop()
+        if type(frame) is base.FrameSource:
+            source = frame
+            frame = next(source.frames, None)
+            if frame is None:
+                continue
+            stack.push(source)
+        if frame.pending and not frame.settle():
+            continue
         if not frame.ops:
             yield (frame.prefix if paths else None, frame.node)
             continue
@@ -152,7 +160,11 @@ def aligned(op, stack, frame, paths):
     found = list(op.push_children(stack, frame, paths))
     matches = []
     while stack.current:
-        matches.append(stack.pop())
+        match = stack.pop()
+        if type(match) is base.FrameSource:
+            matches.extend(match.frames)
+            continue
+        matches.append(match)
     stack.pop_level()
     for match in matches:
         # processing takes the ops off the frame; the fill's path needs them

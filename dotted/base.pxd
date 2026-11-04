@@ -46,6 +46,11 @@ cdef class Frame:
     cdef public object depth
     cdef public object seen_paths
     cdef public Settings settings
+    cdef public tuple pending
+
+
+cdef class FrameSource:
+    cdef public object frames
 
 
 cdef class DepthStack:

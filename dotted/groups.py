@@ -371,11 +371,20 @@ class OpGroupOr(OpGroup):
     def push_children(self, stack, frame, paths):
         """
         Process branches sequentially via base.DepthStack levels.
-        Handles cut, softcut, and path overlap filtering.
+        Handles cut, softcut, and path overlap filtering. The results
+        come from a generator, so a match is yielded as its branch
+        reaches it, as it would be without the group.
+        """
+        return self._branch_results(stack, frame, paths)
+
+    def _branch_results(self, stack, frame, paths):
+        """
+        What push_children yields. A branch's level is popped before the
+        cut sentinel is yielded, so a consumer that stops at the cut
+        leaves the stack as it found it.
         """
         br = self.branches
         softcut_paths = SoftcutPaths()
-        results = []
         for i in range(len(br)):
             item = br[i]
             if item in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
@@ -397,14 +406,13 @@ class OpGroupOr(OpGroup):
                 found = True
                 if is_softcut and path:
                     softcut_paths.add(path)
-                results.append((path if paths else None, val))
+                yield (path if paths else None, val)
             stack.pop_level()
             if not found:
                 continue
             if marker is base.BRANCH_CUT:
-                results.append((base.CUT_SENTINEL, None))
-                return results
-        return results
+                yield (base.CUT_SENTINEL, None)
+                return
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
         matched_any = False

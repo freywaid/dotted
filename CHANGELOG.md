@@ -3,6 +3,20 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.55.0]
+
+### Added
+- `iget`, `iexpand` and `ipluck`: `get`, `expand` and `pluck` as
+  generators. A concrete path yields too: `iget` its one value, or the
+  default when it is missing, and `ipluck` its one pair, or nothing.
+- `duplicates=False` on `expand`, `pluck`, their `i` and `_multi` forms:
+  `duplicates=True` keeps a path a pattern reaches more than once.
+  `pluck(d, '(a,*)', duplicates=True)` gives `('a', 1)` twice.
+
+### Changed (breaking)
+- `walk` is `ipluck` and `walk_multi` is `pluck_multi`, so they dedup;
+  `duplicates=True` gives the old behavior.
+
 ## [0.54.0]
 
 ### Added
