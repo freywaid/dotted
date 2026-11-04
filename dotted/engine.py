@@ -68,16 +68,20 @@ def simple_get(chain, node, strict=False):
             if node is base.marker:
                 return base.marker
             continue
-        t = type(node)
-        if t is dict:
+        # dict-like, duck-typed as Key and Slot do it: membership, then
+        # item access, so a __missing__ (defaultdict) is never triggered
+        if hasattr(node, 'keys'):
             # strict: Slot never coerces to dict keys
             if strict and kind == 'slot':
                 return base.marker
-            node = node.get(key, base.marker)
-            if node is base.marker:
+            try:
+                if key not in node:
+                    return base.marker
+                node = node[key]
+            except (TypeError, KeyError):
                 return base.marker
             continue
-        if t is list or t is tuple:
+        if isinstance(node, (list, tuple)):
             # strict: Key never coerces to sequence indices
             if strict and kind == 'key':
                 return base.marker
@@ -88,7 +92,7 @@ def simple_get(chain, node, strict=False):
             except IndexError:
                 return base.marker
             continue
-        # dict subclasses, custom containers, None, etc: full traversal
+        # custom containers, None, etc: full traversal
         return SIMPLE_BAIL
     return node
 

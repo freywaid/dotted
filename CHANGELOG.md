@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.55.1]
+
+### Changed
+- The `get` fast path takes any dict-like (`ChainMap`, dict subclasses,
+  `Mapping`s), duck-typed as the full traversal does, and no longer
+  falls back to it for them.
+
 ## [0.55.0]
 
 ### Added
