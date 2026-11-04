@@ -86,6 +86,9 @@ def set_simple_fastpath(enable=True):
     return prev
 
 
+set_type_cache = engine.set_type_cache
+
+
 def set_parse_cache(size=CACHE_SIZE):
     """
     Resize the LRU cache behind parse(). 0 disables caching (every path

@@ -53,6 +53,64 @@ def build(ops, node, deepcopy=True, strict=False, settings=None, resolver=None):
 
 SIMPLE_BAIL = object()
 
+# simple_get's read of a list or tuple: an index
+SEQUENCE = object()
+
+
+def item_get(node, key, default):
+    """
+    The get() of a dict-like that has keys() but no get() of its own.
+    """
+    try:
+        return node[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def seeded_reads():
+    """
+    The reads simple_get knows before it sees a node.
+    """
+    return {dict: dict.get, list: SEQUENCE, tuple: SEQUENCE}
+
+
+# type -> how simple_get reads a node of it, decided once per type
+READS = seeded_reads()
+TYPE_CACHE = True
+
+
+def set_type_cache(enable=True):
+    """
+    Enable/disable the per-type cache behind the get() fast path, which
+    decides once per type how a node of it is read (escape hatch: when
+    off, every node's type is looked at afresh). On by default. Toggling
+    discards what is cached. Returns the previous setting.
+    """
+    global TYPE_CACHE
+    prev = TYPE_CACHE
+    TYPE_CACHE = bool(enable)
+    READS.clear()
+    if TYPE_CACHE:
+        READS.update(seeded_reads())
+    return prev
+
+
+def read_of(t):
+    """
+    How simple_get reads a node of type t, by its interface, as Key and
+    Slot duck-type it: a dict-like's unbound get(), SEQUENCE for a list or
+    tuple, None for the full traversal. Cached when the type cache is on.
+    """
+    if hasattr(t, 'keys'):
+        read = getattr(t, 'get', None) or item_get
+    elif issubclass(t, (list, tuple)):
+        read = SEQUENCE
+    else:
+        read = None
+    if TYPE_CACHE:
+        READS[t] = read
+    return read
+
 
 def simple_get(chain, node, strict=False):
     """
@@ -62,38 +120,45 @@ def simple_get(chain, node, strict=False):
     SIMPLE_BAIL when a node's type falls outside the fast path — the
     caller then falls back to the full traversal.
     """
+    # locals, not a module global's lookup per step
+    reads = READS
+    sequence = SEQUENCE
+    marker = base.marker
     for kind, key in chain:
         if kind == 'attr':
-            node = getattr(node, key, base.marker)
-            if node is base.marker:
-                return base.marker
+            node = getattr(node, key, marker)
+            if node is marker:
+                return marker
             continue
-        # dict-like, duck-typed as Key and Slot do it: membership, then
-        # item access, so a __missing__ (defaultdict) is never triggered
-        if hasattr(node, 'keys'):
+        t = type(node)
+        # READS is empty while the type cache is off
+        try:
+            read = reads[t]
+        except KeyError:
+            read = read_of(t)
+        # custom containers, None, etc: full traversal
+        if read is None:
+            return SIMPLE_BAIL
+        if read is not sequence:
             # strict: Slot never coerces to dict keys
             if strict and kind == 'slot':
-                return base.marker
+                return marker
             try:
-                if key not in node:
-                    return base.marker
-                node = node[key]
-            except (TypeError, KeyError):
-                return base.marker
+                node = read(node, key, marker)
+            except TypeError:
+                return marker
+            if node is marker:
+                return marker
             continue
-        if isinstance(node, (list, tuple)):
-            # strict: Key never coerces to sequence indices
-            if strict and kind == 'key':
-                return base.marker
-            if type(key) is not int:
-                return base.marker
-            try:
-                node = node[key]
-            except IndexError:
-                return base.marker
-            continue
-        # custom containers, None, etc: full traversal
-        return SIMPLE_BAIL
+        # strict: Key never coerces to sequence indices
+        if strict and kind == 'key':
+            return marker
+        if type(key) is not int:
+            return marker
+        try:
+            node = node[key]
+        except IndexError:
+            return marker
     return node
 
 

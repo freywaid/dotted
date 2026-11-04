@@ -67,7 +67,7 @@ if not native.wanted():
 from .api import \
     parse, compile, is_pattern, is_template, is_reference, is_indeterminate, is_simple, \
     is_inverted, is_mutable, mutable, quote, ANY, AUTO, Attrs, GroupMode, \
-    set_simple_fastpath, set_parse_cache, \
+    set_simple_fastpath, set_type_cache, set_parse_cache, \
     register, transform, set_resolver, get_resolver, \
     assemble, assemble_multi, \
     build, build_multi, \
@@ -100,7 +100,7 @@ __all__ = [
     'is_pattern', 'is_template', 'is_reference',
     'is_indeterminate', 'is_simple',
     'is_inverted', 'is_mutable', 'mutable',
-    'set_simple_fastpath', 'set_parse_cache',
+    'set_simple_fastpath', 'set_type_cache', 'set_parse_cache',
     # Translators
     'sqlize', 'sparkize', 'Resolver', 'SQLFragment', 'ParamStyle', 'ParamPool', 'TranslationError',
     # Constants

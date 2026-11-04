@@ -1,6 +1,7 @@
 """
 Data builders for the benchmark suites.
 """
+import collections
 
 
 def record(i):
@@ -37,3 +38,19 @@ def small():
 
 def large():
     return doc(1000)
+
+
+def chained(n):
+    """
+    doc(n) behind a layer of overrides in a ChainMap, the way settings are
+    layered: a read of anything but `meta` falls through to the document.
+    """
+    return collections.ChainMap({'meta': {'version': 2}}, doc(n))
+
+
+def small_chained():
+    return chained(10)
+
+
+def large_chained():
+    return chained(1000)

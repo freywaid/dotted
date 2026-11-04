@@ -156,6 +156,19 @@ def test_simple_fastpath_toggle():
     assert dotted.set_simple_fastpath(True) is True
 
 
+def test_type_cache_toggle():
+    d = collections.ChainMap({'a': {'b': 1}})
+    prev = dotted.set_type_cache(False)
+    try:
+        assert prev is True
+        assert dotted.get(d, 'a.b') == 1
+        assert dotted.get(d, 'a.x', default='missing') == 'missing'
+    finally:
+        dotted.set_type_cache(prev)
+    assert dotted.set_type_cache(True) is True
+    assert dotted.get(d, 'a.b') == 1
+
+
 def test_parse_cache_resize():
     cached = parse('toggle.test')
     assert parse('toggle.test') is cached
@@ -181,6 +194,19 @@ def test_simple_get_bails_on_unknown_container():
             return 42
     chain = parse('a.b').simple_chain
     assert engine.simple_get(chain, Custom()) is engine.SIMPLE_BAIL
+
+
+def test_simple_get_dict_likes():
+    """
+    A dict-like takes the fast path by its interface, keys() and then its
+    get(), and a defaultdict is read without filling in a missing key.
+    """
+    chain = parse('a.b').simple_chain
+    assert engine.simple_get(chain, collections.ChainMap({'a': {'b': 1}})) == 1
+    assert engine.simple_get(chain, collections.OrderedDict(a={'b': 2})) == 2
+    dd = collections.defaultdict(dict)
+    assert engine.simple_get(chain, dd) is dotted.base.marker
+    assert dict(dd) == {}
 
 
 def test_simple_get_miss_returns_marker():

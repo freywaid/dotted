@@ -3,6 +3,18 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.55.2]
+
+### Added
+- `dotted.set_type_cache(False)` disables the per-type cache behind the
+  `get` fast path. Returns the previous setting.
+
+### Performance
+- The `get` fast path decides how a node is read once per type, by its
+  interface (`keys()`, then its `get()`; lists and tuples by index), and
+  calls the type's own `get()` directly, so a dict-like costs one cache
+  lookup and one call per step.
+
 ## [0.55.1]
 
 ### Changed

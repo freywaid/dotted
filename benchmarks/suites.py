@@ -3,10 +3,11 @@ The benchmark cases, grouped by suite.
 """
 import dotted
 
-from .data import large, small
+from .data import large, large_chained, small, small_chained
 from .harness import Case
 
 SIZES = (('n=10', small), ('n=1000', large))
+CHAINED = (('ChainMap n=10', small_chained), ('ChainMap n=1000', large_chained))
 
 CASES = []
 
@@ -23,8 +24,12 @@ def add(suite, name, fn, sizes=SIZES, **kwargs):
 
 add('get', 'users.u5.address.geo.lat',
     lambda d: dotted.get(d, 'users.u5.address.geo.lat'))
+add('get', 'users.u5.address.geo.lat',
+    lambda d: dotted.get(d, 'users.u5.address.geo.lat'), sizes=CHAINED)
 add('get', 'users.*.score',
     lambda d: dotted.get(d, 'users.*.score'))
+add('get', 'users.*.score',
+    lambda d: dotted.get(d, 'users.*.score'), sizes=CHAINED)
 add('get', 'users.*.address.geo.lat',
     lambda d: dotted.get(d, 'users.*.address.geo.lat'))
 add('get', 'rows[*].address.city',

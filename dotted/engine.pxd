@@ -6,6 +6,8 @@ cimport dotted.base as base
 cpdef _needs_parents(ops)
 cpdef build_default(ops)
 cpdef build(ops, node, deepcopy=*, strict=*, settings=*, resolver=*)
+cpdef read_of(t)
+@cython.locals(reads=dict)
 cpdef simple_get(chain, node, strict=*)
 
 @cython.locals(op=base.TraversalOp)
