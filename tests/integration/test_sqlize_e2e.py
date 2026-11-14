@@ -231,3 +231,33 @@ def test_lateral_no_guard_extracts_all_values(query):
     # id=6 and id=7 contribute nothing (users: []).
     assert pairs == [(1, 25), (1, 32), (2, 35), (3, 40),
                      (4, 17), (5, 18), (5, 50)]
+
+
+# ---------------- table search ----------------
+
+def test_table_search(query):
+    """
+    A table search names the table, filters and pages its rows, and
+    selects a column; the caller assembles the query. Active ids are
+    1, 2, 4, 5, 6 — offset 1, limit 2 keeps 2 and 4.
+    """
+    r = sqlize('dotted_test.items[status="active"][1:3][*].id',
+               driver=query.driver, root='table')
+    sql, args = r.build(
+        'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+        + f' ORDER BY id OFFSET {r.offset} LIMIT {r.limit}')
+    assert [row['id'] for row in query(sql, args)] == [2, 4]
+
+
+def test_table_search_whole_rows(query):
+    """
+    With nothing after the row step, `select` is `*`.
+    """
+    r = sqlize('dotted_test.items[*&data.user.role="admin"]',
+               driver=query.driver, root='table')
+    sql, args = r.build(
+        'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+        + ' ORDER BY id')
+    rows = query(sql, args)
+    assert [row['id'] for row in rows] == [1, 5]
+    assert {'id', 'status', 'age', 'deleted_at', 'data'} <= set(rows[0])

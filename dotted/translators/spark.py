@@ -129,6 +129,14 @@ class SparkResolver(collections.abc.Mapping):
         unbound : dict                   — substitution name → original
                                            name, over both fragments
 
+    A table search (`sparkize(..., root='table')`, or a path that
+    starts with a row step) also sets plain values, None otherwise:
+
+        table   : str | None  — the DataFrame's or table's name, as the
+                                path spells it (`'public.hello'`)
+        offset  : int | None  — rows to skip (`df.offset`, Spark 3.4+)
+        limit   : int | None  — rows to keep (`df.limit`)
+
     Mapping interface over the non-None fragments, as `Resolver`:
 
         r['where']                 # same as r.where
@@ -144,16 +152,24 @@ class SparkResolver(collections.abc.Mapping):
 
     _FRAGMENT_KEYS = ('select', 'where')
 
-    __slots__ = ('select', 'where', 'unbound')
+    _PLAIN_KEYS = ('table', 'offset', 'limit')
 
-    def __init__(self, select=None, where=None, unbound=None):
+    __slots__ = ('select', 'where', 'unbound', 'table', 'offset', 'limit')
+
+    def __init__(self, select=None, where=None, unbound=None, table=None,
+                 offset=None, limit=None):
         self.select = select
         self.where = where
         self.unbound = dict(unbound or {})
+        self.table = table
+        self.offset = offset
+        self.limit = limit
 
     def __repr__(self):
         bits = [f'flavor={type(self).flavor!r}'] if type(self).flavor else []
         bits.extend(attr for attr in self._FRAGMENT_KEYS
+                    if getattr(self, attr) is not None)
+        bits.extend(f'{attr}={getattr(self, attr)!r}' for attr in self._PLAIN_KEYS
                     if getattr(self, attr) is not None)
         if self.unbound:
             bits.append(f'unbound={sorted(self.unbound.values())}')
@@ -179,10 +195,11 @@ class SparkResolver(collections.abc.Mapping):
 
     # ---- overridable translation surface ----
 
-    def translate(self, ops):
+    def translate(self, ops, root='column'):
         """
         Walk the parsed ops tree, populating self.select / self.where /
-        self.unbound. Flavor mixins supply the real implementation.
+        self.unbound, and a table search's self.table / self.offset /
+        self.limit. Flavor mixins supply the real implementation.
         """
         raise NotImplementedError(
             f'{type(self).__name__} has no translate() — '
@@ -225,7 +242,7 @@ class SparkResolver(collections.abc.Mapping):
         return fragment._make(bindings)
 
 
-def sparkize(path, *, flavor, bindings=None):
+def sparkize(path, *, flavor, bindings=None, root='column'):
     """
     Translate a dotted path into a flavor-specific `SparkResolver`
     carrying deferred Spark Column fragments.
@@ -239,12 +256,25 @@ def sparkize(path, *, flavor, bindings=None):
                    be resolved here or `TranslationError` is raised.
                    Unresolved value-position substitutions appear in
                    `r.unbound`.
+        root     — `'column'` (default): the path's first segment is a
+                   column of the row. `'table'`: its leading keys name
+                   a DataFrame or table, a row step (`[*]`, `[*&…]`,
+                   `[n]`, `[a:b]`, a slice filter `[…]`) walks its
+                   rows, and the rest is a column path under each row;
+                   `r.table`, `r.offset` and `r.limit` carry the plain
+                   values. A path that starts with a row step searches
+                   an unnamed one under either root.
 
     Columns are native Spark types: the first path segment is the
     column, further segments reach into structs, maps and arrays.
 
         r = sparkize('data.user.age >= 30', flavor='pyspark')
         df.where(r.build(r.where))
+
+        r = sparkize('hello[book_id="b1"][0:10][*].title',
+                     flavor='pyspark', root='table')
+        (spark.table(r.table).where(r.build(r.where))
+              .offset(r.offset).limit(r.limit).select(r.build(r.select)))
     """
     cls = _FLAVORS.get(flavor)
     if cls is None:
@@ -254,5 +284,5 @@ def sparkize(path, *, flavor, bindings=None):
         )
     parsed = parse(path, bindings=bindings, partial=True)
     r = cls()
-    r.translate(parsed.ops)
+    r.translate(parsed.ops, root=root)
     return r

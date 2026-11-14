@@ -3491,7 +3491,8 @@ Pick the driver you'll actually hand the SQL to; it determines the
 placeholder syntax and whether explicit SQL casts are emitted.
 
 The first segment of the dotted path is the SQL column; further
-segments are JSON navigation inside it (JSONB). Scalar columns and
+segments are JSON navigation inside it (JSONB). (`root='table'` makes
+it a [table search](#sqlize-table-search) instead.) Scalar columns and
 JSONB columns share one surface:
 
     >>> import dotted
@@ -3697,6 +3698,62 @@ Not yet supported:
 - Regex-in-access like `data./prefix_\d+/.field`
 - Pattern refs
 
+<a id="sqlize-table-search"></a>
+### Table search
+
+By default a path's first segment is a column of the row. With
+`root='table'` the path searches a table instead: its leading keys name
+the table, a row step walks its rows, and the rest is a column path
+under each row, read as above:
+
+    >>> r = dotted.sqlize('books[*&author="kafka"].title', driver='asyncpg', root='table')
+    >>> r.table
+    'books'
+    >>> r.build('SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where)
+    ('SELECT title FROM books WHERE author = $1', ['kafka'])
+
+| row step | gives |
+|----------|-------|
+| `[*]` | every row |
+| `[*&<filters>]` | `where` from the filters; a filter key is a column path (`&data.user.age>30`) |
+| `[<filters>]` (slice filter) | the same `where` |
+| `[n]` | `offset=n`, `limit=1` |
+| `[a:b]`, `[a:]`, `[:b]` | `offset=a`, `limit=b-a` (either may be None) |
+
+A slice filter and a slice keep the rows one list, as in dotted, so
+`[*]` comes before a column: filter, then page, then select:
+
+    >>> r = dotted.sqlize('books[author="kafka"][10:20][*].title', driver='asyncpg', root='table')
+    >>> r.offset, r.limit
+    (10, 10)
+
+With nothing after the row step, `select` is `*`. Everything before
+it is the table's name, taken whole:
+
+    >>> dotted.sqlize('public.books[0]', driver='asyncpg', root='table')
+    AsyncPGResolver(driver='asyncpg', select='*', table='public.books', offset=0, limit=1)
+
+A path that starts with a row step searches an unnamed table, so it
+needs no `root=`; the caller supplies the `FROM`:
+
+    >>> r = dotted.sqlize('[*&author="kafka"]', driver='asyncpg')
+    >>> r.table is None, r.build(r.where)
+    (True, ('author = $1', ['kafka']))
+
+`r.table`, `r.offset` and `r.limit` are plain values, not fragments,
+and stay out of the Mapping. The table's name comes back as the path
+spells it; quoting it is the caller's (`Col(r.table)` validates it).
+
+Not yet supported (`TranslationError`):
+- Selecting several columns, `books[*](.title,.author)` or the packed
+  `books[*](.title,.author;)`
+- A key straight after a slice filter or slice (`books[a=1].title` —
+  dotted reads a key of the list there; use `books[a=1][*].title`)
+- A row step after `[*]`, `[*&…]` or `[n]` — dotted indexes into each
+  row there
+- After a slice, anything but `[*]`; slice steps; negative indexes and
+  bounds
+
 ### Composing multiple Resolvers — ParamPool
 
 Each call to `dotted.sqlize()` allocates its own bind-parameter name
@@ -3811,6 +3868,9 @@ registered drivers (built-ins + anything third-party code has added).
 | `.from_`        | `SQLFragment` \| `None`      | FROM extension (reserved)                                           |
 | `.lateral`      | `SQLFragment` \| `None`      | `LATERAL jsonb_path_query(...) AS _patN(value)` for pattern paths   |
 | `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}`  |
+| `.table`        | `str` \| `None`              | Table search: the table's name, as the path spells it               |
+| `.offset`       | `int` \| `None`              | Table search: rows to skip                                          |
+| `.limit`        | `int` \| `None`              | Table search: rows to keep                                          |
 
 The Resolver also implements the `collections.abc.Mapping` protocol
 over its non-None fragment attributes (`select` / `where` / `from_` /
@@ -3824,8 +3884,8 @@ over its non-None fragment attributes (`select` / `where` / `from_` /
     >>> dict(r)                    # map of present fragments
     {'select': ..., 'where': ..., 'lateral': ...}
 
-`driver` / `paramstyle` / `cast` / `unbound` are reached as plain
-attributes, not via the Mapping.
+`driver` / `paramstyle` / `cast` / `unbound` / `table` / `offset` /
+`limit` are reached as plain attributes, not via the Mapping.
 
 A `SQLFragment` carries:
 
@@ -3837,14 +3897,17 @@ A `SQLFragment` carries:
 
 ### API reference
 
-`dotted.sqlize(path, *, driver, bindings=None)`
+`dotted.sqlize(path, *, driver, bindings=None, root='column')`
 
 - `path` — dotted path string or pre-parsed result.
 - `driver` — **required**. Name of a registered driver
   (`'asyncpg'`, `'psycopg2'`, `'psycopg'`, or anything registered via
   `@register`). An unknown driver raises `TranslationError`.
 - `bindings` — resolve substitutions at sqlize time. Path-position
-  substitutions must be resolved here.
+  substitutions must be resolved here, row indexes and slice bounds
+  included.
+- `root` — `'column'` (default): the first segment is a column.
+  `'table'`: a [table search](#sqlize-table-search).
 
 `r.build(sql, **bindings)`
 
@@ -3951,16 +4014,38 @@ A `Column` can't hold a placeholder, so `r.where` is a
     b = dotted.sparkize('status = "active"')
     df.where(a.build(a.where & b.where, min_age=30))
 
+<a id="sparkize-table-search"></a>
+### Table search
+
+`root='table'` reads a path as a [table search](#sqlize-table-search), the
+same as for `sqlize`: the leading keys name a DataFrame or table, and
+`r.table`, `r.offset` and `r.limit` are plain values the caller chains
+(skip `.offset` / `.limit` when they are None; `offset` needs Spark
+3.4+):
+
+    r = dotted.sparkize('books[author="kafka"][10:20][*].title', root='table')
+    (spark.table(r.table)
+          .where(r.build(r.where))
+          .offset(r.offset).limit(r.limit)
+          .select(r.build(r.select)))
+
+With nothing after the row step, `select` is every column
+(`col('*')`). A path that starts with a row step, `[*&author="kafka"]`,
+needs no name and no `root=`: apply its `where` to any DataFrame.
+
 ### API reference
 
-`dotted.sparkize(path, *, flavor, bindings=None)`
+`dotted.sparkize(path, *, flavor, bindings=None, root='column')`
 
 - `path` — dotted path string or pre-parsed result.
 - `flavor` — **required**. Name of a registered flavor (`'pyspark'`).
   An unknown flavor raises `TranslationError`.
   `dotted.translators.flavors()` lists them.
 - `bindings` — resolve substitutions at sparkize time. Path-position
-  substitutions must be resolved here.
+  substitutions must be resolved here, row indexes and slice bounds
+  included.
+- `root` — `'column'` (default): the first segment is a column.
+  `'table'`: a [table search](#sparkize-table-search).
 
 `r.build(fragment, **bindings)`
 

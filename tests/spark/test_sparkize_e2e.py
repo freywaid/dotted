@@ -235,3 +235,32 @@ def test_fragments_compose(df):
     b = sparkize('status = "active"')
     assert ids(df, a.build(a.where & b.where, min_age=30)) == [2, 5, 6]
     assert ids(df, a.build(~b.where)) == [3, 7]
+
+
+# ---- table search ---------------------------------------------------
+
+def test_table_search(spark, df):
+    """
+    A table search names the DataFrame, filters and pages its rows,
+    and selects a column; the caller chains the plain values. Active
+    ids are 1, 2, 4, 5, 6 — offset 1, limit 2 keeps 2 and 4.
+    """
+    df.createOrReplaceTempView('items')
+    r = _sparkize('items[status="active"][1:3][*].id',
+                  flavor='pyspark', root='table')
+    rows = (spark.table(r.table).where(r.build(r.where)).orderBy('id')
+            .offset(r.offset).limit(r.limit).select(r.build(r.select))
+            .collect())
+    assert [row.id for row in rows] == [2, 4]
+
+
+def test_table_search_whole_rows(spark, df):
+    """
+    With nothing after the row step, `select` is every column.
+    """
+    df.createOrReplaceTempView('items')
+    r = _sparkize('items[*&data.user.role="admin"]',
+                  flavor='pyspark', root='table')
+    out = spark.table(r.table).where(r.build(r.where)).select(r.build(r.select))
+    assert out.columns == df.columns
+    assert sorted(row.id for row in out.collect()) == [1, 5]

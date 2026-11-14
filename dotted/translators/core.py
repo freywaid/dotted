@@ -7,9 +7,19 @@ The walk decides what kind of path it is looking at — column guard,
 top-level group, plain traversal, nested guard, nested group, pattern
 path — and calls flavor hooks to emit the target's expressions.
 
+A path reads one of two ways, picked by `root=`. As a column path
+(`root='column'`, the default) its first segment is a column of the
+row. As a table search (`root='table'`) its leading keys name a table,
+a row step (`[*]`, `[*&…]`, `[n]`, `[a:b]`, a slice filter `[…]`)
+walks its rows, and the rest is a column path under each row. A path
+that starts with a row step is a search of an unnamed table under
+either root. A table search hands back plain values beside the
+fragments: the table's name, an offset and a limit.
+
 Flavor hooks (each flavor mixin implements them):
 
     _column(name)                     → column expression
+    _all_columns()                    → every column of a row (`*`)
     _select_expr(col, prefix)         → extraction expression for a
                                         prefix of path segments
     _scalar_predicate(guard, col)     → predicate for a guard on the
@@ -34,10 +44,19 @@ expression; turning that into the target's public result is the
 flavor's `translate()`.
 """
 from .. import access
+from .. import filters as _filters
 from .. import groups as _groups
 from .. import matchers
+from .. import predicates
 from .. import wrappers
 from ..api import parse
+
+
+# what a path's first segment is: a column of the row, or a table
+ROOTS = ('column', 'table')
+
+# the plain values of a column path, which searches no table
+_NO_TABLE = (None, None, None)
 
 
 class TranslationError(Exception):
@@ -60,6 +79,80 @@ def _op_is_pattern_like(op):
     return False
 
 
+def _is_table_key(op):
+    """
+    True if `op` is a plain key, one segment of a table's name.
+    """
+    return isinstance(op, access.Key) and not isinstance(op, access.Slot)
+
+
+def _is_every_row(op):
+    """
+    True if `op` is `[*]`.
+    """
+    if isinstance(op, access.SlotSpecial):
+        return False
+    return isinstance(op, access.Slot) and isinstance(op.op, matchers.Wildcard)
+
+
+def _is_row_step(op):
+    """
+    True if `op` steps into a table's rows: `[*]`, `[*&…]`, `[n]`,
+    `[a:b]` or a slice filter `[…]`.
+    """
+    if isinstance(op, access.SlotSpecial):
+        return False
+    if isinstance(op, (access.Slot, access.Slice, access.SliceFilter)):
+        return True
+    return isinstance(op, wrappers.FilterWrap) and isinstance(op.inner, access.Slot)
+
+
+def _non_negative_int(value):
+    """
+    True if `value` is an int (not a bool) of at least zero.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _slice_window(op):
+    """
+    A slice's `(offset, limit)`: `[a:b]` → `(a, b-a)`, `[a:]` →
+    `(a, None)`, `[:b]` → `(None, b)`.
+    """
+    start, stop, step = op.args
+    if step is not None:
+        raise TranslationError(f'slice step not supported in a table search: {op}')
+    for bound in (start, stop):
+        if isinstance(bound, matchers.Subst):
+            raise TranslationError(
+                f'unresolved substitution in slice bound: {bound} — pass bindings='
+            )
+        if bound is not None and not _non_negative_int(bound):
+            raise TranslationError(
+                f'slice bounds must be non-negative ints in a table search: {op}'
+            )
+    if stop is None:
+        return start, None
+    return start, max(stop - (start or 0), 0)
+
+
+def _row_index(op):
+    """
+    The row number `[n]` names.
+    """
+    matcher = op.op
+    if isinstance(matcher, matchers.Subst):
+        raise TranslationError(
+            f'unresolved substitution in row index: {matcher} — pass bindings='
+        )
+    value = getattr(matcher, 'value', None)
+    if isinstance(matcher, matchers.Pattern) or not _non_negative_int(value):
+        raise TranslationError(
+            f'row index must be a non-negative int in a table search: {op}'
+        )
+    return value
+
+
 class Translator:
     """
     Target-neutral walk over parsed path ops. Mixed into a flavor
@@ -71,6 +164,24 @@ class Translator:
 
     # ---- core walk --------------------------------------------------
 
+    def _translate_root(self, ops, root):
+        """
+        Top-level translation entry point. Returns the fragments dict
+        and the plain values `(table, offset, limit)`, all None for a
+        column path. `root='table'` reads the leading keys as a table's
+        name; a path that starts with a row step searches an unnamed
+        table under either root.
+        """
+        if root not in ROOTS:
+            raise TranslationError(
+                f'unknown root: {root!r}. expected one of {list(ROOTS)}'
+            )
+        if not ops:
+            raise TranslationError('empty path')
+        if root == 'column' and not _is_row_step(ops[0]):
+            return self._translate(ops), _NO_TABLE
+        return self._translate_table(ops)
+
     def _translate(self, ops):
         """
         Inner translation entry point — returns a dict of flavor
@@ -81,6 +192,8 @@ class Translator:
             raise TranslationError('empty path')
         col_op = ops[0]
         rest = ops[1:]
+        if isinstance(col_op, _groups.Pack):
+            raise TranslationError('packed group not supported')
         # Column-level guard: `status = "active"` has one op, a
         # ValueGuard wrapping the column key.
         if isinstance(col_op, wrappers.ValueGuard):
@@ -112,27 +225,165 @@ class Translator:
         Extract the column name from the first op of a path. Reject
         matchers that can't name a column.
         """
-        if not isinstance(op, access.Key):
+        if not _is_table_key(op):
             raise TranslationError(
                 f'first path segment must be a column key, got {type(op).__name__}'
             )
-        matcher = op.op
+        return self._name(op.op, 'column')
+
+    def _name(self, matcher, position):
+        """
+        The name `matcher` holds in `position` (a column, a table, a
+        filter key). Reject matchers that can't name one.
+        """
         if isinstance(matcher, matchers.Subst):
-            raise TranslationError('unresolved substitution in column position')
+            raise TranslationError(f'unresolved substitution in {position} position')
         if isinstance(matcher, matchers.Reference):
-            raise TranslationError('reference in column position')
+            raise TranslationError(f'reference in {position} position')
         if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                'pattern/wildcard in column position — no "all columns" in SQL'
-            )
+            raise TranslationError(f'pattern/wildcard in {position} position')
         if not hasattr(matcher, 'value'):
             raise TranslationError(
-                f'unsupported column matcher: {type(matcher).__name__}'
+                f'unsupported {position} matcher: {type(matcher).__name__}'
             )
         value = matcher.value
         if not isinstance(value, str):
             value = str(value)
         return value
+
+    # ---- table search -----------------------------------------------
+
+    def _translate_table(self, ops):
+        """
+        A table search: the table's name (its leading keys, joined
+        whole), its row steps, then the path under each row, read as a
+        column path. Slice filters and a slice keep the rows one list,
+        as in dotted, so a row step may follow them but a key may not:
+        `hello[a=1][0:10][*].title`.
+        """
+        n = 0
+        while n < len(ops) and _is_table_key(ops[n]):
+            n += 1
+        names = [self._name(op.op, 'table') for op in ops[:n]]
+        table = '.'.join(names) if names else None
+        steps = ops[n:]
+        wheres = []
+        while steps and isinstance(steps[0], access.SliceFilter):
+            wheres.append(self._row_filters(steps[0].filters))
+            steps = steps[1:]
+        offset, limit = None, None
+        if steps and isinstance(steps[0], access.Slice):
+            offset, limit = _slice_window(steps[0])
+            steps = steps[1:]
+        listed = len(steps) < len(ops) - n
+        if not steps:
+            return self._table_result(wheres, None), (table, offset, limit)
+        step, rest = steps[0], steps[1:]
+        if not _is_row_step(step) and listed:
+            raise TranslationError(
+                f'{type(step).__name__} after a slice or slice filter reads '
+                f'the list of rows, not each row — add [*]'
+            )
+        if not _is_row_step(step):
+            raise TranslationError(
+                f'expected a row step after the table name, got {type(step).__name__}'
+            )
+        if isinstance(step, (access.SliceFilter, access.Slice)):
+            raise TranslationError(
+                'a slice filter or slice after a slice not supported in v1'
+            )
+        if (offset, limit) != (None, None) and not _is_every_row(step):
+            raise TranslationError('only [*] may follow a slice in v1')
+        if isinstance(step, wrappers.FilterWrap):
+            if not _is_every_row(step.inner):
+                raise TranslationError(f'unsupported filtered row step: {step}')
+            wheres.append(self._row_filters(step.filters))
+        if isinstance(step, access.Slot) and not _is_every_row(step):
+            offset, limit = _row_index(step), 1
+        if rest and _is_row_step(rest[0]):
+            raise TranslationError(
+                'row step after a row step not supported — in dotted it '
+                'indexes into each row'
+            )
+        under = self._translate(rest) if rest else None
+        return self._table_result(wheres, under), (table, offset, limit)
+
+    def _table_result(self, wheres, under):
+        """
+        A table search's fragments: the path under each row's own
+        (`select='*'` when none follows the row step), its `where`
+        ANDed after the row filters.
+        """
+        out = dict(under) if under else {'select': self._all_columns()}
+        if 'where' in out:
+            wheres = wheres + [out['where']]
+        if len(wheres) == 1:
+            out['where'] = wheres[0]
+        if len(wheres) > 1:
+            out['where'] = self._combine_and(wheres)
+        return self._result(**out)
+
+    def _row_filters(self, filters):
+        """
+        A row step's filters, all of which must hold, as one predicate
+        over the table's columns.
+        """
+        preds = [self._row_filter(f) for f in filters]
+        if len(preds) == 1:
+            return preds[0]
+        return self._combine_and(preds)
+
+    def _row_filter(self, f):
+        """
+        One row filter as a predicate over the table's columns.
+        """
+        if isinstance(f, _filters.FilterKeyValue):
+            # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
+            return self._row_comparison(f)
+        if isinstance(f, _filters.FilterAnd):
+            return self._combine_and([self._row_filter(sub) for sub in f.filters])
+        if isinstance(f, _filters.FilterOr):
+            return self._combine_or([self._row_filter(sub) for sub in f.filters])
+        if isinstance(f, _filters.FilterNot):
+            return self._combine_not(self._row_filter(f.inner))
+        if isinstance(f, _filters.FilterGroup):
+            return self._row_filter(f.inner)
+        raise TranslationError(f'filter type not supported: {type(f).__name__}')
+
+    def _row_comparison(self, f):
+        """
+        A `key<op>value` row filter: its key reads as a column path
+        (`&book_id="b1"` is the column `book_id`, `&data.user.age>30`
+        reaches into the column `data`), its comparison as a guard at
+        the end of it.
+        """
+        parts = f.key.parts if isinstance(f.key, _filters.FilterKey) else (f.key,)
+        head, rest = parts[0], parts[1:]
+        if isinstance(head, (access.Slot, access.Slice, _groups.Pack)):
+            raise TranslationError(
+                f'filter key must start with a column name: {f.key}'
+            )
+        col = self._column(self._name(head, 'column'))
+        guard = wrappers.ValueGuard(
+            None, f.val, pred_op=predicates.PRED_OPS[f._eq_str],
+            transforms=f.guard_transforms)
+        if not rest:
+            return self._scalar_predicate(guard, col)
+        prefix = tuple(self._filter_segment(p) for p in rest)
+        return self._nested_predicate(guard, col, prefix)
+
+    def _filter_segment(self, part):
+        """
+        A filter key part after its column as a prefix segment: a key
+        (a raw matcher) or an index (a `Slot`).
+        """
+        if isinstance(part, (access.Slice, _groups.Pack)):
+            raise TranslationError(
+                f'{type(part).__name__} in a row filter key not supported in v1'
+            )
+        if isinstance(part, access.Slot):
+            return self._segment_from_key(part)
+        return ('lit', self._name(part, 'filter key'))
 
     def _walk(self, col, prefix, ops):
         """
@@ -306,6 +557,12 @@ class Translator:
     def _column(self, name):
         """
         Return the flavor's expression for column `name`.
+        """
+        raise NotImplementedError
+
+    def _all_columns(self):
+        """
+        Return the flavor's expression for every column of a row.
         """
         raise NotImplementedError
 

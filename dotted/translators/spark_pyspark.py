@@ -213,12 +213,14 @@ class PySparkMixin(Translator):
         'bool': 'boolean',
     }
 
-    def translate(self, ops):
+    def translate(self, ops, root='column'):
         """
         Walk the parsed ops tree; populate `self.select`, `self.where`
-        and `self.unbound`.
+        and `self.unbound`, and a table search's `self.table`,
+        `self.offset` and `self.limit`.
         """
-        raw = self._translate(ops)
+        raw, (self.table, self.offset, self.limit) = (
+            self._translate_root(ops, root))
         self.select = raw.get('select')
         self.where = raw.get('where')
         self.unbound = _merged(*(frag.unbound for frag in raw.values()))
@@ -239,6 +241,12 @@ class PySparkMixin(Translator):
         """
         quoted = _quoted(name)
         return ColumnFragment(lambda env: _functions().col(quoted))
+
+    def _all_columns(self):
+        """
+        `*`.
+        """
+        return ColumnFragment(lambda env: _functions().col('*'))
 
     def _select_expr(self, col, prefix):
         """

@@ -18,12 +18,12 @@ from dotted.translators import (
 )
 
 
-def sqlize(path, *, driver='asyncpg', bindings=None, pool=None):
+def sqlize(path, *, driver='asyncpg', bindings=None, pool=None, root='column'):
     """
     Test-file shim: fills in a default driver so existing test calls
     `sqlize('path')` continue to work without touching every call site.
     """
-    return _sqlize(path, driver=driver, bindings=bindings, pool=pool)
+    return _sqlize(path, driver=driver, bindings=bindings, pool=pool, root=root)
 
 
 # All supported paramstyles as fixture values. Used to parametrize
@@ -1347,3 +1347,199 @@ def test_cast_under_named_paramstyle_with_driver_cast_true():
         "jsonb_build_object('min', :min::bigint))"
     )
     assert params == {'min': 30}
+
+
+# ---------------- table search ----------------
+
+@pytest.mark.parametrize('path, table, select, where, offset, limit', [
+    ('hello', 'hello', '*', None, None, None),
+    ('public.hello', 'public.hello', '*', None, None, None),
+    ('public.hello[*]', 'public.hello', '*', None, None, None),
+    ('hello[*&book_id="b1"]', 'hello', '*',
+     ('book_id = :_p1', {'_p1': 'b1'}), None, None),
+    ('hello[*&book_id="b1"].title', 'hello', 'title',
+     ('book_id = :_p1', {'_p1': 'b1'}), None, None),
+    ('hello[*&data.user.age>30]', 'hello', '*',
+     ("(data #>> '{user,age}')::numeric > :_p1", {'_p1': 30}), None, None),
+    ('hello[*].book_id = "b1"', 'hello', 'book_id',
+     ('book_id = :_p1', {'_p1': 'b1'}), None, None),
+    ('hello[*].data.user.age >= 30', 'hello', "data #>> '{user,age}'",
+     ("(data #>> '{user,age}')::numeric >= :_p1", {'_p1': 30}), None, None),
+    ('hello[0].title', 'hello', 'title', None, 0, 1),
+    ('hello[10:20]', 'hello', '*', None, 10, 10),
+    ('hello[10:]', 'hello', '*', None, 10, None),
+    ('hello[:20]', 'hello', '*', None, None, 20),
+    ('hello[10:20][*].title', 'hello', 'title', None, 10, 10),
+    ('hello[book_id="b1"]', 'hello', '*',
+     ('book_id = :_p1', {'_p1': 'b1'}), None, None),
+    ('hello[book_id="b1"][0]', 'hello', '*',
+     ('book_id = :_p1', {'_p1': 'b1'}), 0, 1),
+    ('hello[book_id="b1"][10:20]', 'hello', '*',
+     ('book_id = :_p1', {'_p1': 'b1'}), 10, 10),
+    ('hello[book_id="b1"][*].title', 'hello', 'title',
+     ('book_id = :_p1', {'_p1': 'b1'}), None, None),
+    ('hello[book_id="b1"][0:10][*].title', 'hello', 'title',
+     ('book_id = :_p1', {'_p1': 'b1'}), 0, 10),
+])
+def test_table_search(path, table, select, where, offset, limit):
+    """
+    Under `root='table'` the leading keys name the table, the row step
+    becomes WHERE / offset / limit, and the rest reads as a column
+    path under each row.
+    """
+    r = sqlize(path, root='table')
+    assert r.table == table
+    assert Resolver.build(r.select) == (select, {})
+    assert (Resolver.build(r.where) if r.where else None) == where
+    assert (r.offset, r.limit) == (offset, limit)
+
+
+@pytest.mark.parametrize('path, where', [
+    ('hello[*&a=1&b!=2]', '(a = :_p1) AND (b != :_p2)'),
+    ('hello[*&(a=1,b=2)]', '(a = :_p1) OR (b = :_p2)'),
+    ('hello[*&!a=1]', 'NOT (a = :_p1)'),
+    ('hello[*&name=/^a/]', 'name ~ :_p1'),
+    ('hello[*&deleted_at=None]', 'deleted_at IS NULL'),
+    ('hello[*&tags[0]="x"]', "(tags #>> '{0}') = :_p1"),
+    ('hello[a=1][*&b=2]', '(a = :_p1) AND (b = :_p2)'),
+    ('hello[*&a=1].b = 2', '(a = :_p1) AND (b = :_p2)'),
+])
+def test_table_search_filters(path, where):
+    """
+    Row filters combine with AND / OR / NOT, and AND with the `where`
+    of the path under each row.
+    """
+    r = sqlize(path, root='table')
+    assert Resolver.build(r.where)[0] == where
+
+
+def test_table_search_unnamed():
+    """
+    A path that starts with a row step searches an unnamed table, with
+    no `root=` needed.
+    """
+    r = sqlize('[*&book_id="b1"]')
+    assert r.table is None
+    assert Resolver.build(r.select) == ('*', {})
+    assert Resolver.build(r.where) == ('book_id = :_p1', {'_p1': 'b1'})
+
+
+def test_leading_index_is_a_row_not_a_column():
+    """
+    `[0]` used to slip through as the column `"0"`; it is the first
+    row of an unnamed table.
+    """
+    r = sqlize('[0]')
+    assert Resolver.build(r.select) == ('*', {})
+    assert (r.table, r.offset, r.limit) == (None, 0, 1)
+
+
+def test_column_root_is_the_default():
+    """
+    Without `root='table'`, the first segment is still a JSONB column.
+    """
+    r = sqlize('hello[*&book_id="b1"]')
+    assert r.table is None
+    assert Resolver.build(r.where)[0].startswith('jsonb_path_exists(hello, ')
+
+
+def test_column_path_has_no_table_values():
+    """
+    A column path leaves `table`, `offset` and `limit` None.
+    """
+    r = sqlize('status = "active"')
+    assert (r.table, r.offset, r.limit) == (None, None, None)
+
+
+def test_unknown_root_raises():
+    """
+    `root` is `'column'` or `'table'`.
+    """
+    with pytest.raises(TranslationError, match='unknown root'):
+        sqlize('hello', root='rows')
+
+
+def test_table_search_bindings_resolve_index_and_slice():
+    """
+    `bindings=` resolves substitutions in a row index or slice bounds
+    at sqlize time.
+    """
+    r = sqlize('hello[$(n)].title', root='table', bindings={'n': 3})
+    assert (r.offset, r.limit) == (3, 1)
+    r = sqlize('hello[$(a):$(b)]', root='table', bindings={'a': 2, 'b': 7})
+    assert (r.offset, r.limit) == (2, 5)
+
+
+def test_table_search_unbound_substitution_in_filter():
+    """
+    A substitution in a row filter's value binds late, as in a column
+    path.
+    """
+    r = sqlize('hello[*&age >= $(min_age)]', root='table')
+    assert list(r.where.unbound.values()) == ['min_age']
+    assert r.build(r.where, min_age=30) == ('age >= $1', [30])
+
+
+def test_table_values_stay_out_of_mapping():
+    """
+    `table`, `offset` and `limit` are plain attributes, not fragments:
+    the mapping yields fragments only.
+    """
+    r = sqlize('hello[book_id="b1"][0:5]', root='table')
+    assert sorted(r) == ['select', 'where']
+    assert all(isinstance(v, SQLFragment) for v in dict(r).values())
+
+
+def test_table_search_repr_shows_plain_values():
+    """
+    `repr` shows the table, offset and limit when set.
+    """
+    r = sqlize('hello[0:5]', root='table')
+    assert repr(r) == (
+        "AsyncPGResolver(driver='asyncpg', select='*', table='hello', "
+        "offset=0, limit=5)")
+
+
+def test_table_search_composes_into_a_query():
+    """
+    The caller assembles the query from the fragments and plain values.
+    """
+    r = sqlize('hello[*&book_id="b1"].title', root='table')
+    sql = 'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+    assert r.build(sql) == (
+        'SELECT title FROM hello WHERE book_id = $1', ['b1'])
+
+
+@pytest.mark.parametrize('path', [
+    'hello[book_id="b1"].title',
+    'hello[10:20].title',
+    'hello[*][0]',
+    'hello[*&a=1][0]',
+    'hello[*](.title,.author)',
+    'hello[*](.title,.author;)',
+    'hello[::2]',
+    'hello[-1]',
+    'hello[-2:]',
+    'hello[0:5][0]',
+    'hello[0:5][a=1]',
+    'hello[0:5][*&a=1]',
+    'hello[0:5][0:2]',
+    'hello = 1',
+    'hello.title = 1',
+    '*[*]',
+    '$(t)[*]',
+    'hello[$(n)]',
+    'hello[$(a):5]',
+    'hello[*&a=1?]',
+    'hello[*&tags[*]="x"]',
+    'hello[+]',
+])
+def test_table_search_unsupported_paths_raise(path):
+    """
+    Table searches v1 can't express raise TranslationError: multi-column
+    select, a key after a slice or slice filter (dotted reads the list
+    there), a row step after a row step, slice steps and negative
+    bounds, unresolved index / slice substitutions, and the rest.
+    """
+    with pytest.raises(TranslationError):
+        sqlize(path, root='table')

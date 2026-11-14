@@ -12,11 +12,11 @@ from dotted.translators import (
 )
 
 
-def sparkize(path, *, flavor='pyspark', bindings=None):
+def sparkize(path, *, flavor='pyspark', bindings=None, root='column'):
     """
     Test-file shim: fills in the only flavor.
     """
-    return _sparkize(path, flavor=flavor, bindings=bindings)
+    return _sparkize(path, flavor=flavor, bindings=bindings, root=root)
 
 
 def test_sparkize_is_public():
@@ -188,3 +188,88 @@ def test_unsupported_paths_raise(path):
     """
     with pytest.raises(TranslationError):
         sparkize(path)
+
+
+# ---- table search ---------------------------------------------------
+
+@pytest.mark.parametrize('path, table, keys, offset, limit', [
+    ('hello', 'hello', ['select'], None, None),
+    ('public.hello[*]', 'public.hello', ['select'], None, None),
+    ('hello[*&book_id="b1"].title', 'hello', ['select', 'where'], None, None),
+    ('hello[0].title', 'hello', ['select'], 0, 1),
+    ('hello[10:20]', 'hello', ['select'], 10, 10),
+    ('hello[book_id="b1"][10:20][*].title', 'hello', ['select', 'where'], 10, 10),
+    ('[*&book_id="b1"]', None, ['select', 'where'], None, None),
+])
+def test_table_search(path, table, keys, offset, limit):
+    """
+    Under `root='table'` the plain values match sqlize's; `select` and
+    `where` stay Column fragments.
+    """
+    r = sparkize(path, root='table')
+    assert r.table == table
+    assert list(r) == keys
+    assert (r.offset, r.limit) == (offset, limit)
+
+
+def test_table_search_unnamed():
+    """
+    A path that starts with a row step searches an unnamed DataFrame,
+    with no `root=` needed.
+    """
+    r = sparkize('[0]')
+    assert (r.table, r.offset, r.limit) == (None, 0, 1)
+    assert isinstance(r.select, ColumnFragment)
+
+
+def test_column_path_has_no_table_values():
+    """
+    A column path leaves `table`, `offset` and `limit` None.
+    """
+    r = sparkize('status = "active"')
+    assert (r.table, r.offset, r.limit) == (None, None, None)
+
+
+def test_unknown_root_raises():
+    """
+    `root` is `'column'` or `'table'`.
+    """
+    with pytest.raises(TranslationError, match='unknown root'):
+        sparkize('hello', root='rows')
+
+
+def test_table_search_unbound_substitution_in_filter():
+    """
+    A substitution in a row filter's value binds late.
+    """
+    r = sparkize('hello[*&age >= $(min_age)]', root='table')
+    assert r.unbound == {'min_age': 'min_age'}
+
+
+def test_table_search_repr_shows_plain_values():
+    """
+    `repr` shows the table, offset and limit when set.
+    """
+    r = sparkize('hello[0:5]', root='table')
+    assert repr(r) == (
+        "PySparkResolver(flavor='pyspark', select, table='hello', "
+        "offset=0, limit=5)")
+
+
+@pytest.mark.parametrize('path', [
+    'hello[book_id="b1"].title',
+    'hello[10:20].title',
+    'hello[*][0]',
+    'hello[*](.title,.author)',
+    'hello[*](.title,.author;)',
+    'hello[::2]',
+    'hello[-1]',
+    'hello[0:5][0]',
+    'hello = 1',
+])
+def test_table_search_unsupported_paths_raise(path):
+    """
+    The same table searches sqlize rejects raise here too.
+    """
+    with pytest.raises(TranslationError):
+        sparkize(path, root='table')

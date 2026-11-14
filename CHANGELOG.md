@@ -3,6 +3,23 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.55.3]
+
+### Added
+- Table search in `sqlize` and `sparkize`: `root='table'` reads a
+  path's leading keys as a table's name, a row step (`[*]`, `[*&…]`,
+  `[n]`, `[a:b]`, a slice filter `[…]`) as WHERE / offset / limit, and
+  the rest as a column path under each row.
+  `sqlize('books[*&author="kafka"].title', driver=..., root='table')`
+  gives `select='title'`, `where='author = $1'`, `r.table='books'`.
+  `r.table`, `r.offset` and `r.limit` are plain values on both
+  resolvers, outside the Mapping; the caller assembles the query.
+- A path that starts with a row step (`[*&author="kafka"]`, `[0]`)
+  searches an unnamed table under either root.
+
+### Fixed
+- A leading index, `[0]`, no longer translates as the column `"0"`.
+
 ## [0.55.2]
 
 ### Added

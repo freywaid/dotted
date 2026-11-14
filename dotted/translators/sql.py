@@ -396,6 +396,15 @@ class Resolver(collections.abc.Mapping):
                                         pattern-path extraction
         unbound : dict                — bind name → original subst name
 
+    A table search (`sqlize(..., root='table')`, or a path that starts
+    with a row step) also sets plain values, None otherwise:
+
+        table   : str | None  — the table's name, as the path spells
+                                it (`'public.hello'`); quoting is the
+                                caller's
+        offset  : int | None  — rows to skip
+        limit   : int | None  — rows to keep
+
     Mapping interface — `r` acts as a dict over its non-None fragment
     attributes:
 
@@ -406,7 +415,8 @@ class Resolver(collections.abc.Mapping):
 
     Only fragment attributes (`select`, `where`, `from_`, `lateral`)
     are exposed via the Mapping; classvar knobs (`driver`, `paramstyle`,
-    `cast`) and `unbound` are reached as plain attributes.
+    `cast`), `unbound` and the table search's `table`, `offset`,
+    `limit` are reached as plain attributes.
 
     Rendering:
 
@@ -425,15 +435,21 @@ class Resolver(collections.abc.Mapping):
 
     _FRAGMENT_KEYS = ('select', 'where', 'from_', 'lateral')
 
-    __slots__ = ('select', 'where', 'from_', 'lateral', 'unbound', '_state')
+    _PLAIN_KEYS = ('table', 'offset', 'limit')
+
+    __slots__ = ('select', 'where', 'from_', 'lateral', 'unbound',
+                 'table', 'offset', 'limit', '_state')
 
     def __init__(self, select=None, where=None, from_=None, lateral=None,
-                 unbound=None):
+                 unbound=None, table=None, offset=None, limit=None):
         self.select = select
         self.where = where
         self.from_ = from_
         self.lateral = lateral
         self.unbound = dict(unbound or {})
+        self.table = table
+        self.offset = offset
+        self.limit = limit
         self._state = None
 
     def __repr__(self):
@@ -442,6 +458,10 @@ class Resolver(collections.abc.Mapping):
             v = getattr(self, attr)
             if v is not None:
                 bits.append(f'{attr}={v.text!r}')
+        for attr in self._PLAIN_KEYS:
+            v = getattr(self, attr)
+            if v is not None:
+                bits.append(f'{attr}={v!r}')
         if self.unbound:
             bits.append(f'unbound={list(self.unbound.values())}')
         return f'{type(self).__name__}({", ".join(bits)})'
@@ -752,7 +772,7 @@ def _quote_ident(name):
 
 # ---- sqlize entry point ---------------------------------------------
 
-def sqlize(path, *, driver, bindings=None, pool=None):
+def sqlize(path, *, driver, bindings=None, pool=None, root='column'):
     """
     Translate a dotted path into a driver-specific `Resolver` instance
     carrying paramstyle-neutral SQL fragments.
@@ -773,6 +793,14 @@ def sqlize(path, *, driver, bindings=None, pool=None):
                    be composed (via `+`, a CTE envelope, etc.) without
                    marker-name collisions. Omit to give this Resolver
                    its own private pool.
+        root     — `'column'` (default): the path's first segment is a
+                   column of the row. `'table'`: its leading keys name
+                   a table, a row step (`[*]`, `[*&…]`, `[n]`, `[a:b]`,
+                   a slice filter `[…]`) walks its rows, and the rest
+                   is a column path under each row; `r.table`,
+                   `r.offset` and `r.limit` carry the plain values. A
+                   path that starts with a row step searches an
+                   unnamed table under either root.
 
     The driver picks both the SQL flavor (via the class's flavor
     mixin, e.g. `PostgresMixin`) and the build-time rendering behavior
@@ -798,5 +826,5 @@ def sqlize(path, *, driver, bindings=None, pool=None):
         )
     parsed = parse(path, bindings=bindings, partial=True)
     r = cls()
-    r.translate(parsed.ops, pool=pool)
+    r.translate(parsed.ops, pool=pool, root=root)
     return r
