@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.55.4]
 
 ### Changed
 - A `match(..., groups=...)` capture is the path's segment as the path
