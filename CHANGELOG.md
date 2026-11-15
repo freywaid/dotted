@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.55.5]
 
 ### Fixed
 - `match` and `match_multi` honor `strict=True`, which they took and
