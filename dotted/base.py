@@ -42,7 +42,7 @@ def has_any(gen):
     return any(True for _ in gen)
 
 
-def match_ops(pats, path_ops, partial):
+def match_ops(pats, path_ops, partial, strict=False):
     """
     Match a list of pattern ops against a list of path ops.
     Returns a list of (ops, is_pattern) capture pairs on success, None
@@ -50,12 +50,13 @@ def match_ops(pats, path_ops, partial):
     path writes them.  Dispatch is per-op on both sides: a variadic op at
     the head of the path (group, recursive) decides how the pattern must
     cover it via do_match_path; otherwise the head pattern op decides
-    how many path segments it consumes via do_match.
+    how many path segments it consumes via do_match.  Under strict, a
+    segment matches only one read the same way (see same_access).
     """
     if path_ops and path_ops[0].is_variadic():
-        return path_ops[0].do_match_path(list(pats), list(path_ops[1:]), partial)
+        return path_ops[0].do_match_path(list(pats), list(path_ops[1:]), partial, strict)
     if pats:
-        return pats[0].do_match(pats[1:], path_ops, partial)
+        return pats[0].do_match(pats[1:], path_ops, partial, strict)
     if not path_ops:
         return []
     if partial:
@@ -82,6 +83,17 @@ def capture(path_ops, is_pat, rest):
     if rest and rest[0][1] is None:
         return [(ops + rest[0][0], is_pat)] + rest[1:]
     return [(ops, is_pat)] + rest
+
+
+def same_access(pat, op):
+    """
+    True if pattern op `pat` and path op `op` read a node the same way,
+    as strict mode asks: a key only a key, a slot only a slot, an attr
+    only an attr.  An op with no access of its own (a group) passes.
+    """
+    a = pat.access_kind()
+    b = op.access_kind()
+    return a is None or b is None or a == b
 
 
 class MatchResult:
@@ -132,6 +144,13 @@ class Op:
         return self
     def scrub(self, node):
         return node
+    def access_kind(self):
+        """
+        How this op reads a node: 'key', 'slot' or 'attr', or None when it
+        has no one way (a group, a recursive op).  Strict mode keeps the
+        three apart (see same_access).
+        """
+        return None
     def match_target(self):
         """
         What a pattern matches this path op as: the op itself.  A
@@ -533,7 +552,7 @@ class TraversalOp(Op):
         val = getattr(getattr(self, 'op', self), 'value', self)
         return has_any(matcher.matches((val,)))
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         Match this op against exactly one path segment, then continue with
         the remaining pattern ops.  Variadic ops (recursive, groups)
@@ -541,9 +560,12 @@ class TraversalOp(Op):
         """
         if not path_ops:
             return None
-        if not self.match(path_ops[0].match_target(), specials=True):
+        target = path_ops[0].match_target()
+        if strict and not same_access(self, target):
             return None
-        rest = match_ops(rest_pats, path_ops[1:], partial)
+        if not self.match(target, specials=True):
+            return None
+        rest = match_ops(rest_pats, path_ops[1:], partial, strict)
         if rest is None:
             return None
         return capture(path_ops[:1], self.is_pattern(), rest)

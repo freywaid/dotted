@@ -880,6 +880,16 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     >>> match('hello.*', 'hello.there.bye', groups='patterns')
     ('hello.there.bye', ('there.bye',))
 
+    A segment matches however it is read, unless strict=True keeps a key
+    to keys, a slot to slots and an attr to attrs, as strict mode does
+    for get:
+    >>> match('[*]', 'table')
+    'table'
+    >>> match('[*]', 'table', strict=True)
+    >>> match('*', '[0]', strict=True)
+    >>> match('[*]', '[0]', strict=True)
+    '[0]'
+
     Group patterns match if any branch matches:
     >>> match('(a,b)', 'a')
     'a'
@@ -937,16 +947,16 @@ def match(pattern, path, groups=False, partial=True, strict=False):
     '*b'
     >>> match('*', '**')
     """
-    return _match_parsed(parse(pattern), parse(path), path, groups, partial)
+    return _match_parsed(parse(pattern), parse(path), path, groups, partial, strict)
 
 
-def _match_parsed(pats, path_ops, path, groups, partial):
+def _match_parsed(pats, path_ops, path, groups, partial, strict=False):
     """
     match() on parsed arguments. `path` is what a successful match returns.
     Each capture is the path segments one pattern segment matched, as the
     path writes them.
     """
-    caps = _captures(pats, path_ops, partial, bool(groups))
+    caps = _captures(pats, path_ops, partial, bool(groups), strict)
     if not groups:
         return None if caps is None else path
     if caps is None:
@@ -957,18 +967,19 @@ def _match_parsed(pats, path_ops, path, groups, partial):
     return (path, tuple(results.assemble(ops) for ops, _ in caps))
 
 
-def _captures(pats, path_ops, partial, collect=True):
+def _captures(pats, path_ops, partial, collect=True, strict=False):
     """
     The captures of the path that pats match, as base.match_ops gives
     them: (ops, is_pattern) pairs, each ops the path ops one pattern
     segment matched.  None when pats don't match.  Without collect, a
-    match may give no captures.
+    match may give no captures.  Under strict, a segment matches only
+    one read the same way: a key a key, a slot a slot, an attr an attr.
     """
     # Variadic ops (recursive, groups) consume variable-length path
     # segments — use the recursive matcher.  On the path side they make
     # the path denote multiple expansions, which likewise needs it.
     if pats.variadic or path_ops.variadic:
-        return base.match_ops(list(pats), list(path_ops), partial)
+        return base.match_ops(list(pats), list(path_ops), partial, strict)
 
     # one path segment per pattern segment; a partial match's last
     # capture runs to the end of the path
@@ -978,7 +989,10 @@ def _captures(pats, path_ops, partial, collect=True):
         return None
     caps = []
     for pop, kop in zip(pats, path_ops):
-        if not pop.match(kop.match_target(), specials=True):
+        target = kop.match_target()
+        if strict and not base.same_access(pop, target):
+            return None
+        if not pop.match(target, specials=True):
             return None
         if collect:
             caps.append(((kop,), pop.is_pattern()))
@@ -998,7 +1012,7 @@ def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
         for p in iterable:
             if pats is None:
                 pats = parse(pattern)
-            yield _match_parsed(pats, parse(p), p, groups, partial)
+            yield _match_parsed(pats, parse(p), p, groups, partial, strict)
 
     matches = _matches()
     if groups:

@@ -190,7 +190,7 @@ class OpGroup(base.TraversalOp):
     def operator(self, top=False):
         return self._render(top)
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         Match a concrete path against this group: the path matches if it
         matches any branch followed by the remaining pattern ops.  A single
@@ -205,16 +205,16 @@ class OpGroup(base.TraversalOp):
         for branch in base.branches_only(self.branches):
             branch_ops = list(branch)
             for n in range(len(path_ops) + 1):
-                consumed = base.match_ops(branch_ops, path_ops[:n], False)
+                consumed = base.match_ops(branch_ops, path_ops[:n], False, strict)
                 if consumed is None:
                     continue
-                rest = base.match_ops(list(rest_pats), path_ops[n:], partial)
+                rest = base.match_ops(list(rest_pats), path_ops[n:], partial, strict)
                 if rest is None:
                     continue
                 return base.capture(path_ops[:n], True, rest)
         return None
 
-    def do_match_path(self, pats, rest_path, partial):
+    def do_match_path(self, pats, rest_path, partial, strict=False):
         """
         Match when this group appears on the *path* side.  The path
         denotes every expansion of the group's branches, so the pattern
@@ -231,19 +231,19 @@ class OpGroup(base.TraversalOp):
         """
         if not pats and partial:
             return base.leftover([self] + list(rest_path))
-        fallback = self._verify_covered(pats, rest_path, partial)
+        fallback = self._verify_covered(pats, rest_path, partial, strict)
         if fallback is None:
             return None
-        r = self._aligned_captures(pats, rest_path, partial)
+        r = self._aligned_captures(pats, rest_path, partial, strict)
         if r is not None:
             return r
         if pats and pats[0].is_variadic():
-            r = pats[0].do_match(pats[1:], [self] + list(rest_path), partial)
+            r = pats[0].do_match(pats[1:], [self] + list(rest_path), partial, strict)
             if r is not None:
                 return r
         return fallback
 
-    def _verify_covered(self, pats, rest_path, partial):
+    def _verify_covered(self, pats, rest_path, partial, strict=False):
         """
         Subsumption check over expansions: splice each branch into the
         path and match.  Returns the first branch's result (the capture
@@ -251,16 +251,16 @@ class OpGroup(base.TraversalOp):
         """
         first = base.marker
         for branch in base.branches_only(self.branches):
-            r = base.match_ops(pats, list(branch) + list(rest_path), partial)
+            r = base.match_ops(pats, list(branch) + list(rest_path), partial, strict)
             if r is None:
                 return None
             if first is base.marker:
                 first = r
         if first is base.marker:
-            return base.match_ops(pats, list(rest_path), partial)
+            return base.match_ops(pats, list(rest_path), partial, strict)
         return first
 
-    def _aligned_captures(self, pats, rest_path, partial):
+    def _aligned_captures(self, pats, rest_path, partial, strict=False):
         """
         Group-as-itself captures: find a pattern prefix that covers the
         branch set exactly (or up to a partial tail when the pattern
@@ -270,20 +270,20 @@ class OpGroup(base.TraversalOp):
         for k in range(1, len(pats) + 1):
             head = list(pats[:k])
             tail_partial = partial and k == len(pats) and not rest_path
-            if not self._covers_branches(head, tail_partial):
+            if not self._covers_branches(head, tail_partial, strict):
                 continue
-            rest = base.match_ops(list(pats[k:]), list(rest_path), partial)
+            rest = base.match_ops(list(pats[k:]), list(rest_path), partial, strict)
             if rest is None:
                 continue
             is_pat = any(p.is_pattern() for p in head)
             return base.capture([self], is_pat, rest)
         return None
 
-    def _covers_branches(self, head_pats, tail_partial=False):
+    def _covers_branches(self, head_pats, tail_partial=False, strict=False):
         """
         True if head_pats covers every branch of this group.
         """
-        return all(base.match_ops(head_pats, list(b), tail_partial) is not None
+        return all(base.match_ops(head_pats, list(b), tail_partial, strict) is not None
                    for b in base.branches_only(self.branches))
 
     def covered_by(self, matcher):
@@ -658,23 +658,23 @@ class OpGroupAnd(OpGroup):
     def __repr__(self):
         return self._render(top=True)
 
-    def _verify_covered(self, pats, rest_path, partial):
+    def _verify_covered(self, pats, rest_path, partial, strict=False):
         """
         A conjunction's expansions are the intersection of its
         branches', so a pattern covering any single branch covers the
         whole (sufficient, conservatively incomplete).
         """
         for branch in base.branches_only(self.branches):
-            r = base.match_ops(pats, list(branch) + list(rest_path), partial)
+            r = base.match_ops(pats, list(branch) + list(rest_path), partial, strict)
             if r is not None:
                 return r
         return None
 
-    def _covers_branches(self, head_pats, tail_partial=False):
+    def _covers_branches(self, head_pats, tail_partial=False, strict=False):
         """
         Any single covered branch suffices for a conjunction.
         """
-        return any(base.match_ops(head_pats, list(b), tail_partial) is not None
+        return any(base.match_ops(head_pats, list(b), tail_partial, strict) is not None
                    for b in base.branches_only(self.branches))
 
     def push_children(self, stack, frame, paths):
@@ -890,24 +890,27 @@ class OpGroupNot(OpGroup):
     def default(self):
         return self._leaf().default()
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         Match the segments of one subtree of the complement: they follow
         the inner branch op by op until one does not match, and that one
         ends the subtree; then continue with the remaining ops. A path
         the whole branch matches is in the negated pattern, not out of it.
+        Under strict, each segment is read as the inner op it meets is.
         """
         inner = self.inner
         for i, kop in enumerate(path_ops[:len(inner)]):
-            if base.match_ops([inner[i]], [kop], False) is not None:
+            if strict and not base.same_access(inner[i], kop.match_target()):
+                return None
+            if base.match_ops([inner[i]], [kop], False, strict) is not None:
                 continue
-            rest = base.match_ops(rest_pats, path_ops[i + 1:], partial)
+            rest = base.match_ops(rest_pats, path_ops[i + 1:], partial, strict)
             if rest is None:
                 return None
             return base.capture(path_ops[:i + 1], True, rest)
         return None
 
-    def do_match_path(self, pats, rest_path, partial):
+    def do_match_path(self, pats, rest_path, partial, strict=False):
         """
         Match when this negation appears on the *path* side.  It denotes
         every segment its inner pattern excludes — an open set — so it
@@ -919,7 +922,7 @@ class OpGroupNot(OpGroup):
         head = pats[0]
         if head != self and not self._wildcard_covers(head):
             return None
-        rest = base.match_ops(pats[1:], rest_path, partial)
+        rest = base.match_ops(pats[1:], rest_path, partial, strict)
         if rest is None:
             return None
         return base.capture([self], True, rest)
@@ -1018,13 +1021,13 @@ class Pack(base.TraversalOp):
             return None
         return base.MatchResult(self)
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         One segment, matched by equality (see match).
         """
         if not path_ops or not self.match(path_ops[0]):
             return None
-        rest = base.match_ops(rest_pats, path_ops[1:], partial)
+        rest = base.match_ops(rest_pats, path_ops[1:], partial, strict)
         if rest is None:
             return None
         return base.capture(path_ops[:1], False, rest)

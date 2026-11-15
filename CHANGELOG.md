@@ -3,6 +3,16 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Fixed
+- `match` and `match_multi` honor `strict=True`, which they took and
+  ignored: a key pattern matches only a key, a slot pattern only a
+  slot, an attr pattern only an attr, as strict mode does for `get`.
+  `match('[*]', 'table', strict=True)` and `match('*', '[0]',
+  strict=True)` are `None`. `**` reads keys, so under strict it
+  consumes only key segments; `*(.*,[*])` reads both.
+
 ## [0.55.4]
 
 ### Changed

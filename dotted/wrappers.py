@@ -85,22 +85,28 @@ class Wrap(base.TraversalOp):
         """
         return self.inner.leaf_op()
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def access_kind(self):
+        """
+        A wrap decorates; it reads a node as the wrapped op does.
+        """
+        return self.inner.access_kind()
+
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         Variadic inners (recursive ops, groups) decide their own segment
         consumption; otherwise match one segment via this wrap's match.
         """
         if self.is_variadic():
-            return self.inner.do_match(rest_pats, path_ops, partial)
-        return super().do_match(rest_pats, path_ops, partial)
+            return self.inner.do_match(rest_pats, path_ops, partial, strict)
+        return super().do_match(rest_pats, path_ops, partial, strict)
 
-    def do_match_path(self, pats, rest_path, partial):
+    def do_match_path(self, pats, rest_path, partial, strict=False):
         """
         Delegate path-side matching to the wrapped op (only reached for
         variadic inners, via is_variadic).  A capture of the wrapped op
         is a capture of this one: the segment as the path writes it.
         """
-        r = self.inner.do_match_path(pats, rest_path, partial)
+        r = self.inner.do_match_path(pats, rest_path, partial, strict)
         if r is None:
             return None
         inner = self.inner

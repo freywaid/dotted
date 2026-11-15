@@ -655,6 +655,14 @@ depends on the data, so no part of the list covers it, and neither does
     >>> dotted.match('a[1:]', 'a[x=1]')
     >>> dotted.match('a[*]', 'a[x=1]')
 
+A segment matches however it is read: `[*]` matches the key `table`, and `*` the slot
+`[0]`. Pass `strict=True` to keep keys, slots and attrs apart, as
+[strict mode](#strict-mode) does for `get`:
+
+    >>> dotted.match('[*]', 'table')
+    'table'
+    >>> dotted.match('[*]', 'table', strict=True)
+
 <a id="replace"></a>
 ### Replace
 
@@ -1132,7 +1140,7 @@ Pass `strict=True` to enforce this separation:
     True
 
 Strict mode applies to all operations — `get`, `update`, `remove`, `has`, `expand`,
-`pluck`, and their `_multi` variants. Mismatches silently return empty results, consistent
+`pluck`, `match`, and their `_multi` variants. Mismatches silently return empty results, consistent
 with dotted's safe traversal model:
 
     >>> dotted.has(d, '[0]', strict=True)
@@ -1146,6 +1154,21 @@ with dotted's safe traversal model:
 
 Use strict mode when your data mixes integer dict keys and list indices, and you need
 to distinguish between them.
+
+`match` and `match_multi` take `strict` too. By default a segment matches however it is
+read, so `[*]` matches a key and `*` a slot. Strict keeps them apart, as `get` does: a key
+pattern matches only a key, a slot pattern only a slot, an attr pattern only an attr.
+`**` reads keys, so it consumes only key segments; `*(.*,[*])` reads both:
+
+    >>> dotted.match('[*]', 'table')
+    'table'
+    >>> dotted.match('[*]', 'table', strict=True)
+    >>> dotted.match('*', '[0]', strict=True)
+    >>> dotted.match('[*]', '[0]', strict=True)
+    '[0]'
+    >>> dotted.match('**.b', 'a[0].b', strict=True)
+    >>> dotted.match('*(.*,[*]).b', 'a[0].b', strict=True)
+    'a[0].b'
 
 <a id="paths"></a>
 ## Paths

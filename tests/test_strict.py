@@ -312,3 +312,72 @@ def test_apply_slot_on_dict_strict():
     d = {'a': 1, 'b': 2}
     result = dotted.apply(d, '[*]|str', strict=True)
     assert result == {'a': 1, 'b': 2}  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# MATCH
+# ---------------------------------------------------------------------------
+
+def test_match_slot_pattern_on_key_strict():
+    """
+    [*] matches a key segment by default; strict keeps it to slots.
+    """
+    assert dotted.match('[*]', 'table') == 'table'
+    assert dotted.match('[*]', 'table', strict=True) is None
+    assert dotted.match('gone[*]', 'gone.3', strict=True) is None
+    assert dotted.match('[*]', '[0]', strict=True) == '[0]'
+
+
+def test_match_key_pattern_on_slot_strict():
+    assert dotted.match('*', '[0]') == '[0]'
+    assert dotted.match('*', '[0]', strict=True) is None
+    assert dotted.match('gone.*', 'gone[3]', strict=True) is None
+    assert dotted.match('*', 'table', strict=True) == 'table'
+
+
+def test_match_attr_strict():
+    assert dotted.match('*.*', 'a@b', strict=True) is None
+    assert dotted.match('*@*', 'a@b', strict=True) == 'a@b'
+
+
+def test_match_decorated_segment_strict():
+    """
+    A filter, guard or transform leaves how a segment is read alone.
+    """
+    assert dotted.match('*', '[0]=1', strict=True) is None
+    assert dotted.match('[*]', '[0]=1', strict=True) == '[0]=1'
+    assert dotted.match('*[*]', 'a[0]|int', strict=True) == 'a[0]|int'
+    assert dotted.match('*[*].*', 'lots[*&a=1].d', strict=True) == 'lots[*&a=1].d'
+
+
+def test_match_slice_filter_strict():
+    assert dotted.match('a[]', 'a[x=1]', strict=True) == 'a[x=1]'
+
+
+def test_match_recursive_strict():
+    """
+    ** reads keys, so under strict it consumes only key segments;
+    *(.*,[*]) reads keys and slots.
+    """
+    assert dotted.match('**.b', 'a[0].b') == 'a[0].b'
+    assert dotted.match('**.b', 'a[0].b', strict=True) is None
+    assert dotted.match('**', 'a.b.c', strict=True, partial=False) == 'a.b.c'
+    assert dotted.match('*(.*,[*]).b', 'a[0].b', strict=True) == 'a[0].b'
+
+
+def test_match_group_strict():
+    assert dotted.match('(a,[0])', '[0]', strict=True) == '[0]'
+    assert dotted.match('(!a)', '[0]', strict=True) is None
+    assert dotted.match('(!a)', 'b', strict=True) == 'b'
+
+
+def test_match_path_group_strict():
+    """
+    A group on the path is covered only if every branch is.
+    """
+    assert dotted.match('*.*', 'a.(b,[0])') == 'a.(b,[0])'
+    assert dotted.match('*.*', 'a.(b,[0])', strict=True) is None
+
+
+def test_match_multi_strict():
+    assert list(dotted.match_multi('[*]', ['a', '[0]'], strict=True)) == ['[0]']

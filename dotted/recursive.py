@@ -148,22 +148,41 @@ class Recursive(BaseOp):
     def match(self, op, specials=False):
         return self.inner.matchable(op, specials=specials)
 
-    def do_match(self, rest_pats, path_ops, partial):
+    def do_match(self, rest_pats, path_ops, partial, strict=False):
         """
         Match by consuming 1..N path segments via backtracking.  Each
         consumed segment must match the inner pattern (chain-following);
-        stop extending once a segment fails.
+        stop extending once a segment fails.  Under strict, each must
+        also be read the way one of this op's accessors reads a node.
         """
         for n in range(1, len(path_ops) + 1):
-            if not path_ops[n - 1].covered_by(self.inner):
+            seg = path_ops[n - 1]
+            if strict and not self._reads(seg):
                 return None
-            rest = base.match_ops(rest_pats, path_ops[n:], partial)
+            if not seg.covered_by(self.inner):
+                return None
+            rest = base.match_ops(rest_pats, path_ops[n:], partial, strict)
             if rest is None:
                 continue
             return base.capture(path_ops[:n], True, rest)
         return None
 
-    def do_match_path(self, pats, rest_path, partial):
+    def _reads(self, op):
+        """
+        True if one of this op's accessors reads a node the way path op
+        `op` does: ** reads keys, *(.*,[*]) keys and slots.
+        """
+        kind = op.match_target().access_kind()
+        return kind is None or kind in self._access_kinds
+
+    @utils.lazyprop
+    def _access_kinds(self):
+        """
+        How this op's accessors read a node (see base.Op.access_kind).
+        """
+        return {op.access_kind() for branch in base.branches_only(self._effective_branches()) for op in branch}
+
+    def do_match_path(self, pats, rest_path, partial, strict=False):
         """
         Match when this recursive op appears on the *path* side.  It
         denotes unboundedly many expansions, so only a pattern segment
@@ -179,9 +198,9 @@ class Recursive(BaseOp):
             return None
         if not self._subsumed_by(head):
             return None
-        rest = base.match_ops(pats[1:], rest_path, partial)
+        rest = base.match_ops(pats[1:], rest_path, partial, strict)
         if rest is None:
-            rest = base.match_ops(pats, rest_path, partial)
+            rest = base.match_ops(pats, rest_path, partial, strict)
         if rest is None:
             return None
         return base.capture([self], True, rest)
