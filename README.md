@@ -569,6 +569,19 @@ With the `groups=True` parameter, you'll see how it was matched:
 In the above example, `hello` matched to `hello` and `*` matched to `there.bye` (partial
 matching is enabled by default).
 
+A capture is the path's segment as the path writes it: its accessor, filters, value
+guard and transforms come with it. A filter, guard or transform on the path only
+narrows a segment, so an undecorated pattern still matches it:
+
+    >>> dotted.match('*[*].*', 'lots[*&a=1].d', groups=True)
+    ('lots[*&a=1].d', ('lots', '[*&a=1]', 'd'))
+    >>> dotted.match('*.*', 'a.b|int', groups=True)
+    ('a.b|int', ('a', 'b|int'))
+    >>> dotted.match('*', 'a=1', groups=True)
+    ('a=1', ('a=1',))
+    >>> dotted.match('**.b', 'a.b.c', groups=True)
+    ('a.b.c', ('a', 'b.c'))
+
 Use `groups=GroupMode.patterns` to capture only pattern segments (wildcards, regex, etc.),
 excluding literals:
 
@@ -692,6 +705,16 @@ With multiple wildcards, `$N` indices follow wildcard order:
 
     >>> translate('a.X.b.Y.c', {'a.*.b.*.c': '$1.$0'})
     'Y.X'
+
+A `$N` that is a whole segment, `.$0` or `[$0]`, becomes the captured segment as the
+path writes it, its accessor included:
+
+    >>> translate('bye[3]', {'bye[*]': 'gone.$0'})
+    'gone[3]'
+    >>> translate('bye.3', {'bye[*]': 'gone.$0'})
+    'gone.3'
+    >>> translate('bye[*&a=1]', {'bye[*]': 'gone.$0'})
+    'gone[*&a=1]'
 
 The pattern map can be a dict or an iterable of `(pattern, template)` tuples.
 Returns `None` if no pattern matches:

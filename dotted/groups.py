@@ -4,7 +4,6 @@ from . import base
 from . import matchers
 from . import wrappers
 from . import engine
-from . import results
 from .access import AccessOp, Key, Attr, Slot, SlotSpecial
 
 
@@ -212,8 +211,7 @@ class OpGroup(base.TraversalOp):
                 rest = base.match_ops(list(rest_pats), path_ops[n:], partial)
                 if rest is None:
                     continue
-                combined = results.assemble(path_ops[:n])
-                return [(combined, True)] + rest
+                return base.capture(path_ops[:n], True, rest)
         return None
 
     def do_match_path(self, pats, rest_path, partial):
@@ -231,6 +229,8 @@ class OpGroup(base.TraversalOp):
         decomposition exists do captures fall back to the first
         branch's expansion.
         """
+        if not pats and partial:
+            return base.leftover([self] + list(rest_path))
         fallback = self._verify_covered(pats, rest_path, partial)
         if fallback is None:
             return None
@@ -276,7 +276,7 @@ class OpGroup(base.TraversalOp):
             if rest is None:
                 continue
             is_pat = any(p.is_pattern() for p in head)
-            return [(results.assemble([self]), is_pat)] + rest
+            return base.capture([self], is_pat, rest)
         return None
 
     def _covers_branches(self, head_pats, tail_partial=False):
@@ -904,7 +904,7 @@ class OpGroupNot(OpGroup):
             rest = base.match_ops(rest_pats, path_ops[i + 1:], partial)
             if rest is None:
                 return None
-            return [(getattr(getattr(seg, 'op', seg), 'value', seg), True) for seg in path_ops[:i + 1]] + rest
+            return base.capture(path_ops[:i + 1], True, rest)
         return None
 
     def do_match_path(self, pats, rest_path, partial):
@@ -915,14 +915,14 @@ class OpGroupNot(OpGroup):
         segment.
         """
         if not pats:
-            return [] if partial else None
+            return base.leftover([self] + list(rest_path)) if partial else None
         head = pats[0]
         if head != self and not self._wildcard_covers(head):
             return None
         rest = base.match_ops(pats[1:], rest_path, partial)
         if rest is None:
             return None
-        return [(results.assemble([self]), True)] + rest
+        return base.capture([self], True, rest)
 
     def _wildcard_covers(self, head):
         """
@@ -1027,7 +1027,7 @@ class Pack(base.TraversalOp):
         rest = base.match_ops(rest_pats, path_ops[1:], partial)
         if rest is None:
             return None
-        return [(self, False)] + rest
+        return base.capture(path_ops[:1], False, rest)
 
     def operator(self, top=False):
         """

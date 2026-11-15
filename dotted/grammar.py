@@ -242,7 +242,13 @@ _numeric_quoted = S('#') + ((S("'") + ppc.number + S("'")) | (S('"') + ppc.numbe
 numeric_quoted = _numeric_quoted.set_parse_action(matchers.NumericQuoted)
 
 numeric_key = integer.copy().set_parse_action(matchers.Numeric)
-numeric_slot = ppc.number.copy().set_parse_action(matchers.Numeric)
+
+# A number as pyparsing reads one, but a dot in it needs a digit or an
+# exponent after it: in a&x=1.b the dot starts the next segment, it does
+# not end 1.  1.e5 is still the float 100000.0.
+_number = pp.Regex(r'[+-]?(?:[0-9]+(?:\.[0-9]+|\.(?=[eE][+-]?[0-9]))?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?')
+_number.set_parse_action(lambda t: int(t[0]) if t[0].lstrip('+-').isdigit() else float(t[0]))
+numeric_slot = _number.copy().add_parse_action(matchers.Numeric)
 
 # Extended numeric literals: scientific (1e10), underscore (1_000), hex (0x1F), octal (0o17), binary (0b1010)
 _numeric_extended_re = pp.Regex(

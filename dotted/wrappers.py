@@ -97,9 +97,14 @@ class Wrap(base.TraversalOp):
     def do_match_path(self, pats, rest_path, partial):
         """
         Delegate path-side matching to the wrapped op (only reached for
-        variadic inners, via is_variadic).
+        variadic inners, via is_variadic).  A capture of the wrapped op
+        is a capture of this one: the segment as the path writes it.
         """
-        return self.inner.do_match_path(pats, rest_path, partial)
+        r = self.inner.do_match_path(pats, rest_path, partial)
+        if r is None:
+            return None
+        inner = self.inner
+        return [(tuple(self if op is inner else op for op in ops), is_pat) for ops, is_pat in r]
 
     def covered_by(self, matcher):
         """
@@ -212,6 +217,13 @@ class TransformWrap(Wrap):
         These transforms around another op.
         """
         return TransformWrap(inner, self.transforms)
+
+    def match_target(self):
+        """
+        A transform changes what the segment yields, not which segment it
+        is: a pattern matches the wrapped op.
+        """
+        return self.inner.match_target()
 
     def __repr__(self):
         return self.operator(top=True)
@@ -397,6 +409,13 @@ class ValueGuard(Wrap):
         Backward compat: True when pred_op is NE.
         """
         return self.pred_op is predicates.NE
+
+    def match_target(self):
+        """
+        A guard narrows the values a segment reaches, as a filter does:
+        a pattern matches the wrapped op.
+        """
+        return self.inner.match_target()
 
     def __repr__(self):
         return self.operator(top=True)

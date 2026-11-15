@@ -146,6 +146,41 @@ def test_rhs_float_in_transform_arg():
     """
     assert dotted.get({'a': 0.5}, 'a|round:0') == 0
 
+def test_rhs_integer_filter_then_key():
+    """
+    a&x=1.b is (a&x=1, b): the dot starts the next segment, it does not
+    end the float 1.
+    """
+    p = dotted.parse('a&x=1.b')
+    assert dotted.assemble(p) == 'a&x=1.b'
+    assert dotted.get({'a': {'x': 1, 'b': 2}}, 'a&x=1.b') == 2
+    assert dotted.assemble(dotted.parse('a&x=-1.b')) == 'a&x=-1.b'
+    assert dotted.assemble(dotted.parse('a[*&x=1].b')) == 'a[*&x=1].b'
+
+def test_rhs_float_filter_then_key():
+    assert dotted.assemble(dotted.parse('a&x=1.5.b')) == 'a&x=1.5.b'
+    assert dotted.assemble(dotted.parse('a&x=.5.b')) == 'a&x=0.5.b'
+    assert dotted.get({'a': {'x': 1.5, 'b': 2}}, 'a&x=1.5.b') == 2
+
+def test_rhs_float_dot_before_exponent():
+    """
+    1.e5 is a float, as in Python: the dot is followed by an exponent.
+    """
+    assert dotted.get({'a': {'x': 100000.0, 'b': 2}}, 'a&x=1.e5.b') == 2
+    assert dotted.get({'a': 100000.0}, 'a=1.e5') == 100000.0
+    assert dotted.assemble(dotted.parse('a&x=1.eb')) == 'a&x=1.eb'
+
+def test_rhs_trailing_dot_is_no_number():
+    """
+    A dot in a number needs a digit after it.
+    """
+    import pytest
+    from dotted.api import ParseError
+    with pytest.raises(ParseError):
+        dotted.parse('a&x=1.')
+    with pytest.raises(ParseError):
+        dotted.parse('[1.]')
+
 
 # --- Guarded ops are terminal within op_seq ---
 

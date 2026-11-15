@@ -45,9 +45,10 @@ def has_any(gen):
 def match_ops(pats, path_ops, partial):
     """
     Match a list of pattern ops against a list of path ops.
-    Returns a list of (value, is_pattern) capture pairs on success, None
-    on failure.  Dispatch is per-op on both sides: a variadic op at the
-    head of the path (group, recursive) decides how the pattern must
+    Returns a list of (ops, is_pattern) capture pairs on success, None
+    on failure: ops are the path ops one pattern segment matched, as the
+    path writes them.  Dispatch is per-op on both sides: a variadic op at
+    the head of the path (group, recursive) decides how the pattern must
     cover it via do_match_path; otherwise the head pattern op decides
     how many path segments it consumes via do_match.
     """
@@ -58,8 +59,29 @@ def match_ops(pats, path_ops, partial):
     if not path_ops:
         return []
     if partial:
-        return []
+        return leftover(path_ops)
     return None
+
+
+def leftover(path_ops):
+    """
+    The captures of what a partial match leaves of the path: one capture
+    with no pattern segment of its own, which joins the capture before it
+    (see capture).
+    """
+    return [(tuple(path_ops), None)]
+
+
+def capture(path_ops, is_pat, rest):
+    """
+    The captures `rest` with a capture of `path_ops` first: the path ops
+    one pattern segment matched.  A partial match's leftover at the head
+    of `rest` joins it, so the last capture runs to the end of the path.
+    """
+    ops = tuple(path_ops)
+    if rest and rest[0][1] is None:
+        return [(ops + rest[0][0], is_pat)] + rest[1:]
+    return [(ops, is_pat)] + rest
 
 
 class MatchResult:
@@ -110,6 +132,13 @@ class Op:
         return self
     def scrub(self, node):
         return node
+    def match_target(self):
+        """
+        What a pattern matches this path op as: the op itself.  A
+        decoration that narrows only the values a segment reaches, a
+        value guard or a transform, plays no part (see wrappers).
+        """
+        return self
     def match_keys(self, node):
         """
         Keys of dict-like `node` that this op matches.
@@ -512,16 +541,12 @@ class TraversalOp(Op):
         """
         if not path_ops:
             return None
-        m = self.match(path_ops[0], specials=True)
-        if not m:
+        if not self.match(path_ops[0].match_target(), specials=True):
             return None
         rest = match_ops(rest_pats, path_ops[1:], partial)
         if rest is None:
             return None
-        is_pat = self.is_pattern()
-        if isinstance(m, (tuple, list)):
-            return [(_m.val, is_pat) for _m in m] + rest
-        return [(m.val, is_pat)] + rest
+        return capture(path_ops[:1], self.is_pattern(), rest)
 
 
 class MatchOp(Op):

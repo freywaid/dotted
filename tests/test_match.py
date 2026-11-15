@@ -81,7 +81,7 @@ def test_recursive_groups_dstar():
 
 def test_recursive_groups_star_key():
     r = dotted.match('*k', 'k.k.k', groups=True)
-    assert r == ('k.k.k', ('k',))
+    assert r == ('k.k.k', ('k.k.k',))
 
 
 def test_recursive_groups_with_continuation():
@@ -276,3 +276,74 @@ def test_path_recursive_subsumption():
     assert dotted.match('*b', '*b') == '*b'
     assert dotted.match('**', '*b') == '*b'
     assert dotted.match('*b', '**') is None
+
+
+def test_capture_keeps_slot_filter():
+    """
+    A capture is the path's segment as written: a row step keeps its filter.
+    """
+    r = dotted.match('*[*].*', 'lots[*&a=1].d', groups=True)
+    assert r == ('lots[*&a=1].d', ('lots', '[*&a=1]', 'd'))
+    r = dotted.match('*[*].*', 'lots[*].d', groups=True)
+    assert r == ('lots[*].d', ('lots', '[*]', 'd'))
+
+
+def test_capture_keeps_key_filter():
+    assert dotted.match('*.*', 'a&x=1.b', groups=True) == ('a&x=1.b', ('a&x=1', 'b'))
+    assert dotted.match('*.*', 'a.b&x=1', groups=True) == ('a.b&x=1', ('a', 'b&x=1'))
+    assert dotted.match('*', '*&x=1', groups=True) == ('*&x=1', ('*&x=1',))
+
+
+def test_capture_keeps_transform():
+    assert dotted.match('*.*', 'a.b|int', groups=True) == ('a.b|int', ('a', 'b|int'))
+    assert dotted.match('**', 'a.b|int', groups=True, partial=False) == ('a.b|int', ('a.b|int',))
+
+
+def test_capture_keeps_slot_accessor():
+    assert dotted.match('*[0]', 'a[0]', groups=True) == ('a[0]', ('a', '[0]'))
+    assert dotted.match('gone[*]', 'gone.3', groups=True) == ('gone.3', ('gone', '3'))
+
+
+def test_capture_filter_pattern_is_one_capture():
+    """
+    A filtered pattern segment captures once, the whole segment.
+    """
+    assert dotted.match('*&id=*', 'a&id=1', groups=True) == ('a&id=1', ('a&id=1',))
+
+
+def test_capture_value_guard():
+    """
+    A value-guarded path segment narrows the key, like a filter: an
+    unguarded pattern matches it and captures the guard.
+    """
+    assert dotted.match('*', 'a=1', groups=True) == ('a=1', ('a=1',))
+    assert dotted.match('*.*', 'a.b=1', groups=True) == ('a.b=1', ('a', 'b=1'))
+    assert dotted.match('a.*', 'a.b=1') == 'a.b=1'
+    assert dotted.match('*.*', 'a.b!=1') == 'a.b!=1'
+    assert dotted.match('a=1', 'a=1') == 'a=1'
+
+
+def test_capture_recursive_path_keeps_guard():
+    assert dotted.match('**', '**=7', groups=True) == ('**=7', ('**=7',))
+
+
+def test_recursive_partial_keeps_leftover():
+    """
+    Under partial matching the last capture runs to the end of the path,
+    with or without a recursive pattern.
+    """
+    assert dotted.match('**.b', 'a.b.c', groups=True) == ('a.b.c', ('a', 'b.c'))
+    r = dotted.match('**[*].*', 'db.table[*].x', groups=True)
+    assert r == ('db.table[*].x', ('db', 'table', '[*].x'))
+    assert dotted.match('a', 'a.(b,c)', groups=True) == ('a.(b,c)', ('a(.b,.c)',))
+
+
+def test_recursive_captures_whole_path():
+    r = dotted.match('**[*]', 'db.table[*]', groups=True, partial=False)
+    assert r == ('db.table[*]', ('db.table', '[*]'))
+    r = dotted.match('**[*].*', 'db.table[*].x', groups=True, partial=False)
+    assert r == ('db.table[*].x', ('db.table', '[*]', 'x'))
+
+
+def test_negation_captures_segment_as_written():
+    assert dotted.match('(!a)', 'b&x=1', groups=True) == ('b&x=1', ('b&x=1',))

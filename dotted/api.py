@@ -943,77 +943,48 @@ def match(pattern, path, groups=False, partial=True, strict=False):
 def _match_parsed(pats, path_ops, path, groups, partial):
     """
     match() on parsed arguments. `path` is what a successful match returns.
+    Each capture is the path segments one pattern segment matched, as the
+    path writes them.
     """
-    # matching is structural: a path op's transforms, a.b|int, play no part
-    if any(isinstance(op, wrappers.TransformWrap) for op in path_ops):
-        path_ops = results.Dotted({'ops': [op.inner if isinstance(op, wrappers.TransformWrap) else op for op in path_ops]})
+    caps = _captures(pats, path_ops, partial, bool(groups))
+    if not groups:
+        return None if caps is None else path
+    if caps is None:
+        return (None, ())
     # groups can be a bool, a GroupMode member, or its string value.
-    _patterns_only = (groups == GroupMode.patterns
-                      or groups == GroupMode.patterns.value)
+    if groups == GroupMode.patterns or groups == GroupMode.patterns.value:
+        caps = [c for c in caps if c[1]]
+    return (path, tuple(results.assemble(ops) for ops, _ in caps))
 
-    def returns(r, matches, is_pat=None):
-        if not groups:
-            return r
-        if _patterns_only and is_pat is not None:
-            matches = [m for m, ip in zip(matches, is_pat) if ip]
-        return (r, tuple(matches))
 
+def _captures(pats, path_ops, partial, collect=True):
+    """
+    The captures of the path that pats match, as base.match_ops gives
+    them: (ops, is_pattern) pairs, each ops the path ops one pattern
+    segment matched.  None when pats don't match.  Without collect, a
+    match may give no captures.
+    """
     # Variadic ops (recursive, groups) consume variable-length path
     # segments — use the recursive matcher.  On the path side they make
     # the path denote multiple expansions, which likewise needs it.
     if pats.variadic or path_ops.variadic:
-        result = base.match_ops(list(pats), list(path_ops), partial)
-        if result is None:
-            return returns(None, [])
-        return returns(path, [v for v, _ in result], [p for _, p in result])
+        return base.match_ops(list(pats), list(path_ops), partial)
 
-    # Original non-recursive match logic
-    collect = bool(groups)
-    _matches = []
-    _is_pat = []
-    for idx,(pop,kop) in enumerate(zip(pats, path_ops)):
-        # this means we have more pattern constraints than path segments
-        if kop is None:
-            return returns(None, [], [])
-        if pop is None:
-            break
-        m = pop.match(kop, specials=True)
-        if not m:
-            return returns(None, [], [])
-        if not collect:
-            # captures are only returned with groups
-            continue
-        is_pat = pop.is_pattern()
-        if isinstance(m, (tuple, list)):
-            for _m in m:
-                _matches.append(_m.val)
-                _is_pat.append(is_pat)
-        else:
-            _matches.append(m.val)
-            _is_pat.append(is_pat)
-
-    # we've completed matching but the last item in match groups is treated 'greedily'
-    assert kop is not None          # sanity
-
-    # exact match
-    if len(pats) == len(path_ops):
-        return returns(path, _matches, _is_pat)
-
-    # if we're not doing partial matches or we haven't consumed all pats, fail
-    if not partial or idx < len(pats) - 1:
-        return returns(None, [], [])
-
-    # otherwise inexact (partial) match
-    if not collect:
-        return path
-    # assemble remaining segments
-    rpath = path_ops.assemble(start=idx)
-    if pop is None:
-        _matches.append(rpath)
-        _is_pat.append(False)
-    else:
-        _matches[-1] = rpath
-    return returns(path, _matches, _is_pat)
+    # one path segment per pattern segment; a partial match's last
+    # capture runs to the end of the path
+    if len(pats) > len(path_ops):
+        return None
+    if len(pats) < len(path_ops) and not partial:
+        return None
+    caps = []
+    for pop, kop in zip(pats, path_ops):
+        if not pop.match(kop.match_target(), specials=True):
+            return None
+        if collect:
+            caps.append(((kop,), pop.is_pattern()))
+    if collect and len(pats) < len(path_ops):
+        caps[-1] = (tuple(path_ops.ops[len(pats) - 1:]), caps[-1][1])
+    return caps
 
 
 def match_multi(pattern, iterable, groups=False, partial=True, strict=False):
@@ -1068,15 +1039,46 @@ def translate(path, pattern_map):
         pats = parse(pattern)
         if path_ops is None:
             path_ops = parse(path)
-        (r, groups) = _match_parsed(pats, path_ops, path, GroupMode.patterns, False)
-        if not r:
+        caps = _captures(pats, path_ops, False)
+        if caps is None:
             continue
         try:
-            return replace(template, groups)
+            return _fill(template, [ops for ops, is_pat in caps if is_pat])
         except IndexError:
             continue
 
     return None
+
+
+def _fill(template, captures):
+    """
+    `template` with each $N filled from captures[N], the path ops of one
+    capture.  A $N that is a whole segment, gone.$0 or gone[$0], becomes
+    the captured segment as the path writes it, its accessor included:
+    gone.$0 on a capture of [3] is gone[3].  A $N anywhere else takes the
+    capture's text, as replace() does.
+    """
+    texts = [results.assemble(ops) for ops in captures]
+    ops = []
+    for op in parse(template):
+        n = _segment_subst(op)
+        if n is None:
+            ops.append(op.resolve(texts, False))
+            continue
+        ops.extend(captures[n])
+    return results.assemble(ops)
+
+
+def _segment_subst(op):
+    """
+    N when template op `op` is a whole $N segment, .$0 or [$0], else None.
+    """
+    if type(op) is not access.Key and type(op) is not access.Slot:
+        return None
+    sub = op.op
+    if type(sub) is not matchers.Subst or sub.transforms or not isinstance(sub.value, int):
+        return None
+    return sub.value
 
 
 def translate_multi(paths, pattern_map):

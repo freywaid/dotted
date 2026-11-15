@@ -3,6 +3,31 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Changed
+- A `match(..., groups=...)` capture is the path's segment as the path
+  writes it, accessor, filters, value guard and transforms included:
+  `match('*[*].*', 'lots[*&a=1].d', groups=True)` captures
+  `('lots', '[*&a=1]', 'd')`, and `[3]` captures `'[3]'`, not `3`.
+  A filtered pattern segment, `*&id=*`, captures once, the whole
+  segment, and a negation, `(!a.b)`, captures the segments it consumed
+  as one.
+- `translate`: a `$N` that is a whole segment, `.$0` or `[$0]`, becomes
+  the captured segment, its accessor included:
+  `translate('bye[3]', {'bye[*]': 'gone.$0'})` is `'gone[3]'`.
+
+### Fixed
+- Under partial matching, a pattern with `**` (or a group on either
+  side) drops no part of the path: the last capture runs to its end,
+  `match('**.b', 'a.b.c', groups=True)` captures `('a', 'b.c')`.
+- A value-guarded path segment, `a=1` or `a.b!=1`, matches an
+  unguarded pattern, as a filtered one does.
+- `a&x=1.b` parses as `(a&x=1, b)`: a dot in a number needs a digit
+  or an exponent after it (`1.5`, `1.e5`), so the dot starts the next
+  segment instead of ending the float `1.`. `a&x=1.` and `[1.]` no
+  longer parse.
+
 ## [0.55.3]
 
 ### Added

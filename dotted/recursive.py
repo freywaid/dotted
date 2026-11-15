@@ -3,7 +3,6 @@
 from . import base
 from . import engine
 from . import matchers
-from . import results
 from . import utils
 from .access import BaseOp, Key, Attr
 
@@ -161,8 +160,7 @@ class Recursive(BaseOp):
             rest = base.match_ops(rest_pats, path_ops[n:], partial)
             if rest is None:
                 continue
-            combined = results.assemble(path_ops[:n])
-            return [(combined, True)] + rest
+            return base.capture(path_ops[:n], True, rest)
         return None
 
     def do_match_path(self, pats, rest_path, partial):
@@ -175,7 +173,7 @@ class Recursive(BaseOp):
         a recursive pattern may keep covering segments after the group.
         """
         if not pats:
-            return [] if partial else None
+            return base.leftover([self] + list(rest_path)) if partial else None
         head = pats[0]
         if not isinstance(head, Recursive):
             return None
@@ -186,7 +184,7 @@ class Recursive(BaseOp):
             rest = base.match_ops(pats, rest_path, partial)
         if rest is None:
             return None
-        return [(results.assemble([self]), True)] + rest
+        return base.capture([self], True, rest)
 
     def _subsumed_by(self, pat):
         """

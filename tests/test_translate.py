@@ -120,7 +120,7 @@ def test_match_patterns_slot_wildcard():
     Slot wildcard [*] is a pattern.
     """
     r, groups = dotted.match('items[*]', 'items[3]', groups=GroupMode.patterns, partial=False)
-    assert groups == (3,)
+    assert groups == ('[3]',)
 
 
 def test_match_all_unchanged():
@@ -161,7 +161,7 @@ def test_translate_slot_wildcard():
     """
     Slot wildcard capture.
     """
-    assert translate('items[5]', {'items[*]': 'got.$0'}) == 'got.5'
+    assert translate('items[5]', {'items[*]': 'got.$0'}) == 'got[5]'
 
 
 def test_translate_first_match_wins():
@@ -250,3 +250,28 @@ def test_translate_multi_is_lazy():
     assert consumed == []
     assert list(result) == [('a.b', 'b')]
     assert consumed == ['a.b']
+
+
+def test_translate_segment_keeps_accessor():
+    """
+    A whole-segment $N becomes the captured segment, accessor included.
+    """
+    assert translate('bye[3]', {'bye[*]': 'gone.$0'}) == 'gone[3]'
+    assert translate('bye.3', {'bye[*]': 'gone.$0'}) == 'gone.3'
+    assert translate('x.y', {'x.*': 'a[$0]'}) == 'a.y'
+
+
+def test_translate_segment_keeps_decorations():
+    assert translate('bye[*&a=1]', {'bye[*]': 'gone.$0'}) == 'gone[*&a=1]'
+    assert translate('a.b|int', {'a.*': 'z.$0'}) == 'z.b|int'
+
+
+def test_translate_recursive_capture():
+    assert translate('a.b.c.d', {'a.**.d': 'z.$0'}) == 'z.b.c'
+
+
+def test_translate_embedded_subst_takes_text():
+    """
+    A $N inside a segment takes the capture's text.
+    """
+    assert translate('x.y', {'x.*': '$0+_s'}) == 'y_s'
