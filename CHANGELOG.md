@@ -23,6 +23,9 @@ the ones listed are omitted — browse git history for earlier entries.
   `match('**.b', 'a.b.c', groups=True)` captures `('a', 'b.c')`.
 - A value-guarded path segment, `a=1` or `a.b!=1`, matches an
   unguarded pattern, as a filtered one does.
+- A whole-list slice, `a[]` or `a[:]`, matches a slice filter,
+  `a[x=1]`: the filter only narrows the list. A partial slice, `a[1:]`,
+  still does not.
 - `a&x=1.b` parses as `(a&x=1, b)`: a dot in a number needs a digit
   or an exponent after it (`1.5`, `1.e5`), so the dot starts the next
   segment instead of ending the float `1.`. `a&x=1.` and `[1.]` no

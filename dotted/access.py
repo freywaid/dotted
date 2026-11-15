@@ -1103,7 +1103,19 @@ class Slice(SimpleOp):
     def matchable(self, op):
         return isinstance(op, Slice)
 
+    def is_whole(self):
+        """
+        True if this slice reads the whole list: [], [:], [0:], [::1].
+        """
+        start, stop, step = self.args
+        return start in (None, 0) and stop is None and step in (None, 1)
+
     def match(self, op, specials=False):
+        # a slice filter reads the list narrowed to the items that pass
+        # it, which ones depending on the data: only the whole list
+        # covers it
+        if isinstance(op, SliceFilter):
+            return base.MatchResult(slice(None)) if self.is_whole() else None
         if not isinstance(op, Slice):
             return None
         if self.cardinality() < op.cardinality():

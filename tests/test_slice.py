@@ -32,6 +32,34 @@ def test_slice_match():
     assert m == 'hello[:2]'
 
 
+def test_slice_matches_slice_filter():
+    """
+    A slice filter reads the list narrowed by its filter: the whole-list
+    slice covers it, as * covers a&x=1.
+    """
+    assert dotted.match('a[]', 'a[x=1]') == 'a[x=1]'
+    assert dotted.match('a[:]', 'a[x=1]', partial=False) == 'a[x=1]'
+    assert dotted.match('a[0:]', 'a[x=1]') == 'a[x=1]'
+    assert dotted.match('a[].*', 'a[x=1].b', groups=True) == ('a[x=1].b', ('a', '[x=1]', 'b'))
+
+
+def test_partial_slice_does_not_match_slice_filter():
+    """
+    Which items pass a slice filter depends on the data: no part of the
+    list covers it.
+    """
+    assert dotted.match('a[1:]', 'a[x=1]') is None
+    assert dotted.match('a[:3]', 'a[x=1]') is None
+
+
+def test_slice_filter_is_not_each_item():
+    """
+    [*] steps into each item; a slice filter reads the list.
+    """
+    assert dotted.match('a[*]', 'a[x=1]') is None
+    assert dotted.match('a[x=1]', 'a[]') is None
+
+
 # Immutable sequence (tuple) operations
 
 def test_tuple_update_empty():

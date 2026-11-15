@@ -643,6 +643,18 @@ only a recursive pattern that subsumes it will match:
     '*b'
     >>> dotted.match('*', '**')
 
+A slice filter reads the list narrowed to the items that pass it, so the
+slice of the whole list covers it, as `*` covers `a&x=1`. Which items pass
+depends on the data, so no part of the list covers it, and neither does
+`[*]`, which steps into each item rather than reading the list:
+
+    >>> dotted.match('a[]', 'a[x=1]')
+    'a[x=1]'
+    >>> dotted.match('a[:]', 'a[x=1]', groups=True)
+    ('a[x=1]', ('a', '[x=1]'))
+    >>> dotted.match('a[1:]', 'a[x=1]')
+    >>> dotted.match('a[*]', 'a[x=1]')
+
 <a id="replace"></a>
 ### Replace
 
