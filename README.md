@@ -109,11 +109,11 @@ For faster `mutable=False` updates and removes, install the
   - [Recursive traversal with type restrictions](#recursive-traversal-with-type-restrictions)
 - [Recursive Traversal](#recursive-traversal)
   - [The recursive operator `*`](#the-recursive-operator-)
-  - [Recursive patterns](#recursive-accessors)
+  - [Recursive patterns](#recursive-patterns)
   - [Depth slicing](#depth-slicing)
-  - [Recursive patterns with value guard](#recursive-with-value-guard)
+  - [Recursive patterns with value guard](#recursive-patterns-with-value-guard)
   - [Recursive update and remove](#recursive-update-and-remove)
-  - [Recursive pattern matching](#recursive-match)
+  - [Recursive pattern matching](#recursive-pattern-matching)
 - [Grouping](#grouping)
   - [Path grouping](#path-grouping)
   - [Precedence](#precedence)
@@ -147,22 +147,22 @@ For faster `mutable=False` updates and removes, install the
   - [Built-in Transforms](#built-in-transforms)
   - [Container transform arguments](#container-transform-arguments)
   - [Custom Transforms](#custom-transforms)
-- [SQL Translation (`sqlize`)](#sqlize) — *under development*
-- [Spark Translation (`sparkize`)](#sparkize) — *under development*
+- [SQL Translation (`sqlize`)](#sql-translation-sqlize) — *under development*
+- [Spark Translation (`sparkize`)](#spark-translation-sparkize) — *under development*
 - [Constants and Exceptions](#constants-and-exceptions)
 - [CLI (`dq`)](#cli-dq)
   - [File input](#file-input)
   - [Format conversion](#format-conversion)
   - [Path files](#path-files)
   - [Projection](#projection)
-  - [Unpack](#unpack)
-  - [Pack](#pack)
+  - [Unpacking output](#unpacking-output)
+  - [Packing input](#packing-input)
 - [Recipes](#recipes)
 - [FAQ](#faq)
   - [Why do I get a tuple for my get?](#why-do-i-get-a-tuple-for-my-get)
   - [How do I craft an efficient path?](#how-do-i-craft-an-efficient-path)
   - [Why do I get a RuntimeError when updating with a slice filter?](#why-do-i-get-a-runtimeerror-when-updating-with-a-slice-filter)
-  - [Why can't I use patterns to discover keys/attrs on my Stripe object?](#why-cant-i-use-patterns-on-stripe-objects)
+  - [Why can't I use patterns on Stripe objects?](#why-cant-i-use-patterns-on-stripe-objects)
 
 <a id="safe-traversal-optional-chaining"></a>
 ## Safe Traversal (Optional Chaining)
@@ -2093,7 +2093,7 @@ The inner pattern can be any key pattern — a literal key, a wildcard, or a reg
     >>> dotted.get(d, '*/x.*/')
     ({'x2': 1}, 1)
 
-<a id="recursive-accessors"></a>
+<a id="recursive-patterns"></a>
 ### Recursive patterns
 
 Recursive pattern matching works across different accessor types:
@@ -2176,7 +2176,7 @@ Depth slicing also works with accessor groups:
     >>> dotted.get(d, '*(*#, [*]:!(str, bytes)):-2')
     ([1, 2, 3],)
 
-<a id="recursive-with-value-guard"></a>
+<a id="recursive-patterns-with-value-guard"></a>
 ### Recursive patterns with value guard
 
 Combine recursive patterns with value guards to find specific values at any depth.
@@ -2203,7 +2203,7 @@ Recursive patterns work with `update` and `remove`:
     >>> dotted.remove(d, '**=7')
     {'a': {'c': 3}}
 
-<a id="recursive-match"></a>
+<a id="recursive-pattern-matching"></a>
 ### Recursive pattern matching
 
 Recursive patterns work with `match`. `**` matches any key path, `*key` matches
@@ -3522,7 +3522,7 @@ Register custom transforms using `register` or the `@transform` decorator:
 
 View all registered transforms with `dotted.registry()`.
 
-<a id="sqlize"></a>
+<a id="sql-translation-sqlize"></a>
 ## SQL Translation (`sqlize`)
 
 > **Under development.** The API shape and supported subset of dotted
@@ -3757,7 +3757,7 @@ Not yet supported:
 - Pattern refs
 
 <a id="sqlize-table-search"></a>
-### Table search
+### `sqlize` table search
 
 By default a path's first segment is a column of the row. With
 `root='table'` the path searches a table instead: its leading keys name
@@ -3988,7 +3988,7 @@ strings at `Resolver.build` — enum members normalize internally:
 
 Unsupported features and pattern paths raise `dotted.TranslationError`.
 
-<a id="sparkize"></a>
+<a id="spark-translation-sparkize"></a>
 ## Spark Translation (`sparkize`)
 
 > **Under development.** The API shape and supported subset of dotted
@@ -4073,7 +4073,7 @@ A `Column` can't hold a placeholder, so `r.where` is a
     df.where(a.build(a.where & b.where, min_age=30))
 
 <a id="sparkize-table-search"></a>
-### Table search
+### `sparkize` table search
 
 `root='table'` reads a path as a [table search](#sqlize-table-search), the
 same as for `sqlize`: the leading keys name a DataFrame or table, and
@@ -4230,8 +4230,8 @@ Multiple paths produce a projection preserving nested structure:
     echo '{"a": {"x": 1, "y": 2}, "b": 3}' | dq -p a.x -p b
     # {"a": {"x": 1}, "b": 3}
 
-<a id="unpack"></a>
-### Unpack
+<a id="unpacking-output"></a>
+### Unpacking output
 
 Use `--unpack` to flatten the result to dotted normal form. Lists of dicts
 are fully expanded with indexed paths:
@@ -4247,8 +4247,8 @@ are fully expanded with indexed paths:
 Add `--unpack-attrs standard` to include object attributes (excluding dunders),
 or `--unpack-attrs standard special` for all attributes.
 
-<a id="pack"></a>
-### Pack
+<a id="packing-input"></a>
+### Packing input
 
 Use `--pack` to rebuild nested structure from dotted normal form, including
 indexed lists:
@@ -4381,7 +4381,7 @@ A slice filter like `[id=1]` returns the **filtered sublist** as a single value 
 But you probably don't want to update a slice filter anyway — instead, use a pattern like `[*&id=1]` which walks the items individually and updates each match in place.
 
 <a id="why-cant-i-use-patterns-on-stripe-objects"></a>
-### Why can't I use patterns to discover keys/attrs on my Stripe object?
+### Why can't I use patterns on Stripe objects?
 
 Pattern access (`@*`, `.*`) works by enumerating an object's known keys or attributes. Dotted checks `__dict__`, `__slots__`, `_fields` (namedtuples), and `keys()` (for key fields). Stripe objects don't use any of these — they store data in an internal `_data` dict and expose it through a custom `__getattr__`. Since Python has no standard protocol for asking "what keys does your `__getattr__` accept?", there's nothing for dotted to enumerate.
 
