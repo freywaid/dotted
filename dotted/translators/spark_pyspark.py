@@ -98,6 +98,11 @@ def _compare(lhs, op_str, value):
 #                      — the first match of the first branch to reach
 #                        one from the node, the branch alone; the rest
 #                        of the steps run from it
+#   ('not', steps, kinds)
+#                      — the complement of what `steps` match from the
+#                        node: its largest subtrees that hold no match,
+#                        split level by level as `kinds` read them; the
+#                        rest of the steps run from each
 #
 # An aligned (+) `each` carries a third item, ('each', kind, 'aligned'):
 # each element yields what the rest of the steps reach, or one null.
@@ -233,6 +238,9 @@ def _exists(c, steps, env):
                 c, step[1], env,
                 lambda first: _functions().exists(first, lambda x: _exists(x, rest, env)),
                 _functions().lit(False))
+        if kind == 'not':
+            return _functions().exists(
+                _complement(c, step, env, _VALUES), lambda x: _exists(x, rest, env))
         if kind == 'cond':
             pred = step[1](c, env)
             if not rest:
@@ -285,6 +293,8 @@ def _collect(c, steps, env, rd=_VALUES):
         if kind == 'first':
             return _by_first(c, step[1], env,
                              lambda first: _onward(first, rest, env, rd), F.array(), rd)
+        if kind == 'not':
+            return _onward(_complement(c, step, env, rd), rest, env, rd)
         if kind == 'cond':
             return _onward(F.array(c), steps[i:], env, rd)
         return _onward(rd.elements(c, step[1]), rest, env, rd, aligned=len(step) > 2)
@@ -339,6 +349,53 @@ def _by_first(c, branches, env, then, otherwise, rd=_VALUES):
     for first in firsts[1:]:
         case = case.when(F.size(first) > 0, then(first))
     return case.otherwise(otherwise)
+
+
+def _complement(c, step, env, rd):
+    """
+    Array Column of the negation step's complement at `c`, read by `rd`:
+    the largest subtrees of `c` that hold no match of its branch, in
+    order. The branch's matches are read with their paths; then, level
+    by level as the branch reads them, a child no match path reaches is
+    kept whole, one a match ends at is dropped, and one a match runs
+    through is split in turn.
+    """
+    F = _functions()
+    _, steps, kinds = step
+    node = rd.start(c)
+    found = F.coalesce(_collect(node, steps, env, _PATHS), F.array())
+    matched = F.transform(found, lambda n: n['path'])
+    return rd.read(_split(node, matched, kinds))
+
+
+def _starts(path, prefix):
+    """
+    Boolean Column: the path `prefix` starts `path`.
+    """
+    F = _functions()
+    return F.slice(path, 1, F.size(prefix)) == prefix
+
+
+def _split(node, matched, kinds):
+    """
+    Array Column of the subtrees under `node`, a (path, value) struct,
+    that hold none of the `matched` paths: its children, read as
+    `kinds[0]` says (a map's entries for 'key', an array's elements for
+    'slot'), each kept, dropped or split by `kinds[1:]` in turn.
+    """
+    F = _functions()
+    children = _PATHS.elements(node, 'map' if kinds[0] == 'key' else 'array')
+    if len(kinds) == 1:
+        return F.filter(children, lambda ch: ~F.exists(
+            matched, lambda m: _starts(m, ch['path'])))
+
+    def piece(ch):
+        reached = F.exists(matched, lambda m: _starts(m, ch['path']))
+        ends = F.exists(matched, lambda m: m == ch['path'])
+        return (F.when(~reached, F.array(ch))
+                 .when(ends, F.slice(F.array(ch), 1, 0))
+                 .otherwise(_split(ch, matched, kinds[1:])))
+    return F.flatten(F.transform(children, piece))
 
 
 _JOIN = {'or': operator.or_, 'and': operator.and_}
@@ -459,6 +516,43 @@ def _uncovered(tagged):
     return F.aggregate(tagged, init, merge, lambda acc: acc['out'])
 
 
+# ---- Rows of a table search -----------------------------------------
+
+# the column a gate's count of rows is read from, dropped after
+_GATE = '_dotted_gate'
+
+
+class _TableRows:
+    """
+    The rows of a group of row steps, not made yet: `make(df, env)`
+    gives them from the table's DataFrame `df`, `env` the bindings.
+    `unbound` are the substitutions they need.
+    """
+
+    def __init__(self, make, unbound=None):
+        self.make = make
+        self.unbound = dict(unbound or {})
+
+
+def _unbound_of(*frags):
+    """
+    The substitutions `frags` need, a None among them needing none.
+    """
+    return _merged(*(frag.unbound for frag in frags if frag is not None))
+
+
+def _gated(out, hits, exists):
+    """
+    The DataFrame `out`, or no rows of it unless `hits` has a row
+    (none, when not `exists`): a cross join with the one-row count of
+    `hits`, kept or not by its value.
+    """
+    F = _functions()
+    found = hits.limit(1).agg(F.count(F.lit(1)).alias(_GATE))
+    found = found.where(F.col(_GATE) > 0 if exists else F.col(_GATE) == 0)
+    return out.crossJoin(found).drop(_GATE)
+
+
 # ---- PySpark mixin --------------------------------------------------
 
 class PySparkMixin(Translator):
@@ -485,6 +579,7 @@ class PySparkMixin(Translator):
             self._translate_root(ops, root))
         self.select = raw.get('select')
         self.where = raw.get('where')
+        self._from = raw.get('from')
         self.unbound = _merged(*(frag.unbound for frag in raw.values()))
 
     # ---- Translator hooks -------------------------------------------
@@ -507,6 +602,22 @@ class PySparkMixin(Translator):
         `*`.
         """
         return ColumnFragment(lambda env: _functions().col('*'))
+
+    def _row(self, table, columns):
+        """
+        The row as one struct of its `columns`. The whole row, for a
+        negation over its columns, raises: a negation splits a node by
+        key as a map, and the row is a struct, whose fields need the
+        schema.
+        """
+        if columns is None:
+            raise TranslationError(
+                "a negation over the row's columns needs the schema — not "
+                'supported in sparkize'
+            )
+        quoted = [(_quoted(name), name) for name in columns]
+        return ColumnFragment(lambda env: _functions().struct(
+            *(_functions().col(q).alias(name) for q, name in quoted)))
 
     def _select_expr(self, col, prefix):
         """
@@ -553,6 +664,81 @@ class PySparkMixin(Translator):
         The fragment negated with `~`.
         """
         return ~pred
+
+    def _combine_not_true(self, pred):
+        """
+        The fragment false or null: `~coalesce(pred, false)`.
+        """
+        make = pred._make
+        return ColumnFragment(
+            lambda env: ~_functions().coalesce(make(env), _functions().lit(False)),
+            pred.unbound)
+
+    # ---- rows of a table search -------------------------------------
+
+    def _table_from(self, names):
+        """
+        None: the caller hands `rows` the table's DataFrame.
+        """
+        return None
+
+    def _table_rows(self, names, preds, offset, limit):
+        """
+        The DataFrame's rows `where` the predicates, `offset` / `limit`
+        the window.
+        """
+        pred = self._all_of(preds) if preds else None
+
+        def make(df, env):
+            if pred is not None:
+                df = df.where(pred._make(env))
+            if offset is not None:
+                df = df.offset(offset)
+            if limit is not None:
+                df = df.limit(limit)
+            return df
+        return _TableRows(make, _unbound_of(pred))
+
+    def _table_rows_kept(self, rows, pred, gates):
+        """
+        The rows `where` the predicate, each gate a cross join with the
+        one-row count of its rows (`_gated`).
+        """
+        def make(df, env):
+            out = rows.make(df, env)
+            if pred is not None:
+                out = out.where(pred._make(env))
+            for hits, hit, exists in gates:
+                found = hits.make(df, env)
+                if hit is not None:
+                    found = found.where(hit._make(env))
+                out = _gated(out, found, exists)
+            return out
+        unbound = _merged(
+            rows.unbound, _unbound_of(pred),
+            *(_merged(hits.unbound, _unbound_of(hit)) for hits, hit, _ in gates))
+        return _TableRows(make, unbound)
+
+    def _table_rows_first(self, rows):
+        """
+        The rows' first: `limit(1)`.
+        """
+        return _TableRows(lambda df, env: rows.make(df, env).limit(1), rows.unbound)
+
+    def _table_rows_union(self, parts):
+        """
+        The parts' rows `unionByName`, each kept as often as it comes.
+        """
+        def make(df, env):
+            return functools.reduce(
+                lambda a, b: a.unionByName(b), (part.make(df, env) for part in parts))
+        return _TableRows(make, _merged(*(part.unbound for part in parts)))
+
+    def _table_rows_from(self, rows):
+        """
+        The rows themselves, for `r.rows(df)` to make.
+        """
+        return rows
 
     def _pattern(self, col, prefix, ops):
         """
@@ -753,6 +939,15 @@ class _Steps(Hooks):
 
     def group(self, op, kind, branches, cuts, softs, t):
         return t._group_steps(kind, branches, cuts, softs)
+
+    def not_group(self, op, t):
+        kinds = t._access_kinds(op.inner)
+        if not kinds or kinds[-1] is ...:
+            raise TranslationError(
+                'a negation reaching any depth needs a schema — not supported in sparkize'
+            )
+        steps, unbound = t._ops_steps(op.inner)
+        return [('not', steps, kinds)], unbound
 
 
 class _KeyStep(Hooks):

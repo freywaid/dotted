@@ -3812,10 +3812,22 @@ cut changes which matches a group yields, not whether it yields any.
 An aligned op or a `**` with depths under a soft cut raises
 `TranslationError` for now.
 
-`!` groups raise `TranslationError` for now.
-dotted's `!` is the complement of what its path matches, not `NOT`:
-`data.(!(status = "banned"))` matches `x` in `{"status": "banned",
-"x": 1}`.
+A negation, `!`, is the complement of what its path matches, not
+`NOT`: `data.(!(status = "banned"))` matches `x` in `{"status":
+"banned", "x": 1}`. `r.lateral` yields the largest subtrees that hold
+no match, as dotted does: a recursive query walks down through the
+children the matches run through and keeps the children none reaches,
+and `r.where` is whether there is one.
+
+A group at the top of a path, `(title, author)`, reads the row's
+columns as one value: a `jsonb_build_object` of the columns its
+branches name, which every kind of group, cut and soft cut reads as it
+would any node. `r.select` and `r.lateral` are its matches; a group of
+guards keeps plain predicates for `r.where`, as `(age >= 18 & status =
+"active")` does above. A negation at the top of a path is the
+complement among all the row's columns, so it reads the whole row of a
+[table search](#sqlize-table-search)'s table; in a column path, which
+has no table, it raises `TranslationError`.
 
 Not yet supported:
 - Regex-in-access like `data./prefix_\d+/.field`
@@ -3827,12 +3839,12 @@ Not yet supported:
 By default a path's first segment is a column of the row. With
 `root='table'` the path searches a table instead: its leading keys name
 the table, a row step walks its rows, and the rest is a column path
-under each row, read as above:
+under each row, read as above. `r.from_` is what to select from:
 
     >>> r = dotted.sqlize('books[*&author="kafka"].title', driver='asyncpg', root='table')
     >>> r.table
     'books'
-    >>> r.build('SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where)
+    >>> r.build('SELECT ' + r.select + ' FROM ' + r.from_ + ' WHERE ' + r.where)
     ('SELECT title FROM books WHERE author = $1', ['kafka'])
 
 | row step | gives |
@@ -3850,11 +3862,25 @@ A slice filter and a slice keep the rows one list, as in dotted, so
     >>> r.offset, r.limit
     (10, 10)
 
+A group after the row step reads the row's columns, as one at the top
+of a column path does ([pattern paths](#pattern-paths)); attach its
+lateral after the table:
+
+    >>> r = dotted.sqlize('books[*](.title, .author)', driver='asyncpg', root='table')
+    >>> str(r.lateral)
+    "LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query(jsonb_build_object('title', title, 'author', author), '$.title') AS _pat2(value) UNION ALL SELECT _pat3.value FROM LATERAL jsonb_path_query(jsonb_build_object('title', title, 'author', author), '$.author') AS _pat3(value)) AS _pat1(value)"
+    >>> sql = 'SELECT ' + r.select + ' FROM ' + r.from_ + ', ' + r.lateral
+
+A negation after the row step, `books[*](!.title)`, is the complement
+among all the row's columns, read from the table's whole row,
+`to_jsonb(books)` (the name without its schema). An unnamed table has
+no row to read, so there it raises `TranslationError`.
+
 With nothing after the row step, `select` is `*`. Everything before
 it is the table's name, taken whole:
 
     >>> dotted.sqlize('public.books[0]', driver='asyncpg', root='table')
-    AsyncPGResolver(driver='asyncpg', select='*', table='public.books', offset=0, limit=1)
+    AsyncPGResolver(driver='asyncpg', select='*', from_='public.books', table='public.books', offset=0, limit=1)
 
 A path that starts with a row step searches an unnamed table, so it
 needs no `root=`; the caller supplies the `FROM`:
@@ -3866,10 +3892,39 @@ needs no `root=`; the caller supplies the `FROM`:
 `r.table`, `r.offset` and `r.limit` are plain values, not fragments,
 and stay out of the Mapping. The table's name comes back as the path
 spells it; quoting it is the caller's (`Col(r.table)` validates it).
+`r.from_` is a fragment: the table, quoted where it needs it, or the
+rows a group of row steps yields.
+
+A group as the row step, `books[(*&a=1, *&b=2)]` (the same as
+`books([*&a=1], [*&b=2])`), yields each branch's rows in turn, a row
+both reach twice, as dotted does. No `WHERE` can give a row twice, so
+`r.from_` is a derived table of them under the table's name, and
+`r.where` and `r.select` are the path after the group's, from each row:
+
+    >>> r = dotted.sqlize('books[(*&author="kafka", *&year<1920)].title', driver='asyncpg', root='table')
+    >>> r.build('SELECT ' + r.select + ' FROM ' + r.from_)
+    ('SELECT title FROM ((SELECT * FROM books WHERE author = $1) UNION ALL (SELECT * FROM books WHERE year < $2)) AS books', ['kafka', 1920])
+
+The group reads the table as one node, as dotted reads the list of
+rows: after a cut, `(a#, b)`, `b`'s rows come only where `a` yielded
+no row at all (`NOT EXISTS`); after a soft cut, `(a##, b)`, `b` skips
+the rows `a` yielded; a first match, `(a, b)?`, is the first row of
+the first branch with one (`LIMIT 1`); an `&` group yields only where
+every branch reaches a row; and a negation, `books(![*&a=1])`, is the
+rows its step doesn't reach, a row its filter is null for among them.
+A branch may be `[*]`, `[*&…]` or `[n]`; a slice filter before the
+group filters every branch's rows.
 
 Not yet supported (`TranslationError`):
-- Selecting several columns, `books[*](.title,.author)` or the packed
-  `books[*](.title,.author;)`
+- A packed group, `books[*](.title,.author;)`
+- A group of row steps of an unnamed table, which has none to select
+  from; a branch that goes on past its row step,
+  `books([*&a=1].title, [*&b=2].author)`; and one that is a slice
+  filter or slice, which reads the list of rows
+- A soft cut or a negation over rows an index picks, `[(0##, *&a=1)]`:
+  no predicate tells those rows apart; and a soft cut whose path after
+  the group may match a row more than once (`.tags[*]`)
+- A group of row steps after a slice
 - A key straight after a slice filter or slice (`books[a=1].title` —
   dotted reads a key of the list there; use `books[a=1][*].title`)
 - A row step after `[*]`, `[*&…]` or `[n]` — dotted indexes into each
@@ -3988,7 +4043,7 @@ registered drivers (built-ins + anything third-party code has added).
 | `.cast`         | `bool`                       | Whether `.build()` emits explicit SQL casts in polymorphic contexts |
 | `.select`       | `SQLFragment` \| `None`      | Extraction expression (for pattern paths: ref into `.lateral`)      |
 | `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                                |
-| `.from_`        | `SQLFragment` \| `None`      | FROM extension (reserved)                                           |
+| `.from_`        | `SQLFragment` \| `None`      | a table search's FROM: the table, or a group of row steps' rows     |
 | `.lateral`      | `SQLFragment` \| `None`      | `LATERAL jsonb_path_query(...) AS _patN(value)` for pattern paths   |
 | `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}`  |
 | `.table`        | `str` \| `None`              | Table search: the table's name, as the path spells it               |
@@ -4132,8 +4187,21 @@ share one. After a cut, `(a#, b)`, `b` runs only where `a` found
 nothing, at each node; a null is no match, as for `where`. After a soft
 cut, `(a##, b)`, `b` skips what overlaps `a`'s matches: the group's
 branches are read with their paths and folded in order (`aggregate`).
-`!` groups (the complement of what their path matches, not `~`), and
-an aligned op under a soft cut, raise `TranslationError` for now.
+A negation, `!`, is the complement of what its path matches, not `~`:
+`tags(!.color)` is every value of `tags` but `color`'s, split level by
+level to the depth its path reads. It reads a map's entries and an
+array's elements; a struct's fields can't be listed without the
+schema, nor can a row's columns at the top of a path, so a negation
+there raises, as does one reaching any depth, as `**` does. An aligned
+op under a soft cut raises `TranslationError` for now.
+
+A group at the top of a path, or after a [table
+search](#sparkize-table-search)'s row step, reads the row's columns as
+one struct of the columns its branches name, so every kind of group,
+cut and soft cut works there as at any node:
+
+    r = dotted.sparkize('(age >= 30#, data.user.age)')
+    df.select(r.build(r.select))    # per row, age where it's 30+, else user.age
 
 `**`, and `*` over a struct's fields, need the schema — Spark can't
 iterate struct fields at run time — and raise `TranslationError`.
@@ -4182,6 +4250,21 @@ same as for `sqlize`: the leading keys name a DataFrame or table, and
 With nothing after the row step, `select` is every column
 (`col('*')`). A path that starts with a row step, `[*&author="kafka"]`,
 needs no name and no `root=`: apply its `where` to any DataFrame.
+
+A [group as the row step](#sqlize-table-search), `books[(*&a=1,
+*&b=2)]`, yields a row once per branch that reaches it, which no
+`where` can give: read the rows with `r.rows`, from the table's
+DataFrame, then chain as above. For any other search `r.rows(df)` is
+`df` itself, so it's always safe to call:
+
+    r = dotted.sparkize('books[(*&author="kafka", *&year<1920)].title', root='table')
+    rows = r.rows(spark.table(r.table))     # each branch's rows, unionByName
+    rows.select(r.build(r.select))
+
+`rows` takes `bindings` as `build` does. A cut, a first match or an
+`&` over the table is a cross join with a one-row count of the rows it
+tests. An unnamed table's group works too, from whichever DataFrame is
+handed in; otherwise the same groups raise as in `sqlize`.
 
 ### API reference
 

@@ -40,13 +40,25 @@ def _ids(query, where_sql, args=()):
     return sorted(r['id'] for r in rows)
 
 
-def _run_where(query, path, **bindings):
+def _rooted(query, path, root='column'):
     """
-    Translate `path` for the active driver, render the WHERE clause
-    using the driver's paramstyle/cast, run it against the seed data,
-    return sorted matching ids.
+    Translate `path` for the active driver: as a column path over
+    dotted_test.items, or under root='table' as a search of it.
+    Returns the resolver and what it reads FROM.
     """
-    r = sqlize(path, driver=query.driver)
+    if root == 'column':
+        return sqlize(path, driver=query.driver), 'dotted_test.items'
+    r = sqlize(f'dotted_test.items[*].{path}', driver=query.driver, root='table')
+    return r, r.from_
+
+
+def _run_where(query, path, root='column', **bindings):
+    """
+    Translate `path` for the active driver under `root`, render the
+    WHERE clause using the driver's paramstyle/cast, run it against
+    the seed data, return sorted matching ids.
+    """
+    r, _ = _rooted(query, path, root)
     sql, args = r.build(r.where, **bindings)
     return _ids(query, sql, args)
 
@@ -172,16 +184,25 @@ def test_lateral_cut_group(query):
     assert pairs == [(1, 25), (1, 32), (2, 35), (3, 40), (5, 18), (5, 50)]
 
 
-def _lateral_counts(query, path):
+def _lateral_counts(query, path, root='column'):
     """
-    id → how many rows the path's lateral yields for it.
+    id → how many rows the path's lateral yields for it, under `root`.
     """
-    r = sqlize(path, driver=query.driver)
-    sel_sql, _ = r.build(r.select)
-    lat_sql, _ = r.build(r.lateral)
-    sql = (f'SELECT id, count({sel_sql}) AS n '
-           f'FROM dotted_test.items, {lat_sql} GROUP BY id')
-    return {r['id']: r['n'] for r in query(sql, ())}
+    r, table = _rooted(query, path, root)
+    sql, args = r.build('SELECT id, count(' + r.select + ') AS n FROM '
+                        + table + ', ' + r.lateral + ' GROUP BY id')
+    return {row['id']: row['n'] for row in query(sql, args)}
+
+
+def _lateral_values(query, path, root='column'):
+    """
+    Sorted (id, JSON text) per row the path's lateral yields, under
+    `root`.
+    """
+    r, table = _rooted(query, path, root)
+    sql, args = r.build('SELECT id, (' + r.select + ')::text AS v FROM '
+                        + table + ', ' + r.lateral)
+    return sorted((row['id'], row['v']) for row in query(sql, args))
 
 
 def test_lateral_soft_cut_group(query):
@@ -219,6 +240,38 @@ def test_lateral_soft_cut_keeps_in_order(query):
         1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 2}
 
 
+def test_lateral_negation(query):
+    """
+    user(!.age) is user's keys but age; id=7's user has only role.
+    """
+    assert _lateral_counts(query, 'data.user(!.age)') == {
+        1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 1}
+
+
+def test_lateral_negation_splits_a_node_a_match_runs_through(query):
+    """
+    data(!.user.age): user holds a match, so it is split, role and
+    active kept; users is kept whole. id=7's user has no age, so it
+    is kept whole.
+    """
+    assert _lateral_counts(query, 'data(!.user.age)') == {
+        1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 2}
+
+
+def test_lateral_negation_through_elements(query):
+    """
+    users(![*].active): each user is split, its age kept; ids 6 and 7
+    have no users.
+    """
+    assert _lateral_counts(query, 'data.users(![*].active)') == {
+        1: 2, 2: 1, 3: 1, 4: 1, 5: 2}
+
+
+def test_negation_where(query):
+    # id=7's user has only role, so nothing is left of it but role
+    assert _run_where(query, 'data.user(!.role)') == [1, 2, 3, 4, 5, 6]
+
+
 def test_lateral_group_continues_after(query):
     """
     The path after a group runs on from each branch: user.age, then
@@ -234,6 +287,71 @@ def test_lateral_group_continues_after(query):
     assert pairs == [(1, 25), (1, 25), (1, 32), (2, 35), (2, 35),
                      (3, 40), (3, 40), (4, 17), (4, 17),
                      (5, 18), (5, 50), (5, 50), (6, 30)]
+
+
+# ---------------- groups over the row's columns ----------------
+
+ROOTS = ['column', 'table']
+
+
+@pytest.mark.parametrize('root', ROOTS)
+@pytest.mark.parametrize('path, expected', [
+    ('(age >= 30#, status = "active")', [1, 2, 3, 4, 5, 6]),
+    ('(age >= 30##, status = "active")', [1, 2, 3, 4, 5, 6]),
+    ('(age >= 30 & status = "active")', [2, 5, 6]),
+    ('(data.users[*], data.user)?.age >= 30', [2, 3, 5, 6]),
+    ('(status = "banned", data.user.role = "guest")', [3, 7]),
+])
+def test_row_group_where(query, root, path, expected):
+    """
+    A group over the row's columns keeps the rows where it matches, in
+    a table search as in a column path. A first match is the first
+    user, or user where there are none: id=1's first user is 25.
+    """
+    assert _run_where(query, path, root) == expected
+
+
+@pytest.mark.parametrize('root', ROOTS)
+@pytest.mark.parametrize('path, expected', [
+    ('(status, age)',
+     [(1, '"active"'), (1, '25'), (2, '"active"'), (2, '35'),
+      (3, '"banned"'), (3, '40'), (4, '"active"'), (4, '17'),
+      (5, '"active"'), (5, '50'), (6, '"active"'), (6, '30'),
+      (7, '"pending"'), (7, 'null')]),
+    ('(age >= 30#, status = "active")',
+     [(1, '"active"'), (2, '35'), (3, '40'), (4, '"active"'), (5, '50'),
+      (6, '30')]),
+    ('(age >= 30 & status = "active")',
+     [(2, '"active"'), (2, '35'), (5, '"active"'), (5, '50'),
+      (6, '"active"'), (6, '30')]),
+    ('(data.user.age##, data.user)',
+     [(1, '25'), (2, '35'), (3, '40'), (4, '17'), (5, '50'), (6, '30'),
+      (7, '{"role": "guest"}')]),
+    ('(data.users[*], data.user)?.age',
+     [(1, '25'), (2, '35'), (3, '40'), (4, '17'), (5, '50'), (6, '30')]),
+    ('(data.user.role = "admin", status = "banned")',
+     [(1, '"admin"'), (3, '"banned"'), (5, '"admin"')]),
+])
+def test_row_group_lateral(query, root, path, expected):
+    """
+    A group over the row's columns yields its matches as `get` does,
+    in a table search as in a column path: after a cut, status only
+    where age isn't 30+; after a soft cut, user only where it holds no
+    age; id=7's age is NULL, a JSON null.
+    """
+    assert _lateral_values(query, path, root) == expected
+
+
+def test_row_negation(query):
+    """
+    In a table search, a negation over the row's columns is the
+    complement among all five: (!.data) is the other four, each whole;
+    (!(status = "banned")) all five but status where it is banned.
+    """
+    assert _lateral_counts(query, '(!.data)', 'table') == {
+        1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4, 7: 4}
+    assert _lateral_counts(query, '(!(status = "banned"))', 'table') == {
+        1: 5, 2: 5, 3: 4, 4: 5, 5: 5, 6: 5, 7: 5}
 
 
 # ---------------- guard transforms (casts) ----------------
@@ -359,7 +477,7 @@ def test_table_search(query):
     r = sqlize('dotted_test.items[status="active"][1:3][*].id',
                driver=query.driver, root='table')
     sql, args = r.build(
-        'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+        'SELECT ' + r.select + ' FROM ' + r.from_ + ' WHERE ' + r.where
         + f' ORDER BY id OFFSET {r.offset} LIMIT {r.limit}')
     assert [row['id'] for row in query(sql, args)] == [2, 4]
 
@@ -371,8 +489,49 @@ def test_table_search_whole_rows(query):
     r = sqlize('dotted_test.items[*&data.user.role="admin"]',
                driver=query.driver, root='table')
     sql, args = r.build(
-        'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+        'SELECT ' + r.select + ' FROM ' + r.from_ + ' WHERE ' + r.where
         + ' ORDER BY id')
     rows = query(sql, args)
     assert [row['id'] for row in rows] == [1, 5]
     assert {'id', 'status', 'age', 'deleted_at', 'data'} <= set(rows[0])
+
+
+# ---------------- groups of row steps ----------------
+
+def _search_ids(query, path):
+    """
+    The ids of the rows a table search over dotted_test.items yields,
+    a row as often as it comes, sorted.
+    """
+    r = sqlize(f'dotted_test.items{path}', driver=query.driver, root='table')
+    sql = 'SELECT id FROM ' + r.from_
+    if r.where is not None:
+        sql = sql + ' WHERE ' + r.where
+    sql, args = r.build(sql)
+    return sorted(row['id'] for row in query(sql, args))
+
+
+@pytest.mark.parametrize('path, expected', [
+    ('[(*&status="active", *&age>=30)]', [1, 2, 2, 3, 4, 5, 5, 6, 6]),
+    ('[(*&status="banned"#, *&status="active")]', [3]),
+    ('[(*&status="gone"#, *&status="active")]', [1, 2, 4, 5, 6]),
+    ('[(*&status="active", *&age>=30)].age >= 40', [3, 5, 5]),
+    ('[(*&status="active"#, *&age>=30)].age >= 40', [5]),
+    ('[(*&status="active"##, *&age>=30)]', [1, 2, 3, 4, 5, 6]),
+    ('[(*&status="gone", *&status="banned")?]', [3]),
+    ('([*&status="banned"] & [*&age>=40])', [3, 3, 5]),
+    ('([*&status="gone"] & [*&age>=40])', []),
+    ('(![*&status="active"])', [3, 7]),
+    ('(![*&age>=30])', [1, 4, 7]),
+])
+def test_row_step_group(query, path, expected):
+    """
+    A group as the row step yields each branch's rows in turn, a row
+    both reach twice. A cut holds over the table: banned rows exist,
+    so no active one comes; with a guard after, only an active row 40+
+    stops the rest. A soft cut skips the active rows the second branch
+    reaches again. A first match is the first branch's first row; an
+    `&` needs every branch to reach one. A negation is the rows its
+    step doesn't reach, id=7's NULL age among them.
+    """
+    assert _search_ids(query, path) == expected

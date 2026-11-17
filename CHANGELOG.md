@@ -35,6 +35,36 @@ the ones listed are omitted — browse git history for earlier entries.
   them with a recursive query; `sparkize` reads them as (path, value)
   structs and folds them with `aggregate`. An aligned op under a soft
   cut, and in `sqlize` a `**` with depths, raise.
+- `sqlize` and `sparkize` read a group at the top of a path,
+  `(title, author)`, or after a table search's row step,
+  `books[*](.title, .author)`, over the row's columns as one value: a
+  `jsonb_build_object` of the columns its branches name in `sqlize`, a
+  struct of them in `sparkize`. Every kind of group, cut and soft cut
+  matches there as at any node, and `select` is its matches; a group
+  of guards keeps its plain `where`. Such a group had a `where` only,
+  raised where a branch had no predicate, and raised with a path after
+  a first-match group.
+- Under `root='table'`, `sqlize` reads a negation over the row's
+  columns, `books[*](!.title)`, as the complement among all of them,
+  from the table's whole row, `to_jsonb(books)`. It raises in a column
+  path and in a search of an unnamed table, which have no row to read
+  whole, and in `sparkize`, whose row is a struct.
+- A group as a table search's row step, `books[(*&a=1, *&b=2)]` or
+  `books([*&a=1], [*&b=2])`, in `sqlize` and `sparkize`: each branch's
+  rows in turn, a row both reach twice, as dotted yields them, the path
+  after the group run on from each. The group reads the table as one
+  node: a cut holds over the table, a soft cut skips the rows an
+  earlier branch yielded, a first match is the first branch's first
+  row, an `&` yields only where every branch reaches a row, and
+  `books(![*&a=1])` is the rows `[*&a=1]` doesn't reach. `sqlize`
+  gives the rows as a derived table in `r.from_`; `sparkize` reads them
+  from the table's DataFrame with `r.rows(df)`. Raises for an unnamed
+  table in `sqlize`, a branch past its row step, and a soft cut or
+  negation over rows an index picks.
+- `r.from_` is set on every `sqlize` table search: the table, quoted
+  where it needs it, or a group of row steps' rows. Select from it
+  rather than `r.table`. `sparkize`'s `r.rows(df)` is `df` for a
+  search without such a group.
 - Cuts in a conjunction, by `get`, `update` and `remove` alike, at
   each node: in `(a#&b)`, once `a` matches, `b` isn't tried; in
   `(a##&*)`, `*` skips what overlaps `a`'s matches, a branch the soft
@@ -60,8 +90,12 @@ the ones listed are omitted — browse git history for earlier entries.
 - `!` groups translated to SQL `NOT` and Spark `~`, which is not what
   they mean: `!` is the complement of what its path matches, so
   `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
-  "x": 1}`. They raise `TranslationError` until the translators build
-  the complement.
+  "x": 1}`. `sqlize` and `sparkize` now yield that complement, the
+  largest subtrees that hold no match, as dotted does: `sqlize` with a
+  recursive query over the children the matches run through, and
+  `sparkize` level by level to the depth the negated path reads, over
+  map entries and array elements. A negation reaching any depth
+  raises in `sparkize`.
 - `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member,
   `@.* == 1`; it read a key named `*`, `@."*" == 1`.
 - `sqlize` and `sparkize` raise `TranslationError` on inputs they

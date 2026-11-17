@@ -118,6 +118,14 @@ _PRED_JSONPATH = {
 # no union, so a path through groups runs as its tails: the group-free
 # runs of fragments, one per way through each group.
 
+class _TableRows(collections.namedtuple('_TableRows', 'text alias')):
+    """
+    The rows of a group of row steps: a query `text` of the table's
+    rows, read under the table's own name, `alias`, so the path after
+    the group reads each the way it reads a row of the table.
+    """
+
+
 class _Fragment(collections.namedtuple(
         '_Fragment', 'text jvars aligned filter steps', defaults=(None, ()))):
     """
@@ -161,10 +169,12 @@ class _Fragment(collections.namedtuple(
         return t._aligned_rows(src, before + [self], rest, ordered)
 
 
-class _Group(collections.namedtuple('_Group', 'kind branches cuts softs')):
+class _Group(collections.namedtuple(
+        '_Group', 'kind branches cuts softs reads', defaults=(None,))):
     """
     A group's kind, each branch's parts, and per branch whether a cut
-    follows it and whether a soft cut does.
+    follows it and whether a soft cut does. A negation ('not') `reads`
+    its node's children as its branch does: 'key' or 'slot'.
     """
     split = True
 
@@ -281,11 +291,13 @@ def _anywhere(parts, test):
     return False
 
 
-def _is_first(part):
+def _unreadable(part):
     """
-    True if `part` is a first-match group (?).
+    True if `part` is a group whether JSONPath reaches anything through
+    can't say: a first-match group (JSONPath has no first) or a
+    negation (it has no complement).
     """
-    return part.kind == 'first'
+    return part.kind in ('first', 'not')
 
 
 def _segment_sql(text_expr):
@@ -309,10 +321,11 @@ def _members(expr):
 def _needs_laterals(part):
     """
     True if `part` is a group JSONPath can't read: a first-match group
-    (JSONPath has no first) or a group with a soft cut (it can't tell
-    one match's path from another's).
+    (JSONPath has no first), a negation (it has no complement), or a
+    group with a soft cut (it can't tell one match's path from
+    another's).
     """
-    return part.kind == 'first' or any(part.softs)
+    return _unreadable(part) or any(part.softs)
 
 
 # ---- Cast inference for Postgres ------------------------------------
@@ -469,6 +482,17 @@ class PostgresMixin(Translator):
         """
         return '*'
 
+    def _row(self, table, columns):
+        """
+        The row as one jsonb value: an object of its `columns`, or the
+        whole row of `table` when `columns` is None.
+        """
+        if columns is None:
+            return f'to_jsonb({_quote_ident(table)})'
+        pairs = ', '.join(f'{_pg_string_literal(name)}, {self._column(name)}'
+                          for name in columns)
+        return f'jsonb_build_object({pairs})'
+
     def _select_expr(self, col_ident, prefix):
         """
         Text extraction for a non-empty prefix; the bare column for an
@@ -499,6 +523,80 @@ class PostgresMixin(Translator):
         NOT over the parenthesized predicate.
         """
         return f'NOT ({pred})'
+
+    def _combine_not_true(self, pred):
+        """
+        The parenthesized predicate IS NOT TRUE: false or null.
+        """
+        return f'({pred}) IS NOT TRUE'
+
+    # ---- rows of a table search -------------------------------------
+
+    def _table_from(self, names):
+        """
+        The table's name, each part quoted where it needs it; None for
+        an unnamed table, whose FROM is the caller's.
+        """
+        if not names:
+            return None
+        return '.'.join(_quote_ident(name) for name in names)
+
+    def _table_rows(self, names, preds, offset, limit):
+        """
+        `SELECT * FROM` the table, `WHERE` the predicates, `OFFSET` /
+        `LIMIT` the window. An unnamed table has none to select from.
+        """
+        if not names:
+            raise TranslationError(
+                'a group of row steps selects its rows from the table — '
+                'name it (`books[(...)]`)'
+            )
+        text = f'SELECT * FROM {self._table_from(names)}'
+        if preds:
+            text += f' WHERE {self._all_of(preds)}'
+        if offset is not None:
+            text += f' OFFSET {offset}'
+        if limit is not None:
+            text += f' LIMIT {limit}'
+        return _TableRows(text, _quote_ident(names[-1]))
+
+    def _table_rows_kept(self, rows, pred, gates):
+        """
+        The rows `WHERE` the predicate, and an `EXISTS` / `NOT EXISTS`
+        per gate.
+        """
+        conds = [] if pred is None else [pred]
+        for hits, hit, exists in gates:
+            test = f'SELECT 1 FROM ({hits.text}) AS {hits.alias}'
+            if hit is not None:
+                test += f' WHERE {hit}'
+            conds.append(f'EXISTS ({test})' if exists else f'NOT EXISTS ({test})')
+        if not conds:
+            return rows
+        return _TableRows(f'SELECT * FROM ({rows.text}) AS {rows.alias} '
+                     f'WHERE {self._all_of(conds)}', rows.alias)
+
+    def _table_rows_first(self, rows):
+        """
+        The rows' first: `LIMIT 1`.
+        """
+        return _TableRows(f'SELECT * FROM ({rows.text}) AS {rows.alias} LIMIT 1',
+                     rows.alias)
+
+    def _table_rows_union(self, parts):
+        """
+        The parts' rows `UNION ALL`, each kept as often as it comes.
+        """
+        if len(parts) == 1:
+            return parts[0]
+        return _TableRows(' UNION ALL '.join(f'({part.text})' for part in parts),
+                     parts[0].alias)
+
+    def _table_rows_from(self, rows):
+        """
+        The rows as a derived table under the table's own name.
+        """
+        return f'({rows.text}) AS {rows.alias}'
 
     def _pattern(self, col_ident, prefix, ops):
         """
@@ -587,10 +685,11 @@ class PostgresMixin(Translator):
         `rest` the parts after it: its ways' rows, `UNION ALL`, a way
         after a branch a cut follows only where that branch's way
         reaches nothing; for an `&`, only where every way reaches
-        something; for a first match, the rest's from it. A group with a
-        soft cut takes its ways with their paths (`_path_group_rows`).
+        something; for a first match, the rest's from it. A negation,
+        and a group with a soft cut, take their ways with their paths
+        (`_path_group_rows`).
         """
-        if any(group.softs):
+        if any(group.softs) or group.kind == 'not':
             rows = self._path_group_rows(node, "''", 'ARRAY[]::bigint[]', group, rest)
             alias = self._state.alloc_pattern_alias()
             return f'SELECT {alias}.value FROM ({rows}) AS {alias}'
@@ -725,6 +824,9 @@ class PostgresMixin(Translator):
         Each branch's ord takes its index after `o`, so the rows order
         as dotted reaches them.
         """
+        if group.kind == 'not':
+            return self._path_lateral(self._complement(v, p, o, group), lambda b: self._path_rows(
+                f'{b}.value', f'{b}.path', f'{b}.ord', rest))
         if group.kind == 'first':
             firsts = ' UNION ALL '.join(
                 self._path_rows(v, p, f'{o} || {j}::bigint', branch)
@@ -753,6 +855,44 @@ class PostgresMixin(Translator):
                     [f'NOT EXISTS ({c})' for c in cut]), self._PATH_COLUMNS)
             queries.append(r)
         return ' UNION ALL '.join(queries)
+
+    def _complement(self, v, p, o, group):
+        """
+        The (path, ord, value) rows of a negation's complement at the
+        jsonb `v`: the largest subtrees of `v` that hold no match of its
+        branch. A recursive query walks down from `v` through the
+        children some match runs through, none ending at; the
+        complement is the children of what it reaches that no match is
+        at or under. At `v` the children are read as the branch reads
+        them, an object's members for a key and an array's elements too
+        for a slot; below, a match runs only through what its own
+        segments read, so they are read by what each node is.
+        """
+        alloc = self._state.alloc_pattern_alias
+        m, t, ch, x, k = (alloc() for _ in range(5))
+        matched = self._path_rows(v, p, o, group.branches[0])
+        tops = '' if group.reads == 'slot' else f' AND {t}.path <> {p}'
+
+        def children():
+            e = alloc()
+            i = alloc()
+            return (f'SELECT {t}.path || {_segment_sql(f"{e}.key")} AS path, '
+                    f'{t}.ord || {e}.n AS ord, {e}.value AS value '
+                    f'FROM {_members(f"{t}.value")} AS {e}(key, value, n) '
+                    f'UNION ALL SELECT {t}.path || {_segment_sql(f"({i}.n - 1)::text")}, '
+                    f'{t}.ord || {i}.n, {i}.value FROM jsonb_array_elements(CASE WHEN '
+                    f"jsonb_typeof({t}.value) = 'array'{tops} THEN {t}.value END) "
+                    f'WITH ORDINALITY AS {i}(value, n)')
+
+        under = f'EXISTS (SELECT 1 FROM {m} WHERE starts_with({m}.path, {ch}.path))'
+        return (
+            f'SELECT {k}.path, {k}.ord, {k}.value FROM (WITH RECURSIVE {m} AS ({matched}), '
+            f'{t}(path, ord, value) AS (SELECT {p}, {o}, {v} '
+            f'UNION ALL SELECT {ch}.path, {ch}.ord, {ch}.value FROM {t} '
+            f'CROSS JOIN LATERAL ({children()}) AS {ch} WHERE {under} '
+            f'AND NOT EXISTS (SELECT 1 FROM {m} WHERE {m}.path = {ch}.path)) '
+            f'SELECT {ch}.path, {ch}.ord, {ch}.value FROM {t} '
+            f'CROSS JOIN LATERAL ({children()}) AS {ch} WHERE NOT {under}) AS {k}')
 
     def _uncovered(self, rows, group):
         """
@@ -806,10 +946,10 @@ class PostgresMixin(Translator):
     def _some(self, src, parts):
         """
         SQL boolean: `parts` reach something from the jsonb `src`.
-        Without a first-match group some tail does, up to its first
-        aligned (+) op; with one, its rows have a row.
+        Without a first-match group or a negation some tail does, up to
+        its first aligned (+) op; with one, its rows have a row.
         """
-        if _anywhere(parts, _is_first):
+        if _anywhere(parts, _unreadable):
             return f'EXISTS ({self._rows(src, parts)})'
         tests = [self._path_call('jsonb_path_exists', src, *_segments(tail)[0])
                  for tail in _tails(parts)]
@@ -1079,6 +1219,10 @@ class _Parts(Hooks):
 
     def group(self, op, kind, branches, cuts, softs, t):
         return [_Group(kind, [t._jsonpath_parts(b) for b in branches], cuts, softs)]
+
+    def not_group(self, op, t):
+        reads = t._access_kinds(op.inner)[0]
+        return [_Group('not', [t._jsonpath_parts(op.inner)], (False,), (False,), reads)]
 
 
 class _JsonPathKey(Hooks):

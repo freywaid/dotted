@@ -483,19 +483,41 @@ def test_soft_cut_group_lateral_tracks_paths():
     assert 'starts_with(' in sql
 
 
+def test_negation_is_a_complement():
+    """
+    data.(!(status="banned")) is the complement of status="banned":
+    the largest subtrees with no match of it, found by a recursive
+    query over the children its matches run through; where is whether
+    there is one, not NOT (status = 'banned').
+    """
+    r = sqlize('data.(!(status="banned"))')
+    where, _ = Resolver.build(r.where)
+    assert where.startswith('EXISTS (')
+    assert 'NOT ((data' not in where
+    lateral, _ = Resolver.build(r.lateral)
+    assert 'WITH RECURSIVE' in lateral
+    assert 'jsonb_each(CASE WHEN jsonb_typeof(' in lateral
+
+
+def test_negation_by_key_reads_no_array_at_its_node():
+    """
+    A key reads an object's members only, so (!x) splits no array at
+    its node, the empty path; a slot reads an array's elements.
+    """
+    by_key, _ = Resolver.build(sqlize('data.(!x)').lateral)
+    by_slot, _ = Resolver.build(sqlize('data.(![0])').lateral)
+    assert "= 'array' AND _pat16.path <> '' THEN" in by_key
+    assert "path <> ''" not in by_slot
+
+
 @pytest.mark.parametrize('path', [
-    'data.(!(status="banned"))',
-    '!(status="banned")',
-    '(a, b)?.c',
     'data.(x[*+]##, y)',
     'data.(**:2##, y)',
 ])
 def test_group_not_supported_yet_raises(path):
     """
-    `!` (the complement of what its path matches, not NOT), a path
-    after a top-level first-match group, and under a soft cut an
-    aligned op or a ** with depths raise rather than translate to
-    anything else.
+    Under a soft cut, an aligned op or a ** with depths raises rather
+    than translate to anything else.
     """
     with pytest.raises(TranslationError, match='not supported yet'):
         sqlize(path)
@@ -525,6 +547,147 @@ def test_top_level_mixed_columns_and_jsonb():
         "AND (status = :_p2)"
     )
     assert params == {'_p1': 30, '_p2': 'active'}
+
+
+# ---------------- groups over the row's columns ----------------
+
+_ROW_GROUPS = [
+    '(title, author)',
+    '(title & author)',
+    '(title, author)?',
+    '(title, author)?.x',
+    '(title#, author)',
+    '(title#&author)',
+    '(title##, author)',
+    '(title##&author)',
+    '(data, meta).user.age>=30',
+    '(age>=18 & status="active")',
+]
+
+
+@pytest.mark.parametrize('path', _ROW_GROUPS)
+def test_row_group_reads_the_same_under_either_root(path):
+    """
+    A group at the top of a path reads the row's columns as one value,
+    the same in a table search as in a column path: its matches are
+    the lateral's, its where whether there is one.
+    """
+    column = sqlize(path)
+    table = sqlize(f'hello[*].{path}', root='table')
+    assert table.table == 'hello'
+    assert sorted(column) == ['lateral', 'select', 'where']
+    assert sorted(table) == ['from_', 'lateral', 'select', 'where']
+    for name in ('select', 'where', 'lateral'):
+        assert Resolver.build(table[name]) == Resolver.build(column[name])
+
+
+def test_row_group_reads_its_columns():
+    """
+    The row is an object of the columns the branches read, and the
+    group's lateral each branch's matches in turn.
+    """
+    r = sqlize('hello[*](.title, .author)', root='table')
+    row = "jsonb_build_object('title', title, 'author', author)"
+    assert Resolver.build(r.select) == ('_pat1.value', {})
+    assert Resolver.build(r.lateral) == (
+        f"LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query({row}, "
+        f"'$.title') AS _pat2(value) UNION ALL SELECT _pat3.value FROM "
+        f"LATERAL jsonb_path_query({row}, '$.author') AS _pat3(value)) "
+        f"AS _pat1(value)", {})
+
+
+def test_row_group_of_guards_keeps_plain_where():
+    """
+    A group of guards over the row keeps its plain predicates, after
+    the row filters; its lateral reads the row's columns.
+    """
+    r = sqlize('hello[*&a=1].(age>=18 & status="active")', root='table')
+    assert Resolver.build(r.where) == (
+        '(a = :_p1) AND ((age >= :_p2) AND (status = :_p3))',
+        {'_p1': 1, '_p2': 18, '_p3': 'active'})
+    lateral, _ = Resolver.build(r.lateral)
+    assert "jsonb_build_object('age', age, 'status', status)" in lateral
+
+
+def test_row_cut_group():
+    """
+    (title#, author) at the row: author's JSONPath filters the row to
+    where title reaches nothing.
+    """
+    r = sqlize('hello[*].(title#, author)', root='table')
+    row = "jsonb_build_object('title', title, 'author', author)"
+    assert Resolver.build(r.where) == (
+        f"(jsonb_path_exists({row}, '$.title')) OR "
+        f"(jsonb_path_exists({row}, '$ ? (!(exists(@.title))).author'))", {})
+
+
+def test_row_cut_in_conjunction():
+    """
+    (title#&author) at the row: the cut ends the conjunction, so the
+    row reads title alone.
+    """
+    r = sqlize('hello[*].(title#&author)', root='table')
+    assert Resolver.build(r.where) == (
+        "jsonb_path_exists(jsonb_build_object('title', title), "
+        "'$ ? ((exists(@.title))).title')", {})
+
+
+def test_row_soft_cut_group_lateral_tracks_paths():
+    """
+    (title##, author) at the row: the lateral walks the row's columns
+    with their paths and folds them in order.
+    """
+    lateral, _ = Resolver.build(
+        sqlize('hello[*].(title##, author)', root='table').lateral)
+    assert "jsonb_build_object('title', title, 'author', author) AS value" in lateral
+    assert 'WITH RECURSIVE' in lateral
+
+
+def test_row_first_match_group_continues_after():
+    """
+    The path after a first-match group over the row runs on from the
+    match: the first user, or user where there are none.
+    """
+    r = sqlize('hello[*].(data.users[*], data.user)?.age', root='table')
+    row = "jsonb_build_object('data', data)"
+    assert Resolver.build(r.where) == (
+        f"EXISTS (SELECT _pat1.value FROM LATERAL jsonb_path_query(COALESCE("
+        f"jsonb_path_query_first({row}, '$.data.users[*]'), "
+        f"jsonb_path_query_first({row}, '$.data.user')), '$.age') "
+        f"AS _pat1(value))", {})
+
+
+@pytest.mark.parametrize('path', [
+    'hello[*](!.title)',
+    'public.hello[*](!.title)',
+    'hello[*].(!(status="banned"))',
+    'hello[*].(!(status="banned"), title)',
+])
+def test_row_negation_reads_the_whole_row(path):
+    """
+    A negation over the row's columns is the complement among all of
+    them, so it reads the table's whole row, named without its schema.
+    """
+    r = sqlize(path, root='table')
+    for name in ('where', 'lateral'):
+        sql, _ = Resolver.build(r[name])
+        assert 'to_jsonb(hello)' in sql
+        assert 'WITH RECURSIVE' in sql
+
+
+@pytest.mark.parametrize('path, root', [
+    ('!(status="banned")', 'column'),
+    ('(!(status="banned"), title)', 'column'),
+    ('[*](!.title)', 'table'),
+])
+def test_row_negation_needs_a_named_table(path, root):
+    """
+    A negation at the top of a path is the complement of the row's
+    columns: a column path, or a search of an unnamed table, has no
+    row to read them all from.
+    """
+    with pytest.raises(TranslationError, match="row's columns"):
+        sqlize(path, root=root)
 
 
 # ---------------- absolute root references ----------------
@@ -784,7 +947,7 @@ def test_sql_concat_preserves_metadata():
 
 def test_sql_concat_two_fragments_merges_metadata():
     r = sqlize('(age>=$(min_age) & weight<200)')
-    # select is None here (top-level group); use where + where-like combo
+    # compose the where with plain text
     combined = r.where + ' -- comment'
     sql, params = Resolver.build(combined, min_age=30)
     assert sql.startswith('(age >= :min_age) AND (weight < :_p1) -- comment')
@@ -1751,7 +1914,7 @@ def test_table_values_stay_out_of_mapping():
     the mapping yields fragments only.
     """
     r = sqlize('hello[book_id="b1"][0:5]', root='table')
-    assert sorted(r) == ['select', 'where']
+    assert sorted(r) == ['from_', 'select', 'where']
     assert all(isinstance(v, SQLFragment) for v in dict(r).values())
 
 
@@ -1761,8 +1924,8 @@ def test_table_search_repr_shows_plain_values():
     """
     r = sqlize('hello[0:5]', root='table')
     assert repr(r) == (
-        "AsyncPGResolver(driver='asyncpg', select='*', table='hello', "
-        "offset=0, limit=5)")
+        "AsyncPGResolver(driver='asyncpg', select='*', from_='hello', "
+        "table='hello', offset=0, limit=5)")
 
 
 def test_table_search_composes_into_a_query():
@@ -1770,9 +1933,162 @@ def test_table_search_composes_into_a_query():
     The caller assembles the query from the fragments and plain values.
     """
     r = sqlize('hello[*&book_id="b1"].title', root='table')
-    sql = 'SELECT ' + r.select + f' FROM {r.table} WHERE ' + r.where
+    sql = 'SELECT ' + r.select + ' FROM ' + r.from_ + ' WHERE ' + r.where
     assert r.build(sql) == (
         'SELECT title FROM hello WHERE book_id = $1', ['b1'])
+
+
+@pytest.mark.parametrize('path, from_', [
+    ('hello[*&a=1].title', 'hello'),
+    ('public.hello[0]', 'public.hello'),
+    ('"my table"[*]', '"my table"'),
+])
+def test_table_search_from_is_the_table(path, from_):
+    """
+    `from_` is the table a search reads, each part of its name quoted
+    where it needs it.
+    """
+    assert Resolver.build(sqlize(path, root='table').from_) == (from_, {})
+
+
+def test_table_search_unnamed_has_no_from():
+    """
+    An unnamed table's FROM is the caller's.
+    """
+    assert sqlize('[*&a=1]').from_ is None
+
+
+# ---------------- groups of row steps ----------------
+
+_BOOKS_A = 'SELECT * FROM books WHERE a = :_p1'
+_BOOKS_B = 'SELECT * FROM books WHERE b = :_p2'
+
+
+def test_row_step_group_reads_each_branchs_rows():
+    """
+    A group as the row step yields each branch's rows in turn, a row
+    both reach twice, as dotted does, so `from_` is their UNION ALL
+    under the table's name; the path after it reads each row.
+    """
+    r = sqlize('books[(*&a=1, *&b=2)].title', root='table')
+    assert Resolver.build(r.from_) == (
+        f'(({_BOOKS_A}) UNION ALL ({_BOOKS_B})) AS books', {'_p1': 1, '_p2': 2})
+    assert Resolver.build(r.select) == ('title', {})
+    assert r.where is None
+    assert (r.table, r.offset, r.limit) == ('books', None, None)
+
+
+def test_row_step_group_composes_into_a_query():
+    """
+    The caller selects from `from_`, as for any table search.
+    """
+    r = sqlize('books[(*&a=1, *&b=2)].title', root='table')
+    assert r.build('SELECT ' + r.select + ' FROM ' + r.from_) == (
+        'SELECT title FROM ((SELECT * FROM books WHERE a = $1) UNION ALL '
+        '(SELECT * FROM books WHERE b = $2)) AS books', [1, 2])
+
+
+def test_row_step_group_cut():
+    """
+    A cut holds over the table: b's rows come only where no row of a's
+    has the path after the group match.
+    """
+    r = sqlize('books[(*&a=1#, *&b=2)].title = "x"', root='table')
+    a = 'SELECT * FROM books WHERE a = :_p2'
+    b = 'SELECT * FROM books WHERE b = :_p3'
+    assert Resolver.build(r.from_)[0] == (
+        f'(({a}) UNION ALL (SELECT * FROM ({b}) AS books WHERE NOT EXISTS '
+        f'(SELECT 1 FROM ({a}) AS books WHERE title = :_p1))) AS books')
+    assert Resolver.build(r.where) == ('title = :_p1', {'_p1': 'x'})
+
+
+def test_row_step_group_soft_cut():
+    """
+    A soft cut skips, in the branches after it, the rows its branch
+    yielded: those its predicates hold for, null being no match.
+    """
+    r = sqlize('books[(*&a=1##, *&b=2)].title', root='table')
+    assert Resolver.build(r.from_)[0] == (
+        f'(({_BOOKS_A}) UNION ALL (SELECT * FROM ({_BOOKS_B}) AS books '
+        f'WHERE (a = :_p1) IS NOT TRUE)) AS books')
+
+
+def test_row_step_first_match_group():
+    """
+    A first match is the first row of the first branch to reach one.
+    """
+    r = sqlize('books[(*&a=1, *&b=2)?].title', root='table')
+    assert Resolver.build(r.from_)[0] == (
+        f'((SELECT * FROM ({_BOOKS_A}) AS books LIMIT 1) UNION ALL '
+        f'(SELECT * FROM (SELECT * FROM ({_BOOKS_B}) AS books WHERE NOT EXISTS '
+        f'(SELECT 1 FROM ({_BOOKS_A}) AS books)) AS books LIMIT 1)) AS books')
+
+
+def test_row_step_conjunction():
+    """
+    An `&` of row steps yields each branch's rows only where every
+    branch reaches one.
+    """
+    r = sqlize('books([*&a=1] & [*&b=2])', root='table')
+    held = (f'(EXISTS (SELECT 1 FROM ({_BOOKS_A}) AS books)) AND '
+            f'(EXISTS (SELECT 1 FROM ({_BOOKS_B}) AS books))')
+    assert Resolver.build(r.from_)[0] == (
+        f'((SELECT * FROM ({_BOOKS_A}) AS books WHERE {held}) UNION ALL '
+        f'(SELECT * FROM ({_BOOKS_B}) AS books WHERE {held})) AS books')
+
+
+@pytest.mark.parametrize('path, from_', [
+    ('books(![*&a=1]).title',
+     '(SELECT * FROM books WHERE (a = :_p1) IS NOT TRUE) AS books'),
+    ('books(![*])', '(SELECT * FROM books LIMIT 0) AS books'),
+])
+def test_row_step_negation(path, from_):
+    """
+    A negation of a row step is the rows it doesn't reach, each whole;
+    a row its filter is null for is not reached. `[*]` reaches them
+    all.
+    """
+    assert Resolver.build(sqlize(path, root='table').from_)[0] == from_
+
+
+@pytest.mark.parametrize('path, from_', [
+    ('books[(0, 2)]',
+     '((SELECT * FROM books OFFSET 0 LIMIT 1) UNION ALL '
+     '(SELECT * FROM books OFFSET 2 LIMIT 1)) AS books'),
+    ('books[x=1][(*&a=1, *&b=2)]',
+     '((SELECT * FROM books WHERE (x = :_p1) AND (a = :_p2)) UNION ALL '
+     '(SELECT * FROM books WHERE (x = :_p1) AND (b = :_p3))) AS books'),
+    ('books[(*&a=1)]', '(SELECT * FROM books WHERE a = :_p1) AS books'),
+])
+def test_row_step_group_rows(path, from_):
+    """
+    A branch may pick a row by index; a slice filter before the group
+    filters every branch's rows; a one-branch group is its branch's.
+    """
+    assert Resolver.build(sqlize(path, root='table').from_)[0] == from_
+
+
+@pytest.mark.parametrize('path', [
+    '[(*&a=1, *&b=2)]',
+    'books[0:5][(*&a=1, *&b=2)]',
+    'books[(0##, *&b=2)]',
+    'books(![0])',
+    'books([*&a=1].title, [*&b=2].author)',
+    'books([a=1], [b=2])',
+    'books[(*&a=1##, *&b=2)].tags[*]',
+    'books[(*&a=1, *&b=2)][0]',
+])
+def test_row_step_group_unsupported_raises(path):
+    """
+    A group of row steps raises where its rows can't be read: an
+    unnamed table has none to select from; rows a slice or an index
+    picks no predicate tells apart, for a soft cut or a negation; a
+    branch that goes on past its row step, or a slice filter that
+    reads the list; a soft cut whose path after may match a row more
+    than once; and a row step after it.
+    """
+    with pytest.raises(TranslationError):
+        sqlize(path, root='table')
 
 
 @pytest.mark.parametrize('path', [
@@ -1780,7 +2096,6 @@ def test_table_search_composes_into_a_query():
     'hello[10:20].title',
     'hello[*][0]',
     'hello[*&a=1][0]',
-    'hello[*](.title,.author)',
     'hello[*](.title,.author;)',
     'hello[::2]',
     'hello[-1]',
@@ -1801,8 +2116,8 @@ def test_table_search_composes_into_a_query():
 ])
 def test_table_search_unsupported_paths_raise(path):
     """
-    Table searches v1 can't express raise TranslationError: multi-column
-    select, a key after a slice or slice filter (dotted reads the list
+    Table searches v1 can't express raise TranslationError: a packed
+    group, a key after a slice or slice filter (dotted reads the list
     there), a row step after a row step, slice steps and negative
     bounds, unresolved index / slice substitutions, and the rest.
     """

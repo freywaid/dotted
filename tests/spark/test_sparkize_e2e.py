@@ -82,6 +82,7 @@ def test_top_level_group(df, path, expected):
     ('data.user.(age >= 30, age < 18)', [2, 3, 4, 5, 6]),
     ('data.(users[*], user)?.age >= 30', [2, 3, 5, 6]),
     ('data.users[*].(age >= 30#, age >= 18)', [1, 2, 3, 5]),
+    ('tags(!.color)', [1, 2, 3]),
 ])
 def test_group_where(df, path, expected):
     """
@@ -118,6 +119,10 @@ _USER_AND_USERS_AGES = {
      {1: [25, 32], 2: [35], 3: [40], 4: [17], 5: [50, 18], 6: [], 7: []}),
     ('data.users[*]((.age >= 30, .age)##, .age)',
      {1: [25, 32], 2: [35], 3: [40], 4: [17], 5: [50, 18], 6: [], 7: []}),
+    ('tags(!.color)',
+     {1: ['L'], 2: ['red'], 3: ['red'], 4: [], 5: [], 6: [], 7: []}),
+    ('data.users(![0]).age',
+     {1: [32], 2: [], 3: [], 4: [], 5: [18], 6: [], 7: []}),
 ])
 def test_group_select(df, path, expected):
     """
@@ -130,6 +135,66 @@ def test_group_select(df, path, expected):
     """
     r = sparkize(path)
     assert selected(df, r.build(r.select)) == expected
+
+
+# ---- groups over the row's columns ----------------------------------
+
+ROOTS = ['column', 'table']
+
+
+def _rooted(spark, df, path, root):
+    """
+    `path`'s resolver and the DataFrame it reads: a column path over
+    `df`, or under root='table' a search of it as the view `items`.
+    """
+    if root == 'column':
+        return sparkize(path), df
+    df.createOrReplaceTempView('items')
+    r = _sparkize(f'items[*].{path}', flavor='pyspark', root='table')
+    return r, spark.table(r.table)
+
+
+@pytest.mark.parametrize('root', ROOTS)
+@pytest.mark.parametrize('path, expected', [
+    ('(age >= 18 & status = "active")', [1, 2, 5, 6]),
+    ('(age >= 30#, status = "active")', [1, 2, 3, 4, 5, 6]),
+    ('(age >= 30##, status = "active")', [1, 2, 3, 4, 5, 6]),
+    ('(data.users[*], data.user)?.age >= 30', [2, 3, 5, 6]),
+    ('(status = "banned", data.user.role = "guest")', [3, 7]),
+])
+def test_row_group_where(spark, df, root, path, expected):
+    """
+    A group over the row's columns keeps the rows where it matches, in
+    a table search as in a column path.
+    """
+    r, rows = _rooted(spark, df, path, root)
+    assert ids(rows, r.build(r.where)) == expected
+
+
+@pytest.mark.parametrize('root', ROOTS)
+@pytest.mark.parametrize('path, expected', [
+    ('(age, data.user.age)',
+     {1: [25, 25], 2: [35, 35], 3: [40, 40], 4: [17, 17], 5: [50, 50],
+      6: [30, 30], 7: [None, None]}),
+    ('(age >= 30#, data.user.age)',
+     {1: [25], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: [None]}),
+    ('(age >= 30##, age)',
+     {1: [25], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: [None]}),
+    ('(age >= 30 & data.user.age >= 30)',
+     {1: [], 2: [35, 35], 3: [40, 40], 4: [], 5: [50, 50], 6: [30, 30],
+      7: []}),
+    ('(data.users[*], data.user)?.age',
+     {1: [25], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: [None]}),
+])
+def test_row_group_select(spark, df, root, path, expected):
+    """
+    A group over the row's columns selects its matches as `get` does,
+    in a table search as in a column path: after a cut, user.age only
+    where age isn't 30+; after a soft cut, age once. A null is no match
+    for a cut, as for `where`.
+    """
+    r, rows = _rooted(spark, df, path, root)
+    assert selected(rows, r.build(r.select)) == expected
 
 
 # ---- struct traversal -----------------------------------------------
@@ -309,6 +374,34 @@ def test_table_search(spark, df):
             .offset(r.offset).limit(r.limit).select(r.build(r.select))
             .collect())
     assert [row.id for row in rows] == [2, 4]
+
+
+@pytest.mark.parametrize('path, expected', [
+    ('[(*&status="active", *&age>=30)]', [1, 2, 2, 3, 4, 5, 5, 6, 6]),
+    ('[(*&status="banned"#, *&status="active")]', [3]),
+    ('[(*&status="gone"#, *&status="active")]', [1, 2, 4, 5, 6]),
+    ('[(*&status="active", *&age>=30)].age >= 40', [3, 5, 5]),
+    ('[(*&status="active"#, *&age>=30)].age >= 40', [5]),
+    ('[(*&status="active"##, *&age>=30)]', [1, 2, 3, 4, 5, 6]),
+    ('[(*&status="gone", *&status="banned")?]', [3]),
+    ('([*&status="banned"] & [*&age>=40])', [3, 3, 5]),
+    ('([*&status="gone"] & [*&age>=40])', []),
+    ('(![*&status="active"])', [3, 7]),
+    ('(![*&age>=30])', [1, 4, 7]),
+])
+def test_row_step_group(spark, df, path, expected):
+    """
+    A group as the row step reads its rows with `r.rows`: each
+    branch's in turn, a row both reach twice; a cut over the table; a
+    soft cut skipping what an earlier branch yielded; a first match; an
+    `&`; and a negation, id=7's null age not reached by `age>=30`.
+    """
+    df.createOrReplaceTempView('items')
+    r = _sparkize(f'items{path}', flavor='pyspark', root='table')
+    rows = r.rows(spark.table(r.table))
+    if r.where is not None:
+        rows = rows.where(r.build(r.where))
+    assert sorted(row.id for row in rows.select('id').collect()) == expected
 
 
 def test_table_search_whole_rows(spark, df):

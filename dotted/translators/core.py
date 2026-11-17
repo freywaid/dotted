@@ -20,6 +20,27 @@ Flavor hooks (each flavor mixin implements them):
 
     _column(name)                     → column expression
     _all_columns()                    → every column of a row (`*`)
+    _row(table, columns)              → the row as one value, for a
+                                        group or negation at the top
+                                        of a path: its `columns`, or
+                                        the whole row of `table` when
+                                        `columns` is None
+    _table_from(names)                → a table search's `from`: the
+                                        table it reads
+    _table_rows(names, preds, offset, limit)
+                                      → the rows of the table `names`
+                                        where `preds` hold, in the
+                                        window `offset` / `limit`
+    _table_rows_kept(rows, pred, gates)     → those of `rows` where `pred`
+                                        holds, none unless each gate
+                                        `(rows, pred, exists)` holds
+    _table_rows_first(rows) / _table_rows_union(parts)
+                                      → the first of the rows / each
+                                        part's in turn
+    _table_rows_from(rows)                  → `from` for a group of row
+                                        steps: the rows it yields
+    _combine_not_true(pred)           → `pred` doesn't hold: false or
+                                        null
     _select_expr(col, prefix)         → extraction expression for a
                                         prefix of path segments
     _scalar_predicate(guard, col)     → predicate for a guard on the
@@ -49,6 +70,8 @@ dict of fragment name (`select`, `where`, `lateral`, ...) → flavor
 expression; turning that into the target's public result is the
 flavor's `translate()`.
 """
+import functools
+
 from .. import access
 from .. import base
 from .. import groups as _groups
@@ -354,30 +377,61 @@ def _branches(group_op, kind):
 class _Column(Hooks):
     """
     The first op of a path read as columns: the column a key names, a
-    guard on the column itself, or a group of paths each from its own
-    column. `rest` is the path after it.
+    guard on the column itself, or a group or negation over the row's
+    columns. `rest` is the path after it, `row` the table whose row it
+    reads, None for a column path or an unnamed table.
     """
 
-    def key(self, op, t, rest):
+    def key(self, op, t, rest, row):
         col = t._column(t._column_name(op))
         return t._result(**t._walk(col, (), rest))
 
     # any other first op is a column key or raises in `_column_name`
     other = key
 
-    def value_guard(self, op, t, rest):
+    def value_guard(self, op, t, rest, row):
         # `status = "active"`: one op, a guard wrapping the column key
         if rest:
             raise TranslationError('path continues after column-level guard')
         col = t._column(t._column_name(op.inner))
         return t._result(select=col, where=t._scalar_predicate(op, col))
 
-    def group(self, op, kind, branches, cuts, softs, t, rest):
-        # a cut changes which branches yield, not whether the group
-        # matches, so the group's where takes no notice of it
+    def group(self, op, kind, branches, cuts, softs, t, rest, row):
         if not op.is_pattern():
-            return t._translate(_only_branch(op) + rest)
-        return t._result(where=t._translate_top_group(kind, branches, rest))
+            return t._translate(_only_branch(op) + rest, row)
+        source = t._row_source(row, op.translated(_ROW_COLUMNS, t))
+        wheres = functools.partial(t._row_wheres, row)
+        return t._result(**t._group(source, (), op, kind, branches, rest, wheres))
+
+    def not_group(self, op, t, rest, row):
+        source = t._row_source(row, None)
+        return t._result(**t._patterned(source, (), (op,) + rest))
+
+
+class _RowColumns(Hooks):
+    """
+    The columns of the row a group at the top of a path reads, in
+    order: each branch's first column. None where a branch reads the
+    whole row: a negation, whose complement is every other column.
+    """
+
+    def other(self, op, t):
+        return (t._column_name(op),)
+
+    def value_guard(self, op, t):
+        return op.inner.translated(self, t)
+
+    def group(self, op, kind, branches, cuts, softs, t):
+        names = ()
+        for branch in branches:
+            got = branch[0].translated(self, t)
+            if got is None:
+                return None
+            names += tuple(name for name in got if name not in names)
+        return names
+
+    def not_group(self, op, t):
+        return None
 
 
 class _ColumnName(Hooks):
@@ -425,7 +479,77 @@ class _Walk(Hooks):
     def group(self, op, kind, branches, cuts, softs, t, col, prefix, rest):
         if not op.is_pattern():
             return t._walk(col, prefix, _only_branch(op) + rest)
-        return t._group(col, prefix, op, kind, branches, rest)
+        wheres = functools.partial(t._node_wheres, col, prefix)
+        return t._group(col, prefix, op, kind, branches, rest, wheres)
+
+    def not_group(self, op, t, col, prefix, rest):
+        return t._patterned(col, prefix, (op,) + rest)
+
+
+class _Kinds(Hooks):
+    """
+    How a run of ops reads the segments it reaches, level by level:
+    'key' or 'slot', the tuple ending in `...` where the ops reach any
+    depth (a **, a negation). A negation splits the levels it reads the
+    way its branch reads them.
+    """
+
+    def other(self, op):
+        raise TranslationError(f'op not supported in a negation: {type(op).__name__}')
+
+    def key(self, op):
+        return ('key',)
+
+    def slot(self, op):
+        return ('slot',)
+
+    def slice(self, op):
+        return ('slot',)
+
+    def slice_filter(self, op):
+        return ('slot',)
+
+    def transform_wrap(self, op):
+        return op.inner.translated(self)
+
+    def value_guard(self, op):
+        return op.inner.translated(self)
+
+    def filter_wrap(self, op):
+        return op.inner.translated(self)
+
+    def recursive(self, op):
+        return ('key', ...)
+
+    def not_group(self, op):
+        return _kinds(op.inner)[:1] + (...,)
+
+    def group(self, op, kind, branches, cuts, softs):
+        out = []
+        reads = [_kinds(branch) for branch in branches]
+        for level in range(max(len(r) for r in reads)):
+            here = {r[level] for r in reads if len(r) > level}
+            if ... in here:
+                return tuple(out) + (...,)
+            if len(here) > 1:
+                raise TranslationError(
+                    'a negation whose branches read a level both by key and by '
+                    'slot not supported yet'
+                )
+            out.append(here.pop())
+        return tuple(out)
+
+
+def _kinds(ops):
+    """
+    How `ops` read the segments they reach, level by level (see _Kinds).
+    """
+    out = ()
+    for op in ops:
+        out += op.translated(_KINDS)
+        if out and out[-1] is ...:
+            return out
+    return out
 
 
 class _KeySegment(Hooks):
@@ -573,6 +697,7 @@ class _KeyParts(Hooks):
 
 
 _COLUMN = _Column()
+_ROW_COLUMNS = _RowColumns()
 _COLUMN_NAME = _ColumnName()
 _WALK = _Walk()
 _KEY_SEGMENT = _KeySegment()
@@ -581,7 +706,31 @@ _NAME = _Name()
 _ROW_INDEX = _RowIndex()
 _ROW_FILTER = _RowFilter()
 _FILTER_SEGMENT = _FilterSegment()
+class _RowGroup(Hooks):
+    """
+    A table search's row step read as a group or negation of row
+    steps, `books[(*&a=1, *&b=2)]` or `books(![*&a=1])`: its rows,
+    from which the path after it runs on. None for any other step.
+    """
+
+    def other(self, op, *args):
+        return None
+
+    def group(self, op, kind, branches, cuts, softs, t, names, wheres, window, rest, listed):
+        if not op.is_pattern():
+            return t._table_steps(names, wheres, window, _only_branch(op) + rest, listed)
+        rows = functools.partial(
+            t._table_rows_in_turn, names, wheres, kind, branches, cuts, softs, rest)
+        return t._derived(names, window, rest, rows)
+
+    def not_group(self, op, t, names, wheres, window, rest, listed):
+        rows = functools.partial(t._table_rows_unreached, names, wheres, op.inner)
+        return t._derived(names, window, rest, rows)
+
+
 _KEY_PARTS = _KeyParts()
+_KINDS = _Kinds()
+_ROW_GROUP = _RowGroup()
 
 
 class Translator:
@@ -613,15 +762,18 @@ class Translator:
             return self._translate(ops), _NO_TABLE
         return self._translate_table(ops)
 
-    def _translate(self, ops):
+    def _translate(self, ops, row=None):
         """
         Inner translation entry point — returns a dict of flavor
         expressions (`select`, `where`, ...). Nested invocations
-        (group branches, reference subpaths) re-enter here.
+        (group branches, reference subpaths) re-enter here. `row` is
+        the table whose row the path reads, for a group or negation
+        over the row's columns; None for a column path or an unnamed
+        table.
         """
         if not ops:
             raise TranslationError('empty path')
-        return ops[0].translated(_COLUMN, self, tuple(ops[1:]))
+        return ops[0].translated(_COLUMN, self, tuple(ops[1:]), row)
 
     def _result(self, **kw):
         """
@@ -657,21 +809,35 @@ class Translator:
         n = 0
         while n < len(ops) and _is_table_key(ops[n]):
             n += 1
-        names = [self._name(op.op, 'table') for op in ops[:n]]
+        names = tuple(self._name(op.op, 'table') for op in ops[:n])
         table = '.'.join(names) if names else None
         steps = ops[n:]
         wheres = []
         while steps and isinstance(steps[0], access.SliceFilter):
             wheres.append(self._row_filters(steps[0].filters))
             steps = steps[1:]
-        offset, limit = None, None
+        window = (None, None)
         if steps and isinstance(steps[0], access.Slice):
-            offset, limit = _slice_window(steps[0])
+            window = _slice_window(steps[0])
             steps = steps[1:]
         listed = len(steps) < len(ops) - n
+        out, window = self._table_steps(names, wheres, window, tuple(steps), listed)
+        return out, (table,) + window
+
+    def _table_steps(self, names, wheres, window, steps, listed):
+        """
+        A table search from its row step on: its fragments and its
+        `(offset, limit)` window. `wheres` and `window` are the slice
+        filters' and the slice's before it, `listed` whether there were
+        any, so `steps` reads the list of rows.
+        """
+        offset, limit = window
         if not steps:
-            return self._table_result(wheres, None), (table, offset, limit)
+            return self._table_result(names, wheres, None), window
         step, rest = steps[0], steps[1:]
+        grouped = step.translated(_ROW_GROUP, self, names, wheres, window, rest, listed)
+        if grouped is not None:
+            return grouped
         if not _is_row_step(step) and listed:
             raise TranslationError(
                 f'{type(step).__name__} after a slice or slice filter reads '
@@ -687,44 +853,203 @@ class Translator:
             )
         if (offset, limit) != (None, None) and not _is_every_row(step):
             raise TranslationError('only [*] may follow a slice in v1')
-        if isinstance(step, wrappers.FilterWrap):
-            if not _is_every_row(step.inner):
-                raise TranslationError(f'unsupported filtered row step: {step}')
-            wheres.append(self._row_filters(step.filters))
-        if isinstance(step, access.Slot) and not _is_every_row(step):
-            offset, limit = step.op.translated(_ROW_INDEX, step), 1
-        if rest and _is_row_step(rest[0]):
+        preds, at, count = self._row_step(step)
+        wheres = wheres + preds
+        if at is not None:
+            offset, limit = at, count
+        under = self._under_rows(names, rest)
+        return self._table_result(names, wheres, under), (offset, limit)
+
+    def _under_rows(self, names, rest):
+        """
+        The fragments of the path after a table search's row step,
+        `rest`, run on from each row; None where nothing follows. A
+        group or negation over the row's columns reads the row of the
+        table, by its own name, without its schema.
+        """
+        if not rest:
+            return None
+        if _is_row_step(rest[0]):
             raise TranslationError(
                 'row step after a row step not supported — in dotted it '
                 'indexes into each row'
             )
-        under = self._translate(rest) if rest else None
-        return self._table_result(wheres, under), (table, offset, limit)
+        return self._translate(rest, names[-1] if names else None)
 
-    def _table_result(self, wheres, under):
+    def _row_step(self, step):
         """
-        A table search's fragments: the path under each row's own
-        (`select='*'` when none follows the row step), its `where`
-        ANDed after the row filters.
+        A row step's predicates and the row an index picks, `(offset,
+        limit)`: `[*]` every row, `[*&…]` those its filters keep, `[n]`
+        the one at n.
+        """
+        if isinstance(step, wrappers.FilterWrap):
+            if not _is_every_row(step.inner):
+                raise TranslationError(f'unsupported filtered row step: {step}')
+            return [self._row_filters(step.filters)], None, None
+        if isinstance(step, access.Slot) and not _is_every_row(step):
+            return [], step.op.translated(_ROW_INDEX, step), 1
+        return [], None, None
+
+    def _table_result(self, names, wheres, under):
+        """
+        A table search's fragments: the table it reads (`from`), and
+        the path under each row's own (`select='*'` when none follows
+        the row step), its `where` ANDed after the row filters.
         """
         out = dict(under) if under else {'select': self._all_columns()}
         if 'where' in out:
             wheres = wheres + [out['where']]
-        if len(wheres) == 1:
-            out['where'] = wheres[0]
-        if len(wheres) > 1:
-            out['where'] = self._combine_and(wheres)
+        if wheres:
+            out['where'] = self._all_of(wheres)
+        out['from'] = self._table_from(names)
         return self._result(**out)
+
+    # ---- groups of row steps ----------------------------------------
+
+    def _derived(self, names, window, rest, rows):
+        """
+        A table search whose row step is a group or negation of row
+        steps: its rows, `rows(after)`, as `from`, `after` the `where`
+        of the path after it, which runs on from each row. A row the
+        group reaches twice comes twice, as dotted yields it, which no
+        filter of the table's rows can give.
+        """
+        if window != (None, None):
+            raise TranslationError('a group of row steps after a slice not supported yet')
+        under = self._under_rows(names, rest)
+        after = under.get('where') if under else None
+        out = dict(under) if under else {'select': self._all_columns()}
+        out['from'] = self._table_rows_from(rows(after))
+        return self._result(**out), (None, None)
+
+    def _row_branch(self, branch):
+        """
+        A branch of a group of row steps as the row step it is: its
+        predicates, offset and limit (`_row_step`).
+        """
+        if len(branch) != 1:
+            raise TranslationError(
+                'a branch of a group of row steps that goes on past its '
+                'row step not supported yet'
+            )
+        step = branch[0]
+        if isinstance(step, (access.SliceFilter, access.Slice)):
+            raise TranslationError(
+                f'{type(step).__name__} in a group of row steps reads the list '
+                f'of rows, not each row — use [*&…]'
+            )
+        if not _is_row_step(step):
+            raise TranslationError(
+                f'expected a row step in a group of row steps, got {type(step).__name__}'
+            )
+        return self._row_step(step)
+
+    def _table_rows_in_turn(self, names, wheres, kind, branches, cuts, softs, rest, after):
+        """
+        The rows of a group of row steps of `kind` over the table
+        `names`, after the slice filters' `wheres`, as dotted reads the
+        group at the table: each branch's rows in turn, a branch
+        yielding a row where the path after the group matches it
+        (`after`). A cut holds over the whole table: after `(a#, b)`,
+        b's rows come only where a yielded none. A soft cut skips, in
+        the branches after it, the rows its branch yielded, which only
+        its predicates tell, and a path after it that matches once per
+        row. An `&` yields only where every branch yields.
+        """
+        reached = []
+        for branch in branches:
+            preds, offset, limit = self._row_branch(branch)
+            rows = self._table_rows(names, list(wheres) + preds, offset, limit)
+            reached.append((rows, preds, offset is not None))
+        if kind == 'first':
+            return self._first_table_rows(reached)
+        if any(softs) and any(_op_is_pattern_like(op) for op in rest):
+            raise TranslationError(
+                'a soft cut in a group of row steps, with a path after it '
+                'that may match more than once per row, not supported yet'
+            )
+        gates = []
+        if kind == 'and':
+            gates = [(rows, after, True) for rows, _, _ in reached]
+        parts = []
+        covers = []
+        for (rows, preds, indexed), cut, soft in zip(reached, cuts, softs):
+            unless = None
+            if covers:
+                unless = self._combine_not_true(self._any_of(covers))
+            parts.append(self._table_rows_kept(rows, unless, gates))
+            if cut:
+                took = self._all_of([p for p in (after, unless) if p is not None])
+                gates = gates + [(rows, took, False)]
+            if not soft:
+                continue
+            if indexed:
+                raise TranslationError(
+                    'a soft cut after rows an index picks needs to tell rows '
+                    'apart, which a table search can\'t — not supported'
+                )
+            cover = [p for p in preds + [after] if p is not None]
+            if not cover:
+                # the soft branch yields every row: the later ones add none
+                break
+            covers.append(self._all_of(cover))
+        return self._table_rows_union(parts)
+
+    def _first_table_rows(self, reached):
+        """
+        The first row of the first branch of `reached` to reach one, a
+        first-match group of row steps, `books[(*&a=1, *&b=2)?]`.
+        """
+        parts = []
+        gates = []
+        for rows, _, _ in reached:
+            parts.append(self._table_rows_first(self._table_rows_kept(rows, None, gates)))
+            gates = gates + [(rows, None, False)]
+        return self._table_rows_union(parts)
+
+    def _table_rows_unreached(self, names, wheres, inner, after):
+        """
+        The rows a negation of a row step, `books(![*&a=1])`, yields:
+        those its row step doesn't reach, each whole. Rows an index
+        picks no predicate tells, so a negation of them raises.
+        """
+        preds, offset, _ = self._row_branch(inner)
+        if offset is not None:
+            raise TranslationError(
+                'a negation of rows an index picks needs to tell rows '
+                'apart, which a table search can\'t — not supported'
+            )
+        if not preds:
+            # (![*]) reaches every row: none is left
+            return self._table_rows(names, list(wheres), None, 0)
+        unless = self._combine_not_true(self._all_of(preds))
+        return self._table_rows(names, list(wheres) + [unless], None, None)
+
+    def _all_of(self, preds):
+        """
+        `preds` all holding: the one, or their conjunction; None for
+        none, which holds for every row.
+        """
+        if not preds:
+            return None
+        if len(preds) == 1:
+            return preds[0]
+        return self._combine_and(preds)
+
+    def _any_of(self, preds):
+        """
+        Some of `preds` holding: the one, or their disjunction.
+        """
+        if len(preds) == 1:
+            return preds[0]
+        return self._combine_or(preds)
 
     def _row_filters(self, filters):
         """
         A row step's filters, all of which must hold, as one predicate
         over the table's columns.
         """
-        preds = [f.translated(_ROW_FILTER, self) for f in filters]
-        if len(preds) == 1:
-            return preds[0]
-        return self._combine_and(preds)
+        return self._all_of([f.translated(_ROW_FILTER, self) for f in filters])
 
     def _row_comparison(self, f):
         """
@@ -749,6 +1074,15 @@ class Translator:
         and Slot ops for indexes.
         """
         return key.translated(_KEY_PARTS)
+
+    def _access_kinds(self, ops):
+        """
+        How `ops` read the segments they reach, level by level: 'key'
+        or 'slot', ending in `...` where they reach any depth. A
+        negation of them splits its node's children level by level
+        that way.
+        """
+        return _kinds(ops)
 
     def _walk(self, col, prefix, ops):
         """
@@ -810,45 +1144,58 @@ class Translator:
             return self._combine_and(preds)
         return self._combine_or(preds)
 
-    def _translate_top_group(self, kind, branches, rest):
+    def _group(self, col, prefix, group_op, kind, branches, rest, wheres):
         """
-        The `where` of a group of `kind` at the top of a path: each
-        branch is a complete path from its own column, the rest of the
-        path after it.
-        """
-        if kind == 'first' and rest:
-            raise TranslationError(
-                'path after a top-level first-match group (?) not supported yet'
-            )
-        wheres = []
-        for branch in branches:
-            where = self._translate(tuple(branch) + tuple(rest)).get('where')
-            if where is None:
-                raise TranslationError(
-                    'top-level group branch has no predicate'
-                )
-            wheres.append(where)
-        return self._combine_group(kind, wheres)
-
-    def _group(self, col, prefix, group_op, kind, branches, rest):
-        """
-        A group of `kind` at one node, `rest` the path after it. Its
-        matches are the pattern path's. When no branch of a `,` or `&`
-        group reaches a pattern, its `where` is the branches' own,
-        joined: a group of guards stays plain predicates; a cut changes
-        which branches yield, not whether the group matches. A first
-        match's rest runs from the match, not from each branch, so it
-        keeps the pattern's.
+        A group of `kind` at one node, `rest` the path after it: a node
+        inside a column, or the row (`_row_source`). Its matches are
+        the pattern path's. `wheres(ways)` reads each way, a branch and
+        the rest after it, as a plain path: its `where`, None where it
+        has none, or None for them all where they can't be read so.
+        When every way has one, the group's `where` is theirs, joined:
+        a group of guards stays plain predicates; a cut changes which
+        branches yield, not whether the group matches. A first match's
+        rest runs from the match, not from each branch, so with a rest
+        it keeps the pattern's.
         """
         ways = [tuple(branch) + rest for branch in branches]
-        wheres = None
-        plain = not any(_op_is_pattern_like(op) for way in ways for op in way)
-        if kind != 'first' and plain:
-            wheres = [self._walk(col, prefix, way).get('where') for way in ways]
+        read = None
+        if kind != 'first' or not rest:
+            read = wheres(ways)
         out = self._patterned(col, prefix, (group_op,) + rest)
-        if wheres is None or any(where is None for where in wheres):
+        if read is None or any(where is None for where in read):
             return out
-        return dict(out, where=self._combine_group(kind, wheres))
+        return dict(out, where=self._combine_group(kind, read))
+
+    def _node_wheres(self, col, prefix, ways):
+        """
+        The `where` of each way of a group at a node inside a column,
+        read as a plain path from it; None when a way reaches a
+        pattern, whose `where` the group's pattern path has.
+        """
+        if any(_op_is_pattern_like(op) for way in ways for op in way):
+            return None
+        return [self._walk(col, prefix, way).get('where') for way in ways]
+
+    def _row_wheres(self, row, ways):
+        """
+        The `where` of each way of a group at the top of a path, read
+        as a complete path from its own column.
+        """
+        return [self._translate(way, row).get('where') for way in ways]
+
+    def _row_source(self, table, columns):
+        """
+        The row as one value, for a group or negation at the top of a
+        path to read as a node: its `columns`, or, where `columns` is
+        None, the whole row of `table`, which only a search of a named
+        table has.
+        """
+        if columns is None and table is None:
+            raise TranslationError(
+                "a negation at the top of a path is the complement of the "
+                "row's columns, which only a search of a named table can read"
+            )
+        return self._row(table, columns)
 
     def _patterned(self, col, prefix, ops):
         """
@@ -869,6 +1216,14 @@ class Translator:
     def _all_columns(self):
         """
         Return the flavor's expression for every column of a row.
+        """
+        raise NotImplementedError
+
+    def _row(self, table, columns):
+        """
+        Return the flavor's expression for a row as one value, a node
+        the pattern path reads: an object of its `columns`, or the
+        whole row of `table` when `columns` is None.
         """
         raise NotImplementedError
 
@@ -909,6 +1264,55 @@ class Translator:
     def _combine_or(self, preds):
         """
         Return the disjunction of `preds`.
+        """
+        raise NotImplementedError
+
+    def _combine_not_true(self, pred):
+        """
+        Return the predicate that `pred` doesn't hold: false or null.
+        """
+        raise NotImplementedError
+
+    def _table_from(self, names):
+        """
+        Return a table search's `from`: the table `names` it reads, or
+        None where the flavor reads it otherwise.
+        """
+        raise NotImplementedError
+
+    def _table_rows(self, names, preds, offset, limit):
+        """
+        Return the flavor's rows of the table `names` where every one
+        of `preds` holds, skipping `offset` and keeping `limit` of
+        them where either is set.
+        """
+        raise NotImplementedError
+
+    def _table_rows_kept(self, rows, pred, gates):
+        """
+        Return those of `rows` where `pred` holds (every one where it
+        is None), and none unless each gate `(rows, pred, exists)`
+        holds: some of its rows where its pred holds, or none of them
+        when not `exists`.
+        """
+        raise NotImplementedError
+
+    def _table_rows_first(self, rows):
+        """
+        Return the first of `rows`.
+        """
+        raise NotImplementedError
+
+    def _table_rows_union(self, parts):
+        """
+        Return the rows of each of `parts` in turn, a row as often as
+        the parts yield it.
+        """
+        raise NotImplementedError
+
+    def _table_rows_from(self, rows):
+        """
+        Return `from` for a group of row steps: the `rows` it yields.
         """
         raise NotImplementedError
 

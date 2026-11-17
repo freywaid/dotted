@@ -99,6 +99,9 @@ def test_pattern_has_select_and_where():
     'data.(a##, b)',
     'data.users[*].(a##, b)',
     'data.(a##&b)',
+    'data.(!(status="banned"))',
+    'tags(!.color)',
+    'data.users(![0]).age',
 ])
 def test_group_has_select_and_where(path):
     """
@@ -109,19 +112,55 @@ def test_group_has_select_and_where(path):
     assert list(r) == ['select', 'where']
 
 
-@pytest.mark.parametrize('path', [
-    'data.(!(status="banned"))',
-    '!(status="banned")',
-    '(a, b)?.c',
+_ROW_GROUPS = [
+    '(title, author)',
+    '(title & author)',
+    '(title, author)?',
+    '(title, author)?.x',
+    '(title#, author)',
+    '(title#&author)',
+    '(title##, author)',
+    '(title##&author)',
+    '(data, meta).user.age>=30',
+    '(age>=18 & status="active")',
+]
+
+
+@pytest.mark.parametrize('path', _ROW_GROUPS)
+def test_row_group_has_select_and_where(path):
+    """
+    A group at the top of a path reads the row's columns as one
+    struct, in a column path and in a table search alike: both
+    fragments.
+    """
+    assert list(sparkize(path)) == ['select', 'where']
+    r = sparkize(f'hello[*].{path}', root='table')
+    assert (r.table, list(r)) == ('hello', ['select', 'where'])
+
+
+@pytest.mark.parametrize('path, root', [
+    ('!(status="banned")', 'column'),
+    ('(!(status="banned"), title)', 'column'),
+    ('[*](!.title)', 'table'),
+    ('hello[*](!.title)', 'table'),
+    ('hello[*].(!(status="banned"), title)', 'table'),
 ])
-def test_group_not_supported_yet_raises(path):
+def test_row_negation_raises(path, root):
     """
-    `!` (the complement of what its path matches, not NOT) and a path
-    after a top-level first-match group raise rather than translate to
-    anything else.
+    A negation at the top of a path is the complement of the row's
+    columns: the row is a struct, whose fields need the schema, and a
+    column path or an unnamed table has no row to read them from.
     """
-    with pytest.raises(TranslationError, match='not supported yet'):
-        sparkize(path)
+    with pytest.raises(TranslationError, match="row's columns"):
+        sparkize(path, root=root)
+
+
+def test_negation_reaching_any_depth_raises():
+    """
+    A negation reaching any depth needs the schema, as ** does.
+    """
+    with pytest.raises(TranslationError, match='needs a schema'):
+        sparkize('data.(!**.x)')
 
 
 def test_unbound_substitution():
@@ -295,11 +334,70 @@ def test_table_search_repr_shows_plain_values():
         "offset=0, limit=5)")
 
 
+_ROW_STEP_GROUPS = [
+    'books[(*&a=1, *&b=2)].title',
+    'books[(*&a=1#, *&b=2)].title = "x"',
+    'books[(*&a=1##, *&b=2)].title',
+    'books[(*&a=1, *&b=2)?].title',
+    'books([*&a=1] & [*&b=2])',
+    'books(![*&a=1]).title',
+    'books[(0, 2)]',
+    '[(*&a=1, *&b=2)]',
+]
+
+
+@pytest.mark.parametrize('path', _ROW_STEP_GROUPS)
+def test_row_step_group(path):
+    """
+    A group as the row step reads its rows through `r.rows(df)`, no
+    window of them in `offset` / `limit`; an unnamed table's too, as
+    `rows` takes the DataFrame.
+    """
+    r = sparkize(path, root='table')
+    assert (r.offset, r.limit) == (None, None)
+    assert 'select' in r
+
+
+def test_rows_of_a_plain_search_is_the_dataframe():
+    """
+    Without a group as the row step, `r.rows(df)` is `df` itself.
+    """
+    df = object()
+    assert sparkize('hello[*&a=1].title', root='table').rows(df) is df
+
+
+def test_rows_checks_bindings():
+    """
+    `rows` binds the substitutions its rows need, as `build` does.
+    """
+    r = sparkize('books[(*&a=$(a), *&b=2)]', root='table')
+    with pytest.raises(TranslationError, match='missing binding'):
+        r.rows(object())
+    with pytest.raises(TranslationError, match='unknown binding'):
+        sparkize('hello[*]', root='table').rows(object(), a=1)
+
+
+@pytest.mark.parametrize('path', [
+    'books[0:5][(*&a=1, *&b=2)]',
+    'books[(0##, *&b=2)]',
+    'books(![0])',
+    'books([*&a=1].title, [*&b=2].author)',
+    'books([a=1], [b=2])',
+    'books[(*&a=1##, *&b=2)].tags[*]',
+])
+def test_row_step_group_unsupported_raises(path):
+    """
+    The groups of row steps sqlize can't read raise here too, but for
+    an unnamed table's.
+    """
+    with pytest.raises(TranslationError):
+        sparkize(path, root='table')
+
+
 @pytest.mark.parametrize('path', [
     'hello[book_id="b1"].title',
     'hello[10:20].title',
     'hello[*][0]',
-    'hello[*](.title,.author)',
     'hello[*](.title,.author;)',
     'hello[::2]',
     'hello[-1]',

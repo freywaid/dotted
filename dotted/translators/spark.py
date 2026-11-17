@@ -137,6 +137,10 @@ class SparkResolver(collections.abc.Mapping):
         offset  : int | None  — rows to skip (`df.offset`, Spark 3.4+)
         limit   : int | None  — rows to keep (`df.limit`)
 
+    and reads its rows from the table's DataFrame with `r.rows(df)`:
+    `df` itself, but for a group or negation as the row step,
+    `books[(*&a=1, *&b=2)]`, whose rows no filter can give.
+
     Mapping interface over the non-None fragments, as `Resolver`:
 
         r['where']                 # same as r.where
@@ -154,7 +158,8 @@ class SparkResolver(collections.abc.Mapping):
 
     _PLAIN_KEYS = ('table', 'offset', 'limit')
 
-    __slots__ = ('select', 'where', 'unbound', 'table', 'offset', 'limit')
+    __slots__ = ('select', 'where', 'unbound', 'table', 'offset', 'limit',
+                 '_from')
 
     def __init__(self, select=None, where=None, unbound=None, table=None,
                  offset=None, limit=None):
@@ -164,6 +169,7 @@ class SparkResolver(collections.abc.Mapping):
         self.table = table
         self.offset = offset
         self.limit = limit
+        self._from = None
 
     def __repr__(self):
         bits = [f'flavor={type(self).flavor!r}'] if type(self).flavor else []
@@ -208,6 +214,21 @@ class SparkResolver(collections.abc.Mapping):
 
     # ---- rendering ----
 
+    def rows(self, df, **bindings):
+        """
+        The rows a table search reads, from the table's DataFrame `df`,
+        with `bindings` supplying the substitutions they need: `df`
+        itself, but for a group or negation as the row step,
+        `books[(*&a=1, *&b=2)]` — each branch's rows in turn, a row as
+        often as the group yields it, which no filter of `df` can give.
+        Apply `where`, `offset` / `limit` and `select` to them.
+        """
+        if self._from is None:
+            _check_bindings({}, bindings)
+            return df
+        _check_bindings(self._from.unbound, bindings)
+        return self._from.make(df, bindings)
+
     @staticmethod
     def build(fragment, **bindings):
         """
@@ -228,18 +249,26 @@ class SparkResolver(collections.abc.Mapping):
             raise TranslationError(
                 f'build requires a ColumnFragment, got {type(fragment).__name__}'
             )
-        expected = set(fragment.unbound.values())
-        extra = set(bindings) - expected
-        if extra:
-            raise TranslationError(
-                f'unknown binding(s) for this fragment: {sorted(extra)}'
-            )
-        missing = expected - set(bindings)
-        if missing:
-            raise TranslationError(
-                f'missing binding(s) for substitution(s): {sorted(missing)}'
-            )
+        _check_bindings(fragment.unbound, bindings)
         return fragment._make(bindings)
+
+
+def _check_bindings(unbound, bindings):
+    """
+    Raise unless `bindings` binds each of the substitutions `unbound`
+    needs, by original name, and no other.
+    """
+    expected = set(unbound.values())
+    extra = set(bindings) - expected
+    if extra:
+        raise TranslationError(
+            f'unknown binding(s) for this fragment: {sorted(extra)}'
+        )
+    missing = expected - set(bindings)
+    if missing:
+        raise TranslationError(
+            f'missing binding(s) for substitution(s): {sorted(missing)}'
+        )
 
 
 def sparkize(path, *, flavor, bindings=None, root='column'):

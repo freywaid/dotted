@@ -391,7 +391,9 @@ class Resolver(collections.abc.Mapping):
 
         select  : SQLFragment | None  — extraction expression
         where   : SQLFragment | None  — predicate (WHERE-style filter)
-        from_   : SQLFragment | None  — FROM extension (reserved)
+        from_   : SQLFragment | None  — a table search's FROM: the
+                                        table, or the rows a group
+                                        of row steps yields
         lateral : SQLFragment | None  — CROSS JOIN LATERAL form for
                                         pattern-path extraction
         unbound : dict                — bind name → original subst name
@@ -797,8 +799,9 @@ def sqlize(path, *, driver, bindings=None, pool=None, root='column'):
                    column of the row. `'table'`: its leading keys name
                    a table, a row step (`[*]`, `[*&…]`, `[n]`, `[a:b]`,
                    a slice filter `[…]`) walks its rows, and the rest
-                   is a column path under each row; `r.table`,
-                   `r.offset` and `r.limit` carry the plain values. A
+                   is a column path under each row; `r.from_` is
+                   what to select from, and `r.table`, `r.offset` and
+                   `r.limit` carry the plain values. A
                    path that starts with a row step searches an
                    unnamed table under either root.
 
