@@ -44,6 +44,9 @@ class FilterKey(base.MatchOp):
     """
     Represents a dotted path in a filter key, e.g. user.id or config.db.host
     """
+    def translated(self, translation, *args):
+        return translation.filter_key(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # args comes as a single list from pyparsing Group, flatten it
@@ -236,6 +239,9 @@ class FilterKeyValue(FilterOp):
     Single key=value filter comparison.
     Optionally applies transforms before comparison: key|int=7.
     """
+    def translated(self, translation, *args):
+        return translation.key_value_filter(self, *args)
+
     _eq_str = '='
 
     def __init__(self, *args, **kwargs):
@@ -428,6 +434,9 @@ class FilterGroup(FilterOp):
     """
     Parenthesized group of filter expressions
     """
+    def translated(self, translation, *args):
+        return translation.group_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
@@ -482,6 +491,9 @@ class FilterAnd(FilterOp):
     """
     Conjunction of filter expressions (all must match)
     """
+    def translated(self, translation, *args):
+        return translation.and_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = tuple(self.args)
@@ -544,6 +556,9 @@ class FilterOr(FilterOp):
     """
     Disjunction of filter expressions (any must match)
     """
+    def translated(self, translation, *args):
+        return translation.or_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = tuple(self.args)
@@ -594,6 +609,9 @@ class FilterKeyValueFirst(FilterOp):
     """
     First-match wrapper for any filter expression
     """
+    def translated(self, translation, *args):
+        return translation.first_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None
@@ -658,6 +676,9 @@ class FilterNot(FilterOp):
         [!(a=1&b=2)]                 - items that don't match both conditions
         [status="active"&!role="admin"]  - active non-admins
     """
+    def translated(self, translation, *args):
+        return translation.not_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.inner = self.args[0] if self.args else None

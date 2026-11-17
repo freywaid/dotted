@@ -321,6 +321,9 @@ class OpGroupOr(OpGroup):
     base.BRANCH_CUT in the sequence means: after yielding from the previous branch, yield base.CUT_SENTINEL and stop.
     base.BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
     """
+    def translated(self, translation, *args):
+        return translation.or_group(self, *args)
+
     def as_attrs(self):
         new_branches = []
         for b in self.branches:
@@ -504,6 +507,9 @@ class OpGroupFirst(OpGroup):
     """
     First-match operation group - returns only first matching value across all branches.
     """
+    def translated(self, translation, *args):
+        return translation.first_group(self, *args)
+
     def as_attrs(self):
         new_branches = []
         for b in self.branches:
@@ -641,6 +647,9 @@ class OpGroupAnd(OpGroup):
 
     If any branch fails to match, returns nothing.
     """
+    def translated(self, translation, *args):
+        return translation.and_group(self, *args)
+
     def leaf_op(self):
         """
         Recurse into the first branch.
@@ -747,6 +756,9 @@ class OpGroupNot(OpGroup):
     TODO: `!*` always evaluates to empty — the parser should recognize this and emit
     something that evaluates to empty directly, rather than going through negation.
     """
+    def translated(self, translation, *args):
+        return translation.not_group(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # For negation, we have a single inner expression to negate
@@ -996,6 +1008,9 @@ class Pack(base.TraversalOp):
     through a pack raise. Not a Wrap: the pack is the op, the group
     its argument, so an unwrapping stops here.
     """
+    def translated(self, translation, *args):
+        return translation.pack(self, *args)
+
 
     def __init__(self, inner):
         super().__init__(inner)

@@ -19,6 +19,9 @@ _MISSING = object()
 
 
 class Const(MatchOp):
+    def translated(self, translation, *args):
+        return translation.const(self, *args)
+
     _match_from = ('Const',)
 
     @lazyprop
@@ -50,6 +53,9 @@ class Const(MatchOp):
 
 
 class Numeric(Const):
+    def translated(self, translation, *args):
+        return translation.numeric(self, *args)
+
     def is_int(self):
         try:
             return str(self.args[0]) == str(int(self.args[0]))
@@ -111,6 +117,9 @@ class NumericQuoted(Numeric):
 
 
 class Word(Const):
+    def translated(self, translation, *args):
+        return translation.word(self, *args)
+
     def __repr__(self):
         return f'{self.value}'
 
@@ -136,6 +145,9 @@ class Word(Const):
 
 
 class String(Const):
+    def translated(self, translation, *args):
+        return translation.string(self, *args)
+
     def __repr__(self):
         return f'{repr(self.value)}'
 
@@ -150,6 +162,9 @@ class Bytes(Const):
     """
     Byte string literal: b"..." or b'...'
     """
+    def translated(self, translation, *args):
+        return translation.bytes(self, *args)
+
     @property
     def value(self):
         return self.args[0].encode() if isinstance(self.args[0], str) else self.args[0]
@@ -161,6 +176,9 @@ class Boolean(Const):
     """
     Wrapper for True/False in filter values
     """
+    def translated(self, translation, *args):
+        return translation.boolean(self, *args)
+
     @property
     def value(self):
         return self.args[0].lower() == 'true'
@@ -172,6 +190,9 @@ class NoneValue(Const):
     """
     Wrapper for None in filter values
     """
+    def translated(self, translation, *args):
+        return translation.none_value(self, *args)
+
     @property
     def value(self):
         return None
@@ -187,6 +208,9 @@ class NoneValue(Const):
 
 
 class Pattern(MatchOp):
+    def translated(self, translation, *args):
+        return translation.pattern(self, *args)
+
     def __repr__(self):
         return str(self.value)
     def is_pattern(self):
@@ -207,6 +231,9 @@ class Subst(MatchOp):
     a set of keys. is_template() is the right check for "contains a
     substitution".
     """
+    def translated(self, translation, *args):
+        return translation.subst(self, *args)
+
     def __init__(self, *args, transforms=(), **kwargs):
         super().__init__(*args, **kwargs)
         self.transforms = tuple(transforms)
@@ -281,6 +308,9 @@ class Reference(MatchOp):
       $$(^^path)  — resolve against parent node
       $$(^^^path) — grandparent, etc.
     """
+    def translated(self, translation, *args):
+        return translation.reference(self, *args)
+
     @property
     def value(self):
         return self.args[0]
@@ -332,6 +362,9 @@ class Reference(MatchOp):
 
 
 class Wildcard(Pattern):
+    def translated(self, translation, *args):
+        return translation.wildcard(self, *args)
+
     _match_from = (ANY,)
 
     @property
@@ -363,6 +396,9 @@ class WildcardAligned(Wildcard):
 
 
 class Regex(Pattern):
+    def translated(self, translation, *args):
+        return translation.regex(self, *args)
+
     _match_from = ('Const', 'Special', 'Regex')
 
     @property
@@ -409,6 +445,9 @@ class RegexAligned(Regex):
 
 
 class Special(MatchOp):
+    def translated(self, translation, *args):
+        return translation.special(self, *args)
+
     @property
     def value(self):
         return self.args[0]
@@ -440,6 +479,9 @@ class ResolvedValue(Const):
     Pre-resolved value from $N substitution.
     repr() returns the raw string so operator()/assemble() splices it verbatim.
     """
+    def translated(self, translation, *args):
+        return translation.resolved_value(self, *args)
+
     def __repr__(self):
         return str(self.value)
 
@@ -456,6 +498,9 @@ class Concat(MatchOp):
 
     str + str = concat, int + int = add, mixed = TypeError.
     """
+    def translated(self, translation, *args):
+        return translation.concat(self, *args)
+
     _match_from = ('Const',)
 
     def __init__(self, *parts):

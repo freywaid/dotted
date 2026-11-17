@@ -334,6 +334,9 @@ class Key(AccessOp):
     mode: .() keeps them as Keys, @() promotes them to Attrs via
     as_attrs_opgroup.
     """
+    def translated(self, translation, *args):
+        return translation.key(self, *args)
+
     @classmethod
     def concrete(cls, val):
         """
@@ -513,6 +516,9 @@ class Key(AccessOp):
 
 
 class Attr(Key):
+    def translated(self, translation, *args):
+        return translation.attr(self, *args)
+
     @classmethod
     @functools.lru_cache()
     def concrete(cls, val):
@@ -673,6 +679,9 @@ class Attr(Key):
 
 
 class Slot(Key):
+    def translated(self, translation, *args):
+        return translation.slot(self, *args)
+
     @classmethod
     def concrete(cls, val):
         """
@@ -820,6 +829,9 @@ class Slot(Key):
 
 
 class SlotSpecial(Slot):
+    def translated(self, translation, *args):
+        return translation.slot_special(self, *args)
+
     @classmethod
     @functools.lru_cache()
     def concrete(cls, val):
@@ -879,6 +891,9 @@ class SlotSpecial(Slot):
 
 
 class SliceFilter(BaseOp):
+    def translated(self, translation, *args):
+        return translation.slice_filter(self, *args)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.filters = self.args
@@ -995,6 +1010,9 @@ class SliceFilter(BaseOp):
 
 
 class Slice(SimpleOp):
+    def translated(self, translation, *args):
+        return translation.slice(self, *args)
+
     @classmethod
     def concrete(cls, val):
         o = cls()

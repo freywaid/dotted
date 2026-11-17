@@ -212,6 +212,9 @@ class TransformWrap(Wrap):
     results.apply_transforms). On update the value is transformed before
     it is placed. A value whose reference does not resolve is left out.
     """
+    def translated(self, translation, *args):
+        return translation.transform_wrap(self, *args)
+
 
     def __init__(self, inner, transforms, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
@@ -396,6 +399,9 @@ class ValueGuard(Wrap):
     Wraps Key/Slot with a direct value test: key=value, [slot]=value.
     Optionally applies transforms before the guard check: key|int=7.
     """
+    def translated(self, translation, *args):
+        return translation.value_guard(self, *args)
+
 
     def __init__(self, inner, guard, negate=False, transforms=(), pred_op=None, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)
@@ -663,6 +669,9 @@ class TypeRestriction(ValueGuard):
     dict; :!type and :!(t1, t2) exclude types. A value guard whose test
     is isinstance, so it reads, writes and distributes like key=value.
     """
+    def translated(self, translation, *args):
+        return translation.type_restriction(self, *args)
+
 
     def __init__(self, inner, *types, negate=False, **kwargs):
         super().__init__(inner, None, **kwargs)
@@ -739,6 +748,9 @@ class FilterWrap(Wrap):
     Wraps an access op with value filters: key&filter, @attr&filter, [slot&filter].
     Filters are &-separated predicates that narrow which values match.
     """
+    def translated(self, translation, *args):
+        return translation.filter_wrap(self, *args)
+
 
     def __init__(self, inner, filters, *args, **kwargs):
         super().__init__(inner, *args, **kwargs)

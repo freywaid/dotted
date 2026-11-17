@@ -21,14 +21,7 @@ ones.
 import functools
 import operator
 
-from .. import access
-from .. import filters as _filters
-from .. import groups as _groups
-from .. import matchers
-from .. import recursive as _recursive
-from .. import wrappers
-
-from .core import TranslationError, Translator
+from .core import Hooks, TranslationError, Translator
 from .spark import ColumnFragment, SparkResolver, flavor, _merged
 
 
@@ -312,13 +305,11 @@ class PySparkMixin(Translator):
 
     # ---- Translator hooks -------------------------------------------
 
-    def _segment_value(self, key_op, value):
+    def _segment_value(self, value, index):
         """
         `[0]` keeps its int, an array index; any other key is a string.
         """
-        if isinstance(key_op, access.Slot):
-            return value
-        return str(value)
+        return value if index else str(value)
 
     def _column(self, name):
         """
@@ -420,92 +411,22 @@ class PySparkMixin(Translator):
         steps = []
         unbound = {}
         for op in ops:
-            op_steps, op_unbound = self._op_steps(op)
+            op_steps, op_unbound = op.translated(_STEPS, self)
             steps.extend(op_steps)
             unbound = _merged(unbound, op_unbound)
         return tuple(steps), unbound
 
-    def _group_steps(self, op):
+    def _group_steps(self, kind, branches):
         """
-        The one step for a group: each branch's steps, for a first
-        match or for a group of its kind. Returns (steps, unbound).
+        The one step for a group of `kind`: each branch's steps, for a
+        first match or for a group of its kind. Returns (steps, unbound).
         """
-        kind, branches = self._grouped(op)
         parts = [self._ops_steps(branch) for branch in branches]
         branch_steps = tuple(steps for steps, _ in parts)
         unbound = _merged(*(unbound for _, unbound in parts))
         if kind == 'first':
             return [('first', branch_steps)], unbound
         return [('group', kind, branch_steps)], unbound
-
-    def _op_steps(self, op):
-        """
-        Translate one op of a pattern path into pattern steps. Returns
-        (steps, unbound).
-        """
-        if isinstance(op, wrappers.TransformWrap):
-            return self._op_steps(op.inner)
-        if isinstance(op, wrappers.TypeRestriction):
-            raise TranslationError('type restriction not supported')
-        if isinstance(op, _groups.OpGroup):
-            return self._group_steps(op)
-        if isinstance(op.most_inner, _groups.Pack):
-            raise TranslationError('packed group not supported')
-        # NB: Slot and Attr are subclasses of Key, so check them first.
-        if isinstance(op, access.Slot):
-            return self._key_step(op, 'array', index=True), {}
-        if isinstance(op, access.Attr):
-            return self._key_step(op, 'map', index=False), {}
-        if isinstance(op, access.Key):
-            return self._key_step(op, 'map', index=False), {}
-        if isinstance(op, _recursive.Recursive):
-            raise TranslationError(
-                'recursive paths (**) need a schema — not supported in sparkize'
-            )
-        if isinstance(op, access.SliceFilter):
-            pred_fn, unbound = self._filters_pred(op.filters)
-            return [('each', 'array'), ('cond', pred_fn)], unbound
-        if isinstance(op, wrappers.FilterWrap):
-            steps, inner_unbound = self._op_steps(op.inner)
-            pred_fn, unbound = self._filters_pred(op.filters)
-            return steps + [('cond', pred_fn)], _merged(inner_unbound, unbound)
-        if isinstance(op, wrappers.ValueGuard):
-            steps, inner_unbound = self._op_steps(op.inner)
-            pred_fn, unbound = self._guard_pred(op)
-            return steps + [('cond', pred_fn)], _merged(inner_unbound, unbound)
-        raise TranslationError(
-            f'op not supported in pattern paths: {type(op).__name__}'
-        )
-
-    def _key_step(self, op, each_kind, index):
-        """
-        Steps for a Key / Slot / Attr with a concrete or wildcard
-        matcher. A wildcard Key is every value of a map — a struct's
-        fields can't be iterated without the schema.
-        """
-        matcher = op.op
-        if isinstance(matcher, matchers.Wildcard):
-            if matcher.is_aligned():
-                return [('each', each_kind, 'aligned')]
-            return [('each', each_kind)]
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError(
-                f'unresolved substitution in pattern path: {matcher}'
-            )
-        if isinstance(matcher, matchers.Reference):
-            raise TranslationError(
-                'references inside pattern paths not supported yet'
-            )
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                f'unsupported matcher in pattern path: {type(matcher).__name__}'
-            )
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(
-                f'unsupported matcher: {type(matcher).__name__}'
-            )
-        key = matcher.value if index else str(matcher.value)
-        return [('get', lambda env: key)]
 
     # ---- predicates -------------------------------------------------
 
@@ -533,36 +454,7 @@ class PySparkMixin(Translator):
         if op_str not in _COMPARE:
             raise TranslationError(f'unsupported predicate: {op_str}')
         cast = self._transforms_to_cast(transforms) if transforms else None
-        if isinstance(val, matchers.Regex):
-            return self._regex_pred(op_str, val.args[0], cast), {}
-        value_fn, unbound = self._operand(op_str, val)
-
-        def pred_fn(node, env):
-            if cast:
-                node = node.cast(cast)
-            return _compare(node, op_str, value_fn(env))
-        return pred_fn, unbound
-
-    def _operand(self, op_str, val):
-        """
-        A guard or filter value as `(value_fn(env), unbound)`: a
-        literal, or a substitution looked up in the bindings.
-        """
-        if isinstance(val, matchers.NoneValue):
-            if op_str not in ('=', '!='):
-                raise TranslationError('ordering comparison against None')
-            return (lambda env: None), {}
-        if isinstance(val, matchers.Subst):
-            name = val.value
-            return (lambda env: env[name]), {name: name}
-        if isinstance(val, matchers.Pattern):
-            raise TranslationError(
-                f'pattern guard values not supported in v1: {type(val).__name__}'
-            )
-        if not hasattr(val, 'value'):
-            raise TranslationError(f'unsupported guard value: {type(val).__name__}')
-        value = val.value
-        return (lambda env: value), {}
+        return val.translated(_COMPARISON, self, op_str, cast)
 
     def _regex_pred(self, op_str, pattern, cast):
         """
@@ -584,66 +476,214 @@ class PySparkMixin(Translator):
         A sequence of bracket filters (all must hold) as
         `(pred_fn(node, env), unbound)`.
         """
-        parts = [self._filter_pred(f) for f in filters]
-        unbound = _merged(*(u for _, u in parts))
-        fns = [fn for fn, _ in parts]
-        return (lambda node, env:
-                functools.reduce(operator.and_, (fn(node, env) for fn in fns))), unbound
-
-    def _filter_pred(self, f):
-        """
-        One bracket filter as `(pred_fn(node, env), unbound)`.
-        """
-        if isinstance(f, _filters.FilterKeyValue):
-            # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
-            key_fns = self._filter_key_fns(f.key)
-            cmp_fn, unbound = self._comparison(f._eq_str, f.val,
-                                               f.guard_transforms)
-            return (lambda node, env:
-                    cmp_fn(_gets(node, key_fns, env), env)), unbound
-        if isinstance(f, (_filters.FilterAnd, _filters.FilterOr)):
-            parts = [self._filter_pred(sub) for sub in f.filters]
-            unbound = _merged(*(u for _, u in parts))
-            fns = [fn for fn, _ in parts]
-            op = operator.and_ if isinstance(f, _filters.FilterAnd) else operator.or_
-            return (lambda node, env:
-                    functools.reduce(op, (fn(node, env) for fn in fns))), unbound
-        if isinstance(f, _filters.FilterNot):
-            inner_fn, unbound = self._filter_pred(f.inner)
-            return (lambda node, env: ~inner_fn(node, env)), unbound
-        if isinstance(f, _filters.FilterGroup):
-            return self._filter_pred(f.inner)
-        raise TranslationError(
-            f'filter type not supported: {type(f).__name__}'
-        )
+        return _all_of(f.translated(_FILTER_PRED, self) for f in filters)
 
     def _filter_key_fns(self, key):
         """
         The `get` steps from a filtered node to the filter key's value.
-        FilterKey.parts holds raw matchers (Word, Numeric, …) plus Slot
-        ops for indexes.
         """
-        parts = key.parts if isinstance(key, _filters.FilterKey) else (key,)
-        steps = []
-        for p in parts:
-            if isinstance(p, _groups.Pack):
-                raise TranslationError('packed group in filter key not supported')
-            if isinstance(p, access.Slice):
-                raise TranslationError('slice in filter key not supported yet')
-            if isinstance(p, access.Slot):
-                m = p.op
-                if not hasattr(m, 'value') or isinstance(m, matchers.Wildcard):
-                    raise TranslationError(
-                        f'unsupported slot matcher in filter key: {type(m).__name__}'
-                    )
-                steps.append(('get', lambda env, k=m.value: k))
-                continue
-            if isinstance(p, matchers.Wildcard) or not hasattr(p, 'value'):
-                raise TranslationError(
-                    f'unsupported filter key part: {type(p).__name__}'
-                )
-            steps.append(('get', lambda env, k=str(p.value): k))
-        return steps
+        return [part.translated(_FILTER_KEY_STEP, self, False)
+                for part in self._key_parts(key)]
+
+
+# ---- Reading ops ----------------------------------------------------
+
+def _get_step(value, index):
+    """
+    The step that reaches in by a key holding `value`: an array index
+    when `index`, else a struct field or map key by its string.
+    """
+    key = value if index else str(value)
+    return ('get', lambda env: key)
+
+
+def _compared(op_str, cast, value_fn):
+    """
+    `pred_fn(node, env)`: `node <op_str> value_fn(env)`, the node cast
+    first when `cast`.
+    """
+    def pred_fn(node, env):
+        if cast:
+            node = node.cast(cast)
+        return _compare(node, op_str, value_fn(env))
+    return pred_fn
+
+
+def _joined(join, preds):
+    """
+    `(pred_fn(node, env), unbound)` that joins the `(pred_fn, unbound)`
+    pairs `preds` with `join`.
+    """
+    preds = list(preds)
+    unbound = _merged(*(u for _, u in preds))
+    fns = [fn for fn, _ in preds]
+    return (lambda node, env:
+            functools.reduce(join, (fn(node, env) for fn in fns))), unbound
+
+
+def _all_of(preds):
+    """
+    `(pred_fn, unbound)` pairs `preds` that must all hold.
+    """
+    return _joined(operator.and_, preds)
+
+
+class _Steps(Hooks):
+    """
+    An op of a pattern path as pattern steps: `(steps, unbound)`.
+    """
+
+    def other(self, op, t):
+        raise TranslationError(
+            f'op not supported in pattern paths: {type(op).__name__}'
+        )
+
+    def transform_wrap(self, op, t):
+        return op.inner.translated(self, t)
+
+    def key(self, op, t):
+        return op.op.translated(_KEY_STEP, t, 'map', False), {}
+
+    def slot(self, op, t):
+        return op.op.translated(_KEY_STEP, t, 'array', True), {}
+
+    def recursive(self, op, t):
+        raise TranslationError(
+            'recursive paths (**) need a schema — not supported in sparkize'
+        )
+
+    def slice_filter(self, op, t):
+        pred_fn, unbound = t._filters_pred(op.filters)
+        return [('each', 'array'), ('cond', pred_fn)], unbound
+
+    def filter_wrap(self, op, t):
+        steps, inner_unbound = op.inner.translated(self, t)
+        pred_fn, unbound = t._filters_pred(op.filters)
+        return steps + [('cond', pred_fn)], _merged(inner_unbound, unbound)
+
+    def value_guard(self, op, t):
+        steps, inner_unbound = op.inner.translated(self, t)
+        pred_fn, unbound = t._guard_pred(op)
+        return steps + [('cond', pred_fn)], _merged(inner_unbound, unbound)
+
+    def group(self, op, kind, branches, t):
+        return t._group_steps(kind, branches)
+
+
+class _KeyStep(Hooks):
+    """
+    A Key's or Slot's matcher as pattern steps: for a wildcard, every
+    value of a map or element of an array (`each_kind`) — a struct's
+    fields can't be iterated without the schema; else a reach in, by an
+    index when `index`.
+    """
+
+    def other(self, m, t, each_kind, index):
+        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
+
+    def const(self, m, t, each_kind, index):
+        return [_get_step(m.value, index)]
+
+    def wildcard(self, m, t, each_kind, index):
+        if m.is_aligned():
+            return [('each', each_kind, 'aligned')]
+        return [('each', each_kind)]
+
+    def pattern(self, m, t, each_kind, index):
+        raise TranslationError(
+            f'unsupported matcher in pattern path: {type(m).__name__}'
+        )
+
+    def subst(self, m, t, each_kind, index):
+        raise TranslationError(f'unresolved substitution in pattern path: {m}')
+
+    def reference(self, m, t, each_kind, index):
+        raise TranslationError('references inside pattern paths not supported yet')
+
+
+class _Comparison(Hooks):
+    """
+    A guard's or filter's value as `(pred_fn(node, env), unbound)`:
+    `node <op_str> value`, the node cast first when `cast`. A
+    substitution's value is looked up in the bindings.
+    """
+
+    def other(self, val, t, op_str, cast):
+        raise TranslationError(f'unsupported guard value: {type(val).__name__}')
+
+    def const(self, val, t, op_str, cast):
+        value = val.value
+        return _compared(op_str, cast, lambda env: value), {}
+
+    def none_value(self, val, t, op_str, cast):
+        if op_str not in ('=', '!='):
+            raise TranslationError('ordering comparison against None')
+        return _compared(op_str, cast, lambda env: None), {}
+
+    def subst(self, val, t, op_str, cast):
+        name = val.value
+        return _compared(op_str, cast, lambda env: env[name]), {name: name}
+
+    def regex(self, val, t, op_str, cast):
+        return t._regex_pred(op_str, val.args[0], cast), {}
+
+    def pattern(self, val, t, op_str, cast):
+        raise TranslationError(
+            f'pattern guard values not supported in v1: {type(val).__name__}'
+        )
+
+
+class _FilterPred(Hooks):
+    """
+    A bracket filter as `(pred_fn(node, env), unbound)`.
+    """
+
+    def other(self, f, t):
+        raise TranslationError(f'filter type not supported: {type(f).__name__}')
+
+    def key_value_filter(self, f, t):
+        key_fns = t._filter_key_fns(f.key)
+        cmp_fn, unbound = t._comparison(f._eq_str, f.val, f.guard_transforms)
+        return (lambda node, env: cmp_fn(_gets(node, key_fns, env), env)), unbound
+
+    def and_filter(self, f, t):
+        return _all_of(sub.translated(self, t) for sub in f.filters)
+
+    def or_filter(self, f, t):
+        return _joined(operator.or_, (sub.translated(self, t) for sub in f.filters))
+
+    def not_filter(self, f, t):
+        inner_fn, unbound = f.inner.translated(self, t)
+        return (lambda node, env: ~inner_fn(node, env)), unbound
+
+    def group_filter(self, f, t):
+        return f.inner.translated(self, t)
+
+
+class _FilterKeyStep(Hooks):
+    """
+    A filter key's part as the `get` step that reaches in by it: a key
+    (a matcher), or an index (a Slot, its matcher read with `index`).
+    """
+
+    def other(self, part, t, index):
+        raise TranslationError(f'unsupported filter key part: {type(part).__name__}')
+
+    def const(self, part, t, index):
+        return _get_step(part.value, index)
+
+    def slot(self, part, t, index):
+        return part.op.translated(self, t, True)
+
+    def slice(self, part, t, index):
+        raise TranslationError('slice in filter key not supported yet')
+
+
+_STEPS = _Steps()
+_KEY_STEP = _KeyStep()
+_COMPARISON = _Comparison()
+_FILTER_PRED = _FilterPred()
+_FILTER_KEY_STEP = _FilterKeyStep()
 
 
 # ---- Flavor classes -------------------------------------------------

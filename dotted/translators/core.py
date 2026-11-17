@@ -38,6 +38,11 @@ A prefix is a tuple of `('lit', value)` segments for plain keys and
 subpath is translated through the same walk. A literal's value is a
 string unless the flavor overrides `_segment_value`.
 
+The walk and the flavors read ops through `Hooks`: each kind of op,
+matcher and filter calls its own hook (`Op.translated`), so no part of
+a translation tests an op's class, and a kind a part doesn't read
+raises in its `other` hook.
+
 Expressions are opaque to the walk: whatever the hooks return is
 carried through and handed back to other hooks. The walk returns a
 dict of fragment name (`select`, `where`, `lateral`, ...) → flavor
@@ -46,7 +51,6 @@ flavor's `translate()`.
 """
 from .. import access
 from .. import base
-from .. import filters as _filters
 from .. import groups as _groups
 from .. import matchers
 from .. import predicates
@@ -162,21 +166,396 @@ def _slice_window(op):
     return start, max(stop - (start or 0), 0)
 
 
-def _row_index(op):
+class Hooks:
     """
-    The row number `[n]` names.
+    How one part of a translation reads each kind of op, matcher and
+    filter. An op calls the hook for its kind (`Op.translated`), so a
+    translation names the kinds it reads and never tests an op's class.
+
+    A hook falls back to its kind's broader one: `attr` and `slot` to
+    `key`, `numeric` to `const`, `wildcard` to `pattern`, the `,`, `&`
+    and `?` groups to `group` (with their kind and branches), and the
+    broadest to `other`, which raises. A part of a translation
+    overrides the hooks for what it reads, and `other` for its error.
     """
-    matcher = op.op
-    if isinstance(matcher, matchers.Subst):
+
+    def other(self, op, *args):
+        """
+        The hook for a kind this part of the translation doesn't read.
+        """
+        raise TranslationError(f'not supported here: {type(op).__name__} {op}')
+
+    # ---- path ops
+
+    def key(self, op, *args):
+        return self.other(op, *args)
+
+    def attr(self, op, *args):
+        return self.key(op, *args)
+
+    def slot(self, op, *args):
+        return self.key(op, *args)
+
+    def slot_special(self, op, *args):
+        return self.slot(op, *args)
+
+    def slice(self, op, *args):
+        return self.other(op, *args)
+
+    def slice_filter(self, op, *args):
+        return self.other(op, *args)
+
+    def recursive(self, op, *args):
+        return self.other(op, *args)
+
+    def transform_wrap(self, op, *args):
+        return self.other(op, *args)
+
+    def value_guard(self, op, *args):
+        return self.other(op, *args)
+
+    def type_restriction(self, op, *args):
+        raise TranslationError('type restriction not supported')
+
+    def filter_wrap(self, op, *args):
+        return self.other(op, *args)
+
+    def pack(self, op, *args):
+        raise TranslationError('packed group not supported')
+
+    def or_group(self, op, *args):
+        return self.group(op, 'or', _branches(op), *args)
+
+    def and_group(self, op, *args):
+        return self.group(op, 'and', _branches(op), *args)
+
+    def first_group(self, op, *args):
+        return self.group(op, 'first', _branches(op), *args)
+
+    def group(self, op, kind, branches, *args):
+        """
+        A group of `kind`: `'or'` for `(a, b)`, each branch's matches
+        in turn; `'and'` for `(a & b)`, those only where every branch
+        matches, a branch running on into the path after the group;
+        `'first'` for `(a, b)?`, the first match of the first branch to
+        match, the branch alone, the path after the group running on
+        from it.
+        """
+        return self.other(op, *args)
+
+    def not_group(self, op, *args):
+        raise TranslationError('negation group (!) not supported yet')
+
+    # ---- filters
+
+    def filter_key(self, key, *args):
+        return self.other(key, *args)
+
+    def key_value_filter(self, f, *args):
+        return self.other(f, *args)
+
+    def and_filter(self, f, *args):
+        return self.other(f, *args)
+
+    def or_filter(self, f, *args):
+        return self.other(f, *args)
+
+    def not_filter(self, f, *args):
+        return self.other(f, *args)
+
+    def group_filter(self, f, *args):
+        return self.other(f, *args)
+
+    def first_filter(self, f, *args):
+        return self.other(f, *args)
+
+    # ---- matchers
+
+    def const(self, m, *args):
+        return self.other(m, *args)
+
+    def numeric(self, m, *args):
+        return self.const(m, *args)
+
+    def word(self, m, *args):
+        return self.const(m, *args)
+
+    def string(self, m, *args):
+        return self.const(m, *args)
+
+    def bytes(self, m, *args):
+        return self.const(m, *args)
+
+    def boolean(self, m, *args):
+        return self.const(m, *args)
+
+    def none_value(self, m, *args):
+        return self.const(m, *args)
+
+    def resolved_value(self, m, *args):
+        return self.const(m, *args)
+
+    def pattern(self, m, *args):
+        return self.other(m, *args)
+
+    def wildcard(self, m, *args):
+        return self.pattern(m, *args)
+
+    def regex(self, m, *args):
+        return self.pattern(m, *args)
+
+    def subst(self, m, *args):
+        return self.other(m, *args)
+
+    def reference(self, m, *args):
+        return self.other(m, *args)
+
+    def special(self, m, *args):
+        return self.other(m, *args)
+
+    def concat(self, m, *args):
+        return self.other(m, *args)
+
+
+def _branches(group_op):
+    """
+    A group's branches. A cut, `#` or `##`, raises: the translators
+    don't take one yet.
+    """
+    if any(b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) for b in group_op.branches):
+        raise TranslationError('cut (# or ##) in a group not supported yet')
+    return group_op.branches
+
+
+class _Column(Hooks):
+    """
+    The first op of a path read as columns: the column a key names, a
+    guard on the column itself, or a group of paths each from its own
+    column. `rest` is the path after it.
+    """
+
+    def key(self, op, t, rest):
+        col = t._column(t._column_name(op))
+        return t._result(**t._walk(col, (), rest))
+
+    # any other first op is a column key or raises in `_column_name`
+    other = key
+
+    def value_guard(self, op, t, rest):
+        # `status = "active"`: one op, a guard wrapping the column key
+        if rest:
+            raise TranslationError('path continues after column-level guard')
+        col = t._column(t._column_name(op.inner))
+        return t._result(select=col, where=t._scalar_predicate(op, col))
+
+    def group(self, op, kind, branches, t, rest):
+        if not op.is_pattern():
+            return t._translate(_only_branch(op) + rest)
+        return t._result(where=t._translate_top_group(kind, branches, rest))
+
+
+class _ColumnName(Hooks):
+    """
+    The column the first op of a path names: a plain key's.
+    """
+
+    def other(self, op, t):
         raise TranslationError(
-            f'unresolved substitution in row index: {matcher} — pass bindings='
+            f'first path segment must be a column key, got {type(op).__name__}'
         )
-    value = getattr(matcher, 'value', None)
-    if isinstance(matcher, matchers.Pattern) or not _non_negative_int(value):
+
+    def key(self, op, t):
+        return t._name(op.op, 'column')
+
+    def slot(self, op, t):
+        return self.other(op, t)
+
+
+class _Walk(Hooks):
+    """
+    An op after the column, ahead of any pattern: a key goes on the
+    prefix, a guard ends the path, a group is read at its node.
+    `col`, `prefix` and `rest` are the walk's so far and the path after
+    the op.
+    """
+
+    def other(self, op, t, col, prefix, rest):
+        raise TranslationError(f'unsupported op: {type(op).__name__}')
+
+    def key(self, op, t, col, prefix, rest):
+        return t._walk(col, prefix + (t._segment(op),), rest)
+
+    def transform_wrap(self, op, t, col, prefix, rest):
+        # value transforms, a.b|int, have no target side: translate the op under them
+        return op.inner.translated(self, t, col, prefix, rest)
+
+    def value_guard(self, op, t, col, prefix, rest):
+        if rest:
+            raise TranslationError('path continues after value guard')
+        full = prefix + (t._segment(op.inner),)
+        return {'select': t._select_expr(col, full),
+                'where': t._nested_predicate(op, col, full)}
+
+    def group(self, op, kind, branches, t, col, prefix, rest):
+        if not op.is_pattern():
+            return t._walk(col, prefix, _only_branch(op) + rest)
+        return t._group(col, prefix, op, kind, branches, rest)
+
+
+class _KeySegment(Hooks):
+    """
+    A key inside a path as a prefix segment: its matcher's, a Slot's an
+    index.
+    """
+
+    def other(self, op, t):
+        raise TranslationError(f'expected Key inside path, got {type(op).__name__}')
+
+    def key(self, op, t):
+        return op.op.translated(_SEGMENT, t, False)
+
+    def slot(self, op, t):
+        return op.op.translated(_SEGMENT, t, True)
+
+
+class _Segment(Hooks):
+    """
+    A key's matcher as a prefix segment: `('lit', value)` for a plain
+    key, an index when `index`, or `('expr', expr)` for a reference,
+    whose subpath translates through the same walk.
+    """
+
+    def other(self, m, t, index):
+        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
+
+    def const(self, m, t, index):
+        return ('lit', t._segment_value(m.value, index))
+
+    def subst(self, m, t, index):
+        raise TranslationError(f'unresolved substitution in path position: {m}')
+
+    def pattern(self, m, t, index):
+        raise TranslationError(f'pattern segments not supported in v1: {m}')
+
+    def reference(self, m, t, index):
+        if m.depth != 0:
+            raise TranslationError('relative/parent references not supported in v1')
+        if not m.inner_path:
+            raise TranslationError('empty reference path')
+        # on `t` itself, so any flavor state stays live across the
+        # sub-translation
+        expr = t._translate(parse(m.inner_path, partial=True).ops).get('select')
+        if expr is None:
+            raise TranslationError('reference subpath has no select expression')
+        return ('expr', expr)
+
+
+class _Name(Hooks):
+    """
+    A matcher naming something in `position` (a column, a table, a
+    filter key): the name it holds.
+    """
+
+    def other(self, m, t, position):
+        raise TranslationError(f'unsupported {position} matcher: {type(m).__name__}')
+
+    def const(self, m, t, position):
+        return str(m.value)
+
+    def subst(self, m, t, position):
+        raise TranslationError(f'unresolved substitution in {position} position')
+
+    def reference(self, m, t, position):
+        raise TranslationError(f'reference in {position} position')
+
+    def pattern(self, m, t, position):
+        raise TranslationError(f'pattern/wildcard in {position} position')
+
+
+class _RowIndex(Hooks):
+    """
+    The matcher of a `[n]` row step, `op`, as the row number it names.
+    """
+
+    def other(self, m, op):
         raise TranslationError(
             f'row index must be a non-negative int in a table search: {op}'
         )
-    return value
+
+    def const(self, m, op):
+        if not _non_negative_int(m.value):
+            return self.other(m, op)
+        return m.value
+
+    def subst(self, m, op):
+        raise TranslationError(
+            f'unresolved substitution in row index: {m} — pass bindings='
+        )
+
+
+class _RowFilter(Hooks):
+    """
+    A row filter as a predicate over the table's columns.
+    """
+
+    def other(self, f, t):
+        raise TranslationError(f'filter type not supported: {type(f).__name__}')
+
+    def key_value_filter(self, f, t):
+        return t._row_comparison(f)
+
+    def and_filter(self, f, t):
+        return t._combine_and([sub.translated(self, t) for sub in f.filters])
+
+    def or_filter(self, f, t):
+        return t._combine_or([sub.translated(self, t) for sub in f.filters])
+
+    def not_filter(self, f, t):
+        return t._combine_not(f.inner.translated(self, t))
+
+    def group_filter(self, f, t):
+        return f.inner.translated(self, t)
+
+
+class _FilterSegment(Hooks):
+    """
+    A row filter key's part after its column as a prefix segment: an
+    index (a Slot), or a key (a matcher, by its name).
+    """
+
+    def other(self, part, t):
+        return ('lit', t._name(part, 'filter key'))
+
+    def slot(self, part, t):
+        return t._segment(part)
+
+    def slice(self, part, t):
+        raise TranslationError('Slice in a row filter key not supported in v1')
+
+
+class _KeyParts(Hooks):
+    """
+    A filter's key as its parts: a dotted filter key's, or the one
+    matcher it is.
+    """
+
+    def other(self, key):
+        return (key,)
+
+    def filter_key(self, key):
+        return key.parts
+
+
+_COLUMN = _Column()
+_COLUMN_NAME = _ColumnName()
+_WALK = _Walk()
+_KEY_SEGMENT = _KeySegment()
+_SEGMENT = _Segment()
+_NAME = _Name()
+_ROW_INDEX = _RowIndex()
+_ROW_FILTER = _RowFilter()
+_FILTER_SEGMENT = _FilterSegment()
+_KEY_PARTS = _KeyParts()
 
 
 class Translator:
@@ -216,29 +595,7 @@ class Translator:
         """
         if not ops:
             raise TranslationError('empty path')
-        col_op = ops[0]
-        rest = ops[1:]
-        if isinstance(col_op, _groups.Pack):
-            raise TranslationError('packed group not supported')
-        # Column-level guard: `status = "active"` has one op, a
-        # ValueGuard wrapping the column key.
-        if isinstance(col_op, wrappers.ValueGuard):
-            if rest:
-                raise TranslationError('path continues after column-level guard')
-            col = self._column(self._column_name(col_op.inner))
-            where = self._scalar_predicate(col_op, col)
-            return self._result(select=col, where=where)
-        # Top-level group: each branch is a complete path with its own
-        # column, the rest of the path after it.
-        if isinstance(col_op, _groups.OpGroup):
-            if not col_op.is_pattern():
-                return self._translate(_only_branch(col_op) + tuple(rest))
-            where = self._translate_top_group(col_op, rest)
-            return self._result(where=where)
-        # Otherwise first op must be a plain Key naming the column.
-        col = self._column(self._column_name(col_op))
-        result = self._walk(col, (), rest)
-        return self._result(**result)
+        return ops[0].translated(_COLUMN, self, tuple(ops[1:]))
 
     def _result(self, **kw):
         """
@@ -252,31 +609,14 @@ class Translator:
         Extract the column name from the first op of a path. Reject
         matchers that can't name a column.
         """
-        if not _is_table_key(op):
-            raise TranslationError(
-                f'first path segment must be a column key, got {type(op).__name__}'
-            )
-        return self._name(op.op, 'column')
+        return op.translated(_COLUMN_NAME, self)
 
     def _name(self, matcher, position):
         """
         The name `matcher` holds in `position` (a column, a table, a
         filter key). Reject matchers that can't name one.
         """
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError(f'unresolved substitution in {position} position')
-        if isinstance(matcher, matchers.Reference):
-            raise TranslationError(f'reference in {position} position')
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(f'pattern/wildcard in {position} position')
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(
-                f'unsupported {position} matcher: {type(matcher).__name__}'
-            )
-        value = matcher.value
-        if not isinstance(value, str):
-            value = str(value)
-        return value
+        return matcher.translated(_NAME, self, position)
 
     # ---- table search -----------------------------------------------
 
@@ -326,7 +666,7 @@ class Translator:
                 raise TranslationError(f'unsupported filtered row step: {step}')
             wheres.append(self._row_filters(step.filters))
         if isinstance(step, access.Slot) and not _is_every_row(step):
-            offset, limit = _row_index(step), 1
+            offset, limit = step.op.translated(_ROW_INDEX, step), 1
         if rest and _is_row_step(rest[0]):
             raise TranslationError(
                 'row step after a row step not supported — in dotted it '
@@ -355,27 +695,10 @@ class Translator:
         A row step's filters, all of which must hold, as one predicate
         over the table's columns.
         """
-        preds = [self._row_filter(f) for f in filters]
+        preds = [f.translated(_ROW_FILTER, self) for f in filters]
         if len(preds) == 1:
             return preds[0]
         return self._combine_and(preds)
-
-    def _row_filter(self, f):
-        """
-        One row filter as a predicate over the table's columns.
-        """
-        if isinstance(f, _filters.FilterKeyValue):
-            # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
-            return self._row_comparison(f)
-        if isinstance(f, _filters.FilterAnd):
-            return self._combine_and([self._row_filter(sub) for sub in f.filters])
-        if isinstance(f, _filters.FilterOr):
-            return self._combine_or([self._row_filter(sub) for sub in f.filters])
-        if isinstance(f, _filters.FilterNot):
-            return self._combine_not(self._row_filter(f.inner))
-        if isinstance(f, _filters.FilterGroup):
-            return self._row_filter(f.inner)
-        raise TranslationError(f'filter type not supported: {type(f).__name__}')
 
     def _row_comparison(self, f):
         """
@@ -384,119 +707,52 @@ class Translator:
         reaches into the column `data`), its comparison as a guard at
         the end of it.
         """
-        parts = f.key.parts if isinstance(f.key, _filters.FilterKey) else (f.key,)
-        head, rest = parts[0], parts[1:]
-        if isinstance(head, (access.Slot, access.Slice, _groups.Pack)):
-            raise TranslationError(
-                f'filter key must start with a column name: {f.key}'
-            )
+        head, *rest = self._key_parts(f.key)
         col = self._column(self._name(head, 'column'))
         guard = wrappers.ValueGuard(
             None, f.val, pred_op=predicates.PRED_OPS[f._eq_str],
             transforms=f.guard_transforms)
         if not rest:
             return self._scalar_predicate(guard, col)
-        prefix = tuple(self._filter_segment(p) for p in rest)
+        prefix = tuple(part.translated(_FILTER_SEGMENT, self) for part in rest)
         return self._nested_predicate(guard, col, prefix)
 
-    def _filter_segment(self, part):
+    def _key_parts(self, key):
         """
-        A filter key part after its column as a prefix segment: a key
-        (a raw matcher) or an index (a `Slot`).
+        A filter's key as its parts: raw matchers (Word, Numeric, …)
+        and Slot ops for indexes.
         """
-        if isinstance(part, (access.Slice, _groups.Pack)):
-            raise TranslationError(
-                f'{type(part).__name__} in a row filter key not supported in v1'
-            )
-        if isinstance(part, access.Slot):
-            return self._segment_from_key(part)
-        return ('lit', self._name(part, 'filter key'))
+        return key.translated(_KEY_PARTS)
 
     def _walk(self, col, prefix, ops):
         """
         Walk the remaining path ops after the column, accumulating
-        literal segments in `prefix`. Dispatches to group /
-        pattern-mode / guard paths as needed.
+        literal segments in `prefix`. If an op ahead introduces a
+        pattern-like segment (wildcard, recursive, filter bracket)
+        before any group, the flavor's pattern mode takes the whole
+        remainder; up to a group, the walk goes on, so the group is
+        read at its node.
         """
         if not ops:
             return {'select': self._select_expr(col, prefix)}
-        op = ops[0]
-        rest = ops[1:]
-        # value transforms, a.b|int, have no target side: translate the op under them
-        if isinstance(op, wrappers.TransformWrap):
-            op = op.inner
-        if isinstance(op, wrappers.TypeRestriction):
-            raise TranslationError('type restriction not supported')
-        if isinstance(op.most_inner, _groups.Pack):
-            raise TranslationError('packed group not supported')
-        if isinstance(op, _groups.OpGroup):
-            if not op.is_pattern():
-                return self._walk(col, prefix, _only_branch(op) + tuple(rest))
-            return self._group(col, prefix, op, tuple(rest))
-        # If a remaining op introduces a pattern-like segment (wildcard,
-        # recursive, filter bracket) before any group, the flavor's
-        # pattern mode takes the whole remainder; up to a group, the
-        # walk goes on, so the group is read at its node.
         lead = next((o for o in ops if _op_is_pattern_like(o)), None)
         if lead is not None and not isinstance(lead, _groups.OpGroup):
             return self._patterned(col, prefix, ops)
-        if isinstance(op, wrappers.ValueGuard):
-            if rest:
-                raise TranslationError('path continues after value guard')
-            segment = self._segment_from_key(op.inner)
-            full = prefix + (segment,)
-            select = self._select_expr(col, full)
-            where = self._nested_predicate(op, col, full)
-            return {'select': select, 'where': where}
-        if isinstance(op, access.Key):
-            segment = self._segment_from_key(op)
-            return self._walk(col, prefix + (segment,), rest)
-        raise TranslationError(f'unsupported op: {type(op).__name__}')
+        return ops[0].translated(_WALK, self, col, prefix, tuple(ops[1:]))
 
-    def _segment_from_key(self, key_op):
+    def _segment(self, key_op):
         """
-        Turn a `Key` op inside a path into a `(kind, value)` tuple:
+        A `Key` op inside a path as a `(kind, value)` tuple:
         `('lit', 'user')` for a plain key, or `('expr', expr)` for a
         reference whose subpath is recursively translated.
         """
-        if not isinstance(key_op, access.Key):
-            raise TranslationError(
-                f'expected Key inside path, got {type(key_op).__name__}'
-            )
-        matcher = key_op.op
-        if isinstance(matcher, matchers.Reference):
-            if matcher.depth != 0:
-                raise TranslationError(
-                    'relative/parent references not supported in v1'
-                )
-            subpath = matcher.inner_path
-            if not subpath:
-                raise TranslationError('empty reference path')
-            sub_parsed = parse(subpath, partial=True)
-            # Recurse on self — any flavor state stays live across
-            # the sub-translation.
-            sub_result = self._translate(sub_parsed.ops)
-            sub_expr = sub_result.get('select')
-            if sub_expr is None:
-                raise TranslationError('reference subpath has no select expression')
-            return ('expr', sub_expr)
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError(
-                f'unresolved substitution in path position: {matcher}'
-            )
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                f'pattern segments not supported in v1: {matcher}'
-            )
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(f'unsupported matcher: {type(matcher).__name__}')
-        return ('lit', self._segment_value(key_op, matcher.value))
+        return key_op.translated(_KEY_SEGMENT, self)
 
-    def _segment_value(self, key_op, value):
+    def _segment_value(self, value, index):
         """
-        The literal segment for a plain key whose matcher holds `value`.
-        Its string form by default; a flavor that tells list indexes
-        (`[0]`) from keys overrides this.
+        The literal segment for a plain key whose matcher holds `value`,
+        a list index when `index`. Its string form by default; a flavor
+        that tells list indexes (`[0]`) from keys overrides this.
         """
         return str(value)
 
@@ -519,29 +775,6 @@ class Translator:
 
     # ---- groups -----------------------------------------------------
 
-    def _grouped(self, group_op):
-        """
-        A path group's kind and its branches: `'or'` for `(a, b)`, each
-        branch's matches in turn; `'and'` for `(a & b)`, those only
-        where every branch matches. A branch runs on into the path after
-        the group, at each node the group is at. `'first'` for
-        `(a, b)?`: the first match of the first branch to match, the
-        branch alone; the path after the group runs on from it.
-        """
-        if isinstance(group_op, _groups.OpGroupNot):
-            raise TranslationError('negation group (!) not supported yet')
-        if any(b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) for b in group_op.branches):
-            raise TranslationError('cut (# or ##) in a group not supported yet')
-        if isinstance(group_op, _groups.OpGroupFirst):
-            return 'first', group_op.branches
-        if isinstance(group_op, _groups.OpGroupAnd):
-            return 'and', group_op.branches
-        if isinstance(group_op, _groups.OpGroupOr):
-            return 'or', group_op.branches
-        raise TranslationError(
-            f'unsupported group type: {type(group_op).__name__}'
-        )
-
     def _combine_group(self, kind, preds):
         """
         Branch predicates joined per the group's kind: a first match
@@ -551,12 +784,12 @@ class Translator:
             return self._combine_and(preds)
         return self._combine_or(preds)
 
-    def _translate_top_group(self, group_op, rest):
+    def _translate_top_group(self, kind, branches, rest):
         """
-        The `where` of a group at the top of a path: each branch is a
-        complete path from its own column, the rest of the path after it.
+        The `where` of a group of `kind` at the top of a path: each
+        branch is a complete path from its own column, the rest of the
+        path after it.
         """
-        kind, branches = self._grouped(group_op)
         if kind == 'first' and rest:
             raise TranslationError(
                 'path after a top-level first-match group (?) not supported yet'
@@ -571,15 +804,15 @@ class Translator:
             wheres.append(where)
         return self._combine_group(kind, wheres)
 
-    def _group(self, col, prefix, group_op, rest):
+    def _group(self, col, prefix, group_op, kind, branches, rest):
         """
-        A group at one node, `rest` the path after it. Its matches are
-        the pattern path's. When no branch of a `,` or `&` group reaches
-        a pattern, its `where` is the branches' own, joined: a group of
-        guards stays plain predicates. A first match's rest runs from
-        the match, not from each branch, so it keeps the pattern's.
+        A group of `kind` at one node, `rest` the path after it. Its
+        matches are the pattern path's. When no branch of a `,` or `&`
+        group reaches a pattern, its `where` is the branches' own,
+        joined: a group of guards stays plain predicates. A first
+        match's rest runs from the match, not from each branch, so it
+        keeps the pattern's.
         """
-        kind, branches = self._grouped(group_op)
         ways = [tuple(branch) + rest for branch in branches]
         wheres = None
         plain = not any(_op_is_pattern_like(op) for way in ways for op in way)
@@ -636,7 +869,7 @@ class Translator:
         """
         Return the fragments dict for a pattern path: `ops` is the
         remainder after `prefix`, containing at least one pattern-like
-        op or group. `self._grouped` reads a group.
+        op or group. A `Hooks` subclass reads each op.
         """
         raise NotImplementedError
 

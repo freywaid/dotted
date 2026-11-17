@@ -19,6 +19,9 @@ class Recursive(BaseOp):
     *(*, @*)    = recurse through dict keys and attributes
     *(*, [*], @*) = recurse through all accessor types
     """
+    def translated(self, translation, *args):
+        return translation.recursive(self, *args)
+
 
     def __init__(self, inner, *args, accessors=None, depth_start=None, depth_stop=None, depth_step=None, **kwargs):
         super().__init__(*args, **kwargs)

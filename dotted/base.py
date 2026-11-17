@@ -180,6 +180,14 @@ class Op:
         matching a path (recursive ops, groups).
         """
         return False
+    def translated(self, translation, *args):
+        """
+        What `translation` makes of this op: each kind of op calls its
+        own hook of `translation` with `args`, `translation.key` for a
+        Key, `translation.value_guard` for a ValueGuard. This is the
+        hook for an op of a kind with none.
+        """
+        return translation.other(self, *args)
 
 
 class MetaNOP(type):

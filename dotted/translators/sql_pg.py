@@ -16,15 +16,9 @@ import collections
 import decimal
 import re
 
-from .. import access
-from .. import filters as _filters
-from .. import groups as _groups
-from .. import matchers
 from .. import predicates
-from .. import recursive as _recursive
-from .. import wrappers
 
-from .core import TranslationError, Translator
+from .core import Hooks, TranslationError, Translator
 from .sql import (
     SQLFragment,
     Resolver,
@@ -118,14 +112,70 @@ _PRED_JSONPATH = {
 # ---- Pattern paths as JSONPath --------------------------------------
 #
 # A pattern path's ops become parts: a `_Fragment` per op — its
-# JSONPath text, the JSONPath vars it uses, and whether the op is
-# aligned (+) — and a `_Group` per group — its kind and each branch's
-# parts. JSONPath has no union, so a path through groups runs as its
-# tails: the group-free runs of fragments, one per way through each
-# group.
+# JSONPath accessor, the JSONPath vars it uses, whether the op is
+# aligned (+), and the filter it puts on what it reaches — and a
+# `_Group` per group — its kind and each branch's parts. JSONPath has
+# no union, so a path through groups runs as its tails: the group-free
+# runs of fragments, one per way through each group.
 
-_Fragment = collections.namedtuple('_Fragment', 'text jvars aligned')
-_Group = collections.namedtuple('_Group', 'kind branches')
+class _Fragment(collections.namedtuple(
+        '_Fragment', 'text jvars aligned filter', defaults=(None,))):
+    """
+    One op's JSONPath: its accessor `text` and the `filter` on what it
+    reaches.
+    """
+    kind = None
+    branches = ()
+
+    @property
+    def path(self):
+        """
+        The accessor, then its filter.
+        """
+        if not self.filter:
+            return self.text
+        return f'{self.text} ? ({self.filter})'
+
+    @property
+    def split(self):
+        """
+        True where rows read in dotted's order take a lateral of their
+        own: after an aligned (+) op.
+        """
+        return self.aligned
+
+    def filtered(self, test, jvars):
+        """
+        This fragment, as parts, its filter and `test` both holding.
+        """
+        if self.filter:
+            test = f'{self.filter} && {test}'
+        return [self._replace(filter=test, jvars={**self.jvars, **jvars})]
+
+    def rows(self, t, src, before, rest, ordered):
+        """
+        The rows of a path split at this aligned fragment (`t._rows`).
+        """
+        return t._aligned_rows(src, before + [self], rest, ordered)
+
+
+class _Group(collections.namedtuple('_Group', 'kind branches')):
+    """
+    A group's kind and each branch's parts.
+    """
+    split = True
+
+    def filtered(self, test, jvars):
+        """
+        This group, as parts, `test` a filter on each of its matches.
+        """
+        return [self, _Fragment('', jvars, False, test)]
+
+    def rows(self, t, src, before, rest, ordered):
+        """
+        The rows of a path split at this group (`t._rows`).
+        """
+        return t._group_rows(src, before, self, rest, ordered)
 
 
 def _tails(parts):
@@ -137,7 +187,7 @@ def _tails(parts):
     something from it.
     """
     for i, part in enumerate(parts):
-        if isinstance(part, _Fragment):
+        if not part.branches:
             continue
         head = list(parts[:i])
         ways = [list(branch) + list(parts[i + 1:]) for branch in part.branches]
@@ -157,7 +207,7 @@ def _held(ways):
     for _, test_jvars in tests:
         jvars.update(test_jvars)
     text = ' && '.join(f'({test})' for test, _ in tests)
-    return _Fragment(f' ? ({text})', jvars, False)
+    return _Fragment('', jvars, False, text)
 
 
 def _reaches(parts):
@@ -185,7 +235,7 @@ def _segments(tail):
     segments = []
     text, jvars = '', {}
     for fragment in tail:
-        text += fragment.text
+        text += fragment.path
         jvars = {**jvars, **fragment.jvars}
         if not fragment.aligned:
             continue
@@ -202,7 +252,7 @@ def _joined(fragments):
     """
     text, jvars = '', {}
     for fragment in fragments:
-        text += fragment.text
+        text += fragment.path
         jvars = {**jvars, **fragment.jvars}
     return text, jvars
 
@@ -215,7 +265,7 @@ def _anywhere(parts, test):
     for part in parts:
         if test(part):
             return True
-        if isinstance(part, _Group) and any(_anywhere(b, test) for b in part.branches):
+        if any(_anywhere(b, test) for b in part.branches):
             return True
     return False
 
@@ -224,15 +274,7 @@ def _is_first(part):
     """
     True if `part` is a first-match group (?).
     """
-    return isinstance(part, _Group) and part.kind == 'first'
-
-
-def _is_split(part):
-    """
-    True if `part` is a group or an aligned (+) op: where rows read in
-    dotted's order take a lateral of their own.
-    """
-    return isinstance(part, _Group) or part.aligned
+    return part.kind == 'first'
 
 
 # ---- Cast inference for Postgres ------------------------------------
@@ -463,26 +505,36 @@ class PostgresMixin(Translator):
         """
         if not ordered and not _anywhere(parts, _is_first):
             return self._tail_rows(src, parts)
-        i = next((i for i, part in enumerate(parts) if _is_split(part)), None)
+        i = next((i for i, part in enumerate(parts) if part.split), None)
         if i is None:
             return self._tail_rows(src, parts)
-        part, rest = parts[i], parts[i + 1:]
-        if isinstance(part, _Group):
-            text, jvars = _joined(parts[:i])
-            if not text:
-                return self._rows_at(src, part, rest, ordered)
-            node = self._state.alloc_pattern_alias()
-            under = self._rows_at(f'{node}.value', part, rest, ordered)
-            found = self._state.alloc_pattern_alias()
-            nodes = self._path_call('jsonb_path_query', src, text, jvars)
-            return (f'SELECT {found}.value FROM {nodes} AS {node}(value) '
-                    f'CROSS JOIN LATERAL ({under}) AS {found}(value)')
-        # an aligned op: what follows runs under each of its matches,
-        # which keeps a row where it finds nothing
+        return parts[i].rows(self, src, parts[:i], parts[i + 1:], ordered)
+
+    def _group_rows(self, src, before, group, rest, ordered):
+        """
+        `_rows` through a group: a lateral at each node the fragments
+        `before` it reach, the group's rows at each.
+        """
+        text, jvars = _joined(before)
+        if not text:
+            return self._rows_at(src, group, rest, ordered)
+        node = self._state.alloc_pattern_alias()
+        under = self._rows_at(f'{node}.value', group, rest, ordered)
+        found = self._state.alloc_pattern_alias()
+        nodes = self._path_call('jsonb_path_query', src, text, jvars)
+        return (f'SELECT {found}.value FROM {nodes} AS {node}(value) '
+                f'CROSS JOIN LATERAL ({under}) AS {found}(value)')
+
+    def _aligned_rows(self, src, through, rest, ordered):
+        """
+        `_rows` through an aligned (+) op, the last of the fragments
+        `through`: what follows runs under each of its matches, which
+        keeps a row where it finds nothing.
+        """
         node = self._state.alloc_pattern_alias()
         under = self._rows(f'{node}.value', rest, ordered)
         found = self._state.alloc_pattern_alias()
-        nodes = self._path_call('jsonb_path_query', src, *_joined(parts[:i + 1]))
+        nodes = self._path_call('jsonb_path_query', src, *_joined(through))
         value = f'{found}.value'
         if ordered:
             value = f"COALESCE({value}, 'null'::jsonb)"
@@ -548,7 +600,7 @@ class PostgresMixin(Translator):
         SQL jsonb of the first row `parts` reach from the jsonb `src`,
         in the order dotted reaches them; NULL where there is none.
         """
-        if not any(_is_split(part) for part in parts):
+        if not any(part.split for part in parts):
             return self._path_call('jsonb_path_query_first', src, *_joined(parts))
         alias = self._state.alloc_pattern_alias()
         rows = self._rows(src, parts, ordered=True)
@@ -603,32 +655,7 @@ class PostgresMixin(Translator):
         per group. Each op is translated once, so a value it hoists is
         hoisted once, however many tails it is in.
         """
-        parts = []
-        for op in ops:
-            if isinstance(op, _groups.OpGroup):
-                parts.append(self._group_part(op))
-                continue
-            # a guard on a group, (a, b)?=1, tests each of its matches
-            if (isinstance(op, wrappers.ValueGuard)
-                    and isinstance(op.inner, _groups.OpGroup)):
-                parts.append(self._group_part(op.inner))
-                jvars = {}
-                guard = self._guard_to_jsonpath(op, jvars)
-                parts.append(_Fragment(f' ? ({guard})', jvars, False))
-                continue
-            jvars = {}
-            frag, trailing_filter = self._op_to_jsonpath(op, jvars)
-            if trailing_filter:
-                frag += f' ? ({trailing_filter})'
-            parts.append(_Fragment(frag, jvars, op.is_aligned()))
-        return parts
-
-    def _group_part(self, op):
-        """
-        A group as a `_Group`: its kind and each branch's parts.
-        """
-        kind, branches = self._grouped(op)
-        return _Group(kind, [self._jsonpath_parts(b) for b in branches])
+        return [part for op in ops for part in op.translated(_PARTS, self)]
 
     def _build_jsonpath_vars(self, jvars):
         """
@@ -642,90 +669,6 @@ class PostgresMixin(Translator):
             f"'{name}', {_with_cast_spec(placeholder)}"
             for name, placeholder in jvars.items())
         return f'jsonb_build_object({kv_pairs})'
-
-    def _op_to_jsonpath(self, op, jvars):
-        """
-        Translate one op into a JSONPath fragment. Returns
-        (fragment, trailing_filter_or_None). trailing_filter is an
-        expression placed inside `? (...)` after the fragment — used
-        for guards and bracket filters.
-        """
-        if isinstance(op, wrappers.TransformWrap):
-            return self._op_to_jsonpath(op.inner, jvars)
-        if isinstance(op, wrappers.TypeRestriction):
-            raise TranslationError('type restriction not supported')
-        if isinstance(op.most_inner, _groups.Pack):
-            raise TranslationError('packed group not supported')
-        # NB: Slot is a subclass of Key, so check Slot first.
-        if isinstance(op, access.Slot):
-            return self._key_slot_to_jsonpath(op, is_key=False), None
-        if isinstance(op, access.Attr):
-            # Attrs have no JSONPath equivalent; treat as a key access.
-            return self._key_slot_to_jsonpath(op, is_key=True), None
-        if isinstance(op, access.Key):
-            return self._key_slot_to_jsonpath(op, is_key=True), None
-        if isinstance(op, _recursive.Recursive):
-            return self._recursive_to_jsonpath(op), None
-        if isinstance(op, access.SliceFilter):
-            # [pred] → [*] ? (pred)
-            filter_expr = self._filters_to_jsonpath(op.filters, jvars)
-            return '[*]', filter_expr
-        if isinstance(op, wrappers.FilterWrap):
-            inner_frag, inner_filter = self._op_to_jsonpath(op.inner, jvars)
-            filter_expr = self._filters_to_jsonpath(op.filters, jvars)
-            if inner_filter:
-                filter_expr = f'{inner_filter} && {filter_expr}'
-            return inner_frag, filter_expr
-        if isinstance(op, wrappers.ValueGuard):
-            inner_frag, inner_filter = self._op_to_jsonpath(op.inner, jvars)
-            pred_expr = self._guard_to_jsonpath(op, jvars)
-            combined = (f'{inner_filter} && {pred_expr}'
-                        if inner_filter else pred_expr)
-            return inner_frag, combined
-        raise TranslationError(
-            f'op not supported in pattern paths: {type(op).__name__}'
-        )
-
-    def _key_slot_to_jsonpath(self, op, is_key):
-        """
-        Translate a Key/Slot op with any concrete or wildcard matcher.
-        is_key=True uses `.name`/`.*`; is_key=False uses `[N]`/`[*]`.
-        """
-        matcher = op.op
-        if isinstance(matcher, matchers.Wildcard):
-            return '.*' if is_key else '[*]'
-        if isinstance(matcher, matchers.Subst):
-            raise TranslationError(
-                f'unresolved substitution in pattern path: {matcher}'
-            )
-        if isinstance(matcher, matchers.Reference):
-            raise TranslationError(
-                'references inside pattern paths not supported yet'
-            )
-        if isinstance(matcher, matchers.Pattern):
-            raise TranslationError(
-                f'unsupported matcher in pattern path: {type(matcher).__name__}'
-            )
-        if not hasattr(matcher, 'value'):
-            raise TranslationError(
-                f'unsupported matcher: {type(matcher).__name__}'
-            )
-        value = matcher.value
-        if is_key:
-            return '.' + _jsonpath_key(str(value))
-        # Slot: integer index
-        return f'[{value}]'
-
-    def _recursive_to_jsonpath(self, op):
-        """
-        Translate a Recursive op (** or *key etc).
-        """
-        inner = op.inner
-        if isinstance(inner, matchers.Wildcard):
-            return '.**'
-        raise TranslationError(
-            f'recursive op with {type(inner).__name__} inner not supported yet'
-        )
 
     def _guard_to_jsonpath(self, guard_op, jvars):
         """
@@ -741,57 +684,25 @@ class PostgresMixin(Translator):
         op_str = _PRED_JSONPATH.get(pred)
         if op_str is None:
             raise TranslationError(f'unsupported predicate: {pred!r}')
-        rhs = self._value_to_jsonpath(value, jvars)
+        rhs = value.translated(_JSONPATH_VALUE, self, jvars)
         return f'@ {op_str} {rhs}'
 
-    def _value_to_jsonpath(self, val, jvars):
+    def _jsonpath_literal(self, value, jvars):
         """
-        Render a guard / filter value as a JSONPath expression —
-        either an inline literal or a $var referencing a SQL
-        placeholder.
+        `value` in a JSONPath expression: inline when it safely can be
+        (numbers, booleans, null), else a `$var` (`_jsonpath_var`).
         """
-        if isinstance(val, matchers.NoneValue):
-            return 'null'
-        if isinstance(val, matchers.Boolean):
-            return 'true' if val.value else 'false'
-        if isinstance(val, (matchers.Numeric, matchers.NumericQuoted,
-                            matchers.NumericExtended)):
-            py_val = val.value
-            inlined = _jsonpath_value_literal(py_val)
-            if inlined is not None:
-                return inlined
-            # Fallback — hoist
-            placeholder = self._hoist_value(py_val)
-            jvar = self._jvar_for_placeholder(placeholder, jvars)
-            return f'${jvar}'
-        if isinstance(val, matchers.Regex):
-            # Only valid inside a filter; caller must place it correctly
-            return f'like_regex {_jsonpath_string_literal(val.args[0])}'
-        if isinstance(val, matchers.Subst):
-            placeholder = self._hoist_subst(val.value)
-            jvar = self._jvar_for_placeholder(placeholder, jvars)
-            return f'${jvar}'
-        if isinstance(val, matchers.ResolvedValue):
-            py_val = val.value
-            inlined = _jsonpath_value_literal(py_val)
-            if inlined is not None:
-                return inlined
-            # Strings and other types: hoist
-            placeholder = self._hoist_value(py_val)
-            jvar = self._jvar_for_placeholder(placeholder, jvars)
-            return f'${jvar}'
-        if isinstance(val, (matchers.String, matchers.Word, matchers.Bytes)):
-            # Hoist strings via a JSONPath variable.
-            placeholder = self._hoist_value(val.value)
-            jvar = self._jvar_for_placeholder(placeholder, jvars)
-            return f'${jvar}'
-        if hasattr(val, 'value'):
-            placeholder = self._hoist_value(val.value)
-            jvar = self._jvar_for_placeholder(placeholder, jvars)
-            return f'${jvar}'
-        raise TranslationError(
-            f'unsupported value in pattern predicate: {type(val).__name__}'
-        )
+        inlined = _jsonpath_value_literal(value)
+        if inlined is not None:
+            return inlined
+        return self._jsonpath_var(self._hoist_value(value), jvars)
+
+    def _jsonpath_var(self, placeholder, jvars):
+        """
+        The `$var` for a hoisted SQL `placeholder` in a JSONPath
+        expression, registered in `jvars`.
+        """
+        return '$' + self._jvar_for_placeholder(placeholder, jvars)
 
     def _jvar_for_placeholder(self, placeholder, jvars):
         """
@@ -813,98 +724,16 @@ class PostgresMixin(Translator):
         Translate a sequence of FilterOp predicates to a JSONPath
         filter expression (no surrounding `? (...)`).
         """
-        parts = []
-        for f in filters:
-            parts.append(self._filter_to_jsonpath(f, jvars))
-        return ' && '.join(parts)
-
-    def _filter_to_jsonpath(self, f, jvars):
-        """
-        Translate one FilterOp to a JSONPath filter expression.
-        """
-        if isinstance(f, _filters.FilterKeyValue):
-            # Includes KeyValue, KeyValueNot, KeyValueLt, etc. via subclass
-            if f.guard_transforms:
-                raise TranslationError(
-                    'filter transforms inside pattern paths not supported yet'
-                )
-            op_str = {
-                '=':  '==',
-                '!=': '!=',
-                '<':  '<',
-                '>':  '>',
-                '<=': '<=',
-                '>=': '>=',
-            }.get(f._eq_str)
-            if op_str is None:
-                raise TranslationError(
-                    f'unsupported filter operator: {f._eq_str}'
-                )
-            key_expr = self._filter_key_to_jsonpath(f.key)
-            rhs = self._value_to_jsonpath(f.val, jvars)
-            return f'{key_expr} {op_str} {rhs}'
-        if isinstance(f, _filters.FilterAnd):
-            parts = [self._filter_to_jsonpath(sub, jvars)
-                     for sub in f.filters]
-            return ' && '.join(f'({p})' for p in parts)
-        if isinstance(f, _filters.FilterOr):
-            parts = [self._filter_to_jsonpath(sub, jvars)
-                     for sub in f.filters]
-            return ' || '.join(f'({p})' for p in parts)
-        if isinstance(f, _filters.FilterNot):
-            inner = self._filter_to_jsonpath(f.inner, jvars)
-            return f'!({inner})'
-        if isinstance(f, _filters.FilterGroup):
-            inner = self._filter_to_jsonpath(f.inner, jvars)
-            return f'({inner})'
-        raise TranslationError(
-            f'filter type not supported: {type(f).__name__}'
-        )
+        return ' && '.join(f.translated(_JSONPATH_FILTER, self, jvars)
+                           for f in filters)
 
     def _filter_key_to_jsonpath(self, key):
         """
-        Translate a FilterKey to the LHS of a JSONPath filter
-        predicate, relative to `@` (current node). FilterKey.parts
-        contains raw matchers (Word, Wildcard, Numeric, etc.) plus
-        access ops for slots/slices — handle both forms.
+        A filter's key as the LHS of a JSONPath filter predicate,
+        relative to `@` (the current node).
         """
-        if isinstance(key, _filters.FilterKey):
-            parts = ['@']
-            for p in key.parts:
-                if isinstance(p, _groups.Pack):
-                    raise TranslationError('packed group in filter key not supported')
-                if isinstance(p, access.Slot):
-                    m = p.op
-                    if isinstance(m, matchers.Wildcard):
-                        parts.append('[*]')
-                    elif hasattr(m, 'value'):
-                        parts.append(f'[{m.value}]')
-                    else:
-                        raise TranslationError(
-                            f'unsupported slot matcher in filter key: '
-                            f'{type(m).__name__}'
-                        )
-                    continue
-                if isinstance(p, access.Slice):
-                    raise TranslationError(
-                        'slice in filter key not supported yet'
-                    )
-                # Otherwise p is a raw matcher (Word, Wildcard, Numeric, …).
-                if isinstance(p, matchers.Wildcard):
-                    parts.append('.*')
-                elif hasattr(p, 'value'):
-                    parts.append('.' + _jsonpath_key(str(p.value)))
-                else:
-                    raise TranslationError(
-                        f'unsupported filter key part: {type(p).__name__}'
-                    )
-            return ''.join(parts)
-        # Raw matcher fallback.
-        if hasattr(key, 'value'):
-            return '@.' + _jsonpath_key(str(key.value))
-        raise TranslationError(
-            f'unsupported filter key: {type(key).__name__}'
-        )
+        return '@' + ''.join(part.translated(_FILTER_KEY_JSONPATH, self, True)
+                             for part in self._key_parts(key))
 
     # ---- scalar (non-pattern) path helpers --------------------------
 
@@ -939,29 +768,8 @@ class PostgresMixin(Translator):
             raise TranslationError(
                 'guard transforms on scalar columns not supported in v1'
             )
-        val = guard_op.guard
-        pred = guard_op.pred_op
-        if isinstance(val, matchers.NoneValue):
-            if pred is predicates.EQ:
-                return f'{col_ident} IS NULL'
-            if pred is predicates.NE:
-                return f'{col_ident} IS NOT NULL'
-            raise TranslationError('ordering comparison against None')
-        if isinstance(val, matchers.Regex):
-            if pred is predicates.EQ:
-                return f'{col_ident} ~ {self._hoist_value(val.args[0])}'
-            if pred is predicates.NE:
-                return f'{col_ident} !~ {self._hoist_value(val.args[0])}'
-            raise TranslationError('ordering comparison against regex')
-        if isinstance(val, matchers.Subst):
-            return f'{col_ident} {pred.op} {self._hoist_subst(val.value)}'
-        if isinstance(val, matchers.Pattern):
-            raise TranslationError(
-                f'pattern guard values not supported in v1: {type(val).__name__}'
-            )
-        if not hasattr(val, 'value'):
-            raise TranslationError(f'unsupported guard value: {type(val).__name__}')
-        return f'{col_ident} {pred.op} {self._hoist_value(val.value)}'
+        return guard_op.guard.translated(
+            _SCALAR_PREDICATE, self, col_ident, guard_op.pred_op)
 
     def _jsonb_predicate(self, guard_op, col_ident, full_prefix):
         """
@@ -977,87 +785,286 @@ class PostgresMixin(Translator):
         if guard_op.guard_transforms:
             cast = self._transforms_to_cast(guard_op.guard_transforms)
             lhs = f'({text_expr})::{cast}'
-            return self._compare_with_lhs(lhs, pred, val)
-        if isinstance(val, matchers.NoneValue):
-            if pred is predicates.EQ:
-                return f"{jsonb_expr} IS NULL OR jsonb_typeof({jsonb_expr}) = 'null'"
-            if pred is predicates.NE:
-                return f"{jsonb_expr} IS NOT NULL AND jsonb_typeof({jsonb_expr}) != 'null'"
-            raise TranslationError('ordering comparison against None')
-        if isinstance(val, matchers.Boolean):
-            lit = 'true' if val.value else 'false'
-            if pred is predicates.EQ:
-                return f"{jsonb_expr} = '{lit}'::jsonb"
-            if pred is predicates.NE:
-                return f"{jsonb_expr} != '{lit}'::jsonb"
-            raise TranslationError('ordering comparison against boolean')
-        if isinstance(val, matchers.Regex):
-            if pred is predicates.EQ:
-                return f'({text_expr}) ~ {self._hoist_value(val.args[0])}'
-            if pred is predicates.NE:
-                return f'({text_expr}) !~ {self._hoist_value(val.args[0])}'
-            raise TranslationError('ordering comparison against regex')
-        if isinstance(val, matchers.Subst):
-            return f'({text_expr}) {pred.op} {self._hoist_subst(val.value)}'
-        if isinstance(val, (matchers.Numeric, matchers.NumericQuoted,
-                            matchers.NumericExtended)):
-            return f'({text_expr})::numeric {pred.op} {self._hoist_value(val.value)}'
-        if isinstance(val, matchers.ResolvedValue):
-            return self._predicate_for_resolved(text_expr, jsonb_expr, pred, val.value)
-        if isinstance(val, (matchers.String, matchers.Word, matchers.Bytes)):
-            return f'({text_expr}) {pred.op} {self._hoist_value(val.value)}'
-        if isinstance(val, matchers.Pattern):
+            return val.translated(_CAST_PREDICATE, self, lhs, pred)
+        return val.translated(
+            _JSONB_PREDICATE, self, f'({text_expr})', pred, jsonb_expr)
+
+
+# ---- Reading ops ----------------------------------------------------
+
+class _Parts(Hooks):
+    """
+    An op of a pattern path as parts: a `_Fragment`, or a `_Group`.
+    """
+
+    def other(self, op, t):
+        raise TranslationError(
+            f'op not supported in pattern paths: {type(op).__name__}'
+        )
+
+    def transform_wrap(self, op, t):
+        return op.inner.translated(self, t)
+
+    def key(self, op, t):
+        # an Attr has no JSONPath of its own: it reads as a key
+        return [_Fragment(op.op.translated(_JSONPATH_KEY, t, True), {}, op.is_aligned())]
+
+    def slot(self, op, t):
+        return [_Fragment(op.op.translated(_JSONPATH_KEY, t, False), {}, op.is_aligned())]
+
+    def recursive(self, op, t):
+        text = op.inner.translated(_RECURSIVE_JSONPATH, t)
+        return [_Fragment(text, {}, op.is_aligned())]
+
+    def slice_filter(self, op, t):
+        # [pred] → [*] ? (pred)
+        jvars = {}
+        test = t._filters_to_jsonpath(op.filters, jvars)
+        return [_Fragment('[*]', jvars, op.is_aligned(), test)]
+
+    def filter_wrap(self, op, t):
+        parts = op.inner.translated(self, t)
+        jvars = {}
+        test = t._filters_to_jsonpath(op.filters, jvars)
+        return parts[:-1] + parts[-1].filtered(test, jvars)
+
+    def value_guard(self, op, t):
+        # a guard on a group, (a, b)?=1, tests each of its matches
+        parts = op.inner.translated(self, t)
+        jvars = {}
+        test = t._guard_to_jsonpath(op, jvars)
+        return parts[:-1] + parts[-1].filtered(test, jvars)
+
+    def group(self, op, kind, branches, t):
+        return [_Group(kind, [t._jsonpath_parts(b) for b in branches])]
+
+
+class _JsonPathKey(Hooks):
+    """
+    A Key's or Slot's matcher as a JSONPath accessor: `.name` / `.*`
+    for a key (`is_key`), `[N]` / `[*]` for a slot.
+    """
+
+    def other(self, m, t, is_key):
+        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
+
+    def const(self, m, t, is_key):
+        if is_key:
+            return '.' + _jsonpath_key(str(m.value))
+        return f'[{m.value}]'
+
+    def wildcard(self, m, t, is_key):
+        return '.*' if is_key else '[*]'
+
+    def pattern(self, m, t, is_key):
+        raise TranslationError(
+            f'unsupported matcher in pattern path: {type(m).__name__}'
+        )
+
+    def subst(self, m, t, is_key):
+        raise TranslationError(f'unresolved substitution in pattern path: {m}')
+
+    def reference(self, m, t, is_key):
+        raise TranslationError('references inside pattern paths not supported yet')
+
+
+class _FilterKeyJsonPath(_JsonPathKey):
+    """
+    A filter key's part as a JSONPath accessor: a key (a matcher), or
+    an index (a Slot, its matcher read as a slot's).
+    """
+
+    def slot(self, part, t, is_key):
+        return part.op.translated(self, t, False)
+
+    def slice(self, part, t, is_key):
+        raise TranslationError('slice in filter key not supported yet')
+
+
+class _RecursiveJsonPath(Hooks):
+    """
+    A recursive op's matcher as a JSONPath accessor: `**` is `.**`.
+    """
+
+    def other(self, m, t):
+        raise TranslationError(
+            f'recursive op with {type(m).__name__} inner not supported yet'
+        )
+
+    def wildcard(self, m, t):
+        return '.**'
+
+
+class _JsonPathValue(Hooks):
+    """
+    A guard's or filter's value as a JSONPath expression: an inline
+    literal, or a `$var` for a SQL placeholder.
+    """
+
+    def other(self, val, t, jvars):
+        raise TranslationError(
+            f'unsupported value in pattern predicate: {type(val).__name__}'
+        )
+
+    def const(self, val, t, jvars):
+        return t._jsonpath_literal(val.value, jvars)
+
+    def subst(self, val, t, jvars):
+        return t._jsonpath_var(t._hoist_subst(val.value), jvars)
+
+    def regex(self, val, t, jvars):
+        # only valid inside a filter; the caller places it there
+        return f'like_regex {_jsonpath_string_literal(val.args[0])}'
+
+
+_FILTER_JSONPATH = {
+    '=':  '==',
+    '!=': '!=',
+    '<':  '<',
+    '>':  '>',
+    '<=': '<=',
+    '>=': '>=',
+}
+
+
+class _JsonPathFilter(Hooks):
+    """
+    A bracket filter as a JSONPath filter expression, without the
+    surrounding `? (...)`.
+    """
+
+    def other(self, f, t, jvars):
+        raise TranslationError(f'filter type not supported: {type(f).__name__}')
+
+    def key_value_filter(self, f, t, jvars):
+        if f.guard_transforms:
             raise TranslationError(
-                f'pattern guard values not supported in v1: {type(val).__name__}'
+                'filter transforms inside pattern paths not supported yet'
             )
-        if hasattr(val, 'value'):
-            return f'({text_expr}) {pred.op} {self._hoist_value(val.value)}'
+        op_str = _FILTER_JSONPATH.get(f._eq_str)
+        if op_str is None:
+            raise TranslationError(f'unsupported filter operator: {f._eq_str}')
+        key_expr = t._filter_key_to_jsonpath(f.key)
+        rhs = f.val.translated(_JSONPATH_VALUE, t, jvars)
+        return f'{key_expr} {op_str} {rhs}'
+
+    def and_filter(self, f, t, jvars):
+        return ' && '.join(f'({sub.translated(self, t, jvars)})' for sub in f.filters)
+
+    def or_filter(self, f, t, jvars):
+        return ' || '.join(f'({sub.translated(self, t, jvars)})' for sub in f.filters)
+
+    def not_filter(self, f, t, jvars):
+        return f'!({f.inner.translated(self, t, jvars)})'
+
+    def group_filter(self, f, t, jvars):
+        return f'({f.inner.translated(self, t, jvars)})'
+
+
+class _ScalarPredicate(Hooks):
+    """
+    A guard's value as a WHERE predicate on `lhs`, a column or an
+    expression of one: `lhs <pred> value`.
+    """
+
+    def other(self, val, t, lhs, pred, *_):
         raise TranslationError(f'unsupported guard value: {type(val).__name__}')
 
-    def _predicate_for_resolved(self, text_expr, jsonb_expr, pred, py_val):
-        """
-        Build a JSONB predicate when the RHS has already been resolved
-        from a binding (ResolvedValue) — dispatch on the Python value's
-        type.
-        """
-        if py_val is None:
-            if pred is predicates.EQ:
-                return f"{jsonb_expr} IS NULL OR jsonb_typeof({jsonb_expr}) = 'null'"
-            if pred is predicates.NE:
-                return f"{jsonb_expr} IS NOT NULL AND jsonb_typeof({jsonb_expr}) != 'null'"
-            raise TranslationError('ordering comparison against None')
-        if isinstance(py_val, bool):
-            lit = 'true' if py_val else 'false'
-            if pred is predicates.EQ:
-                return f"{jsonb_expr} = '{lit}'::jsonb"
-            if pred is predicates.NE:
-                return f"{jsonb_expr} != '{lit}'::jsonb"
-            raise TranslationError('ordering comparison against boolean')
-        if isinstance(py_val, (int, float, decimal.Decimal)):
-            return f'({text_expr})::numeric {pred.op} {self._hoist_value(py_val)}'
-        return f'({text_expr}) {pred.op} {self._hoist_value(py_val)}'
+    def const(self, val, t, lhs, pred, *_):
+        return self._compared(t, lhs, pred, val.value)
 
-    def _compare_with_lhs(self, lhs, pred, val):
-        """
-        Compare a pre-built LHS expression (e.g. `(expr)::bigint`)
-        against a guard value. Used for JSONB predicates whose LHS
-        already carries a transform-driven cast.
-        """
-        if isinstance(val, matchers.NoneValue):
-            if pred is predicates.EQ:
-                return f'{lhs} IS NULL'
-            if pred is predicates.NE:
-                return f'{lhs} IS NOT NULL'
-            raise TranslationError('ordering comparison against None')
-        if isinstance(val, matchers.Subst):
-            return f'{lhs} {pred.op} {self._hoist_subst(val.value)}'
-        if isinstance(val, matchers.Pattern):
-            raise TranslationError(
-                f'pattern guard values not supported in v1: {type(val).__name__}'
-            )
-        if not hasattr(val, 'value'):
-            raise TranslationError(f'unsupported guard value: {type(val).__name__}')
-        return f'{lhs} {pred.op} {self._hoist_value(val.value)}'
+    def subst(self, val, t, lhs, pred, *_):
+        return f'{lhs} {pred.op} {t._hoist_subst(val.value)}'
+
+    def none_value(self, val, t, lhs, pred, *_):
+        if pred is predicates.EQ:
+            return f'{lhs} IS NULL'
+        if pred is predicates.NE:
+            return f'{lhs} IS NOT NULL'
+        raise TranslationError('ordering comparison against None')
+
+    def regex(self, val, t, lhs, pred, *_):
+        if pred is predicates.EQ:
+            return f'{lhs} ~ {t._hoist_value(val.args[0])}'
+        if pred is predicates.NE:
+            return f'{lhs} !~ {t._hoist_value(val.args[0])}'
+        raise TranslationError('ordering comparison against regex')
+
+    def pattern(self, val, t, lhs, pred, *_):
+        raise TranslationError(
+            f'pattern guard values not supported in v1: {type(val).__name__}'
+        )
+
+    def _compared(self, t, lhs, pred, value):
+        return f'{lhs} {pred.op} {t._hoist_value(value)}'
+
+
+class _CastPredicate(_ScalarPredicate):
+    """
+    A guard's value as a predicate on `lhs`, a JSONB value cast by the
+    guard's transform (`(expr)::bigint`): no regex there.
+    """
+
+    def regex(self, val, *args):
+        return self.pattern(val, *args)
+
+
+class _JsonbPredicate(_ScalarPredicate):
+    """
+    A guard's value as a predicate on a value in a JSONB column, `lhs`
+    its text and `jsonb` itself: each kind of value compares with its
+    own operator, a number cast to numeric, a boolean or null on the
+    jsonb.
+    """
+
+    def numeric(self, val, t, lhs, pred, jsonb):
+        return self._number(t, lhs, pred, val.value)
+
+    def boolean(self, val, t, lhs, pred, jsonb):
+        return self._truth(jsonb, pred, val.value)
+
+    def none_value(self, val, t, lhs, pred, jsonb):
+        return self._null(jsonb, pred)
+
+    def resolved_value(self, val, t, lhs, pred, jsonb):
+        # bound from a substitution: read by the Python value's type
+        value = val.value
+        if value is None:
+            return self._null(jsonb, pred)
+        if isinstance(value, bool):
+            return self._truth(jsonb, pred, value)
+        if isinstance(value, (int, float, decimal.Decimal)):
+            return self._number(t, lhs, pred, value)
+        return self._compared(t, lhs, pred, value)
+
+    def _number(self, t, lhs, pred, value):
+        return self._compared(t, f'{lhs}::numeric', pred, value)
+
+    def _truth(self, jsonb, pred, value):
+        lit = 'true' if value else 'false'
+        if pred is predicates.EQ:
+            return f"{jsonb} = '{lit}'::jsonb"
+        if pred is predicates.NE:
+            return f"{jsonb} != '{lit}'::jsonb"
+        raise TranslationError('ordering comparison against boolean')
+
+    def _null(self, jsonb, pred):
+        if pred is predicates.EQ:
+            return f"{jsonb} IS NULL OR jsonb_typeof({jsonb}) = 'null'"
+        if pred is predicates.NE:
+            return f"{jsonb} IS NOT NULL AND jsonb_typeof({jsonb}) != 'null'"
+        raise TranslationError('ordering comparison against None')
+
+
+_PARTS = _Parts()
+_JSONPATH_KEY = _JsonPathKey()
+_FILTER_KEY_JSONPATH = _FilterKeyJsonPath()
+_RECURSIVE_JSONPATH = _RecursiveJsonPath()
+_JSONPATH_VALUE = _JsonPathValue()
+_JSONPATH_FILTER = _JsonPathFilter()
+_SCALAR_PREDICATE = _ScalarPredicate()
+_CAST_PREDICATE = _CastPredicate()
+_JSONB_PREDICATE = _JsonbPredicate()
 
 
 # ---- Driver classes -------------------------------------------------
