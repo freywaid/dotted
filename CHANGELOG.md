@@ -22,8 +22,25 @@ the ones listed are omitted — browse git history for earlier entries.
   >= 30` is the first user's age, or `user`'s where there are none.
   `sqlize` reads it with `jsonb_path_query_first` and `COALESCE`, a
   lateral per node; `sparkize` takes the first non-null match.
+- Cuts in a conjunction, by `get`, `update` and `remove` alike, at
+  each node: in `(a#&b)`, once `a` matches, `b` isn't tried; in
+  `(a##&*)`, `*` skips what overlaps `a`'s matches, a branch the soft
+  cut covers whole adding nothing but still matching.
+
+### Changed
+- A one-branch group's cut is on the group it's in, as parentheses
+  alone don't make a group: `((a#)&b)` is `(a#&b)`, and `((a#), b)` is
+  `(a#, b)`, which gave `(1, 2)` on `{a: 1, b: 2}` and gives `(1,)`. A
+  trailing comma, `(a#,)`, keeps the group and its cut.
 
 ### Fixed
+- A first-match group's cut assembles: `(a#, b)?` assembled as
+  `(a,b)?`, which parses without the cut.
+- A cut, `#`, ends only its group's later branches, at each node the
+  group is at, as `update` and `remove` already read it (#71). `get`,
+  `pluck` and the other walks ended the whole walk at the first cut,
+  so `x[*].(a#, b)` over `[{a: 1}, {a: 2, b: 9}, {b: 3}]` was `(1,)`;
+  it is `(1, 2, 3)`, each element's `a`, or its `b` where it has none.
 - A group of guards, `data.(a = 1, b = 2)`, selects its matches, as
   `get` gives them, not the node the group is at. Its `where` is
   unchanged.

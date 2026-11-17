@@ -356,9 +356,6 @@ class TransformWrap(Wrap):
         they are drawn; one whose reference does not resolve is left out.
         """
         for path, val in results:
-            if path is base.CUT_SENTINEL:
-                yield path, val
-                continue
             try:
                 val = self.apply(val, settings)
             except base.UnresolvedReference:

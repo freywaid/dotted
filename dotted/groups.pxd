@@ -16,10 +16,11 @@ cdef class OpGroup(base.TraversalOp):
     cdef public tuple branches
 
     cpdef is_pattern(self)
+    cpdef _next_marker(self, i)
 
 
 cdef class OpGroupOr(OpGroup):
-    cpdef _next_marker(self, i)
+    pass
 
 
 cdef class OpGroupTuple(OpGroupOr):

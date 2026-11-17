@@ -426,8 +426,6 @@ def _pluck_parsed(obj, ops, strict=False, resolver=None):
     """
     seen = set()
     for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False):
-        if path is utypes.CUT_SENTINEL:
-            break
         found = results.Dotted({'ops': path})
         if found in seen:
             continue
@@ -1267,8 +1265,6 @@ def _pluck_written(obj, patterns, default=None, duplicates=False, strict=False, 
     for pattern in patterns:
         ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
         for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False, default=default):
-            if path is utypes.CUT_SENTINEL:
-                break
             field, parsed = results.Dotted({'ops': path}).written()
             if duplicates:
                 yield (field, parsed, val)

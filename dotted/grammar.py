@@ -55,12 +55,55 @@ def inner_not_action(t):
     return groups.OpGroupNot(_to_branch(item))
 
 
+_MARKERS = {'#': base.BRANCH_CUT, '##': base.BRANCH_SOFTCUT}
+
+
+def _lifted(item):
+    """
+    A term's branch, and the cut marker it brings out of a one-branch
+    group, or None. Parentheses alone don't make a group, so (a#) is
+    the branch a with a cut, and its cut is on the group it's in:
+    ((a#), b) is (a#, b). A trailing comma, (a#,), keeps the group and
+    its cut.
+    """
+    op = item
+    if isinstance(item, (list, tuple, pp.ParseResults)) and len(item) == 1:
+        op = item[0]
+    if (type(op) is groups.OpGroupOr and len(op.branches) == 2
+            and op.branches[1] in (base.BRANCH_CUT, base.BRANCH_SOFTCUT)):
+        return op.branches[0], op.branches[1]
+    return _to_branch(item), None
+
+
+def _branches_with_cuts(terms):
+    """
+    A group's branches and cut markers from its terms, each a
+    (item, marker) pair: the marker written after the term, or else the
+    one it brings out of a one-branch group (see _lifted).
+    """
+    out = []
+    for item, marker in terms:
+        branch, lifted = _lifted(item)
+        out.append(branch)
+        marker = marker or lifted
+        if marker:
+            out.append(marker)
+    return out
+
+
 def inner_and_action(t):
     """
-    Parse action for unified conjunction: atom & atom & ...
+    Parse action for unified conjunction: atom & atom & ..., a cut
+    allowed before an &: in (a#&b), once a matches, b isn't tried; in
+    (a##&b), b skips what overlaps a's matches.
     """
-    branches = [_to_branch(item) for item in t]
-    return groups.OpGroupAnd(*branches)
+    terms = []
+    for item in t:
+        if isinstance(item, str):
+            terms[-1] = (terms[-1][0], _MARKERS[item])
+            continue
+        terms.append((item, None))
+    return groups.OpGroupAnd(*_branches_with_cuts(terms))
 
 
 def inner_or_action(t):
@@ -77,15 +120,8 @@ def inner_or_action(t):
     # Single term, no cut marker — pass through (don't wrap in OpGroupOr)
     if len(terms) == 1 and len(terms[0]) == 1 and not trailing:
         return terms[0][0]
-    out = []
-    for term in terms:
-        item = term[0]
-        out.append(_to_branch(item))
-        if len(term) >= 2:
-            if term[1] == '##':
-                out.append(base.BRANCH_SOFTCUT)
-            elif term[1] == '#':
-                out.append(base.BRANCH_CUT)
+    out = _branches_with_cuts(
+        (term[0], _MARKERS[term[1]] if len(term) >= 2 else None) for term in terms)
     # with more than one branch the group is a pattern anyway: (a,b,) is (a,b)
     if trailing and len(terms) == 1:
         return groups.OpGroupTuple(*out)
@@ -105,10 +141,12 @@ def inner_to_opgroup(parsed_result):
     # If there's a single OpGroup (or packed group) result, use it directly
     if len(items) == 1 and isinstance(items[0], (groups.OpGroup, groups.Pack)):
         inner = items[0]
-        # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot
+        # Only unwrap redundant OpGroupOr wrapping a single OpGroupAnd/OpGroupNot;
+        # one with a cut keeps it, for the group around it (see _lifted)
         if isinstance(inner, groups.OpGroupOr):
             branches = list(base.branches_only(inner.branches))
-            if (len(branches) == 1 and isinstance(branches[0], tuple)
+            if (len(branches) == 1 and len(inner.branches) == 1
+                    and isinstance(branches[0], tuple)
                     and len(branches[0]) == 1
                     and isinstance(branches[0][0], (groups.OpGroupAnd, groups.OpGroupNot))):
                 return branches[0][0]
@@ -1285,7 +1323,9 @@ def _with_postfix(expr):
 # postfix, then &, then ,
 inner_atom = op_seq
 inner_not = _with_postfix((bang + inner_atom).set_parse_action(inner_not_action) | inner_atom)
-inner_and = (inner_not + OM(amp + inner_not)).set_parse_action(inner_and_action) | inner_not
+# a cut may come before an &, never after the last branch: there it is the
+# , term's, (a&b#, c)
+inner_and = (inner_not + OM(Opt(cut_marker) + amp + inner_not)).set_parse_action(inner_and_action) | inner_not
 inner_or_term = pp.Group(inner_and + Opt(cut_marker))
 # A trailing comma, (a,), right before the closing paren: kept as ','
 _trailing_comma = pp.Literal(',') + pp.Optional(pp.White()).suppress() + pp.FollowedBy(')')
@@ -1313,7 +1353,7 @@ _explicit_op_seq_cont_items = (
 _explicit_op_seq = pp.Group(_explicit_op_seq_cont_items + ZM(_explicit_op_seq_cont_items))
 _explicit_inner_atom = _explicit_op_seq
 _explicit_inner_not = _with_postfix((bang + _explicit_inner_atom).set_parse_action(inner_not_action) | _explicit_inner_atom)
-_explicit_inner_and = (_explicit_inner_not + OM(amp + _explicit_inner_not)).set_parse_action(inner_and_action) | _explicit_inner_not
+_explicit_inner_and = (_explicit_inner_not + OM(Opt(cut_marker) + amp + _explicit_inner_not)).set_parse_action(inner_and_action) | _explicit_inner_not
 _explicit_inner_or_term = pp.Group(_explicit_inner_and + Opt(cut_marker))
 _explicit_inner_or = (_explicit_inner_or_term + ZM(_comma_ws + _explicit_inner_or_term) + Opt(_trailing_comma)).set_parse_action(inner_or_action) | _explicit_inner_and
 _explicit_inner_expr <<= _explicit_inner_or

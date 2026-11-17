@@ -4,7 +4,7 @@ Base classes, sentinels, and infrastructure for the dotted element system.
 import collections
 import pyparsing as pp
 
-from .utypes import marker, ANY, CUT_SENTINEL, BRANCH_CUT, BRANCH_SOFTCUT, resolve_types  # noqa: F401
+from .utypes import marker, ANY, BRANCH_CUT, BRANCH_SOFTCUT, resolve_types  # noqa: F401
 
 
 # Generator safety (data): keep lazy things lazy as long as possible. Avoid needlessly consuming

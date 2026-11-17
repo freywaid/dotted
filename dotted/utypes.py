@@ -24,9 +24,7 @@ def resolve_types(ns, types):
     return tuple(ns[t] if isinstance(t, str) else t for t in types)
 
 
-# When a branch with cut (#) matches, we yield this after its results; consumer stops.
-CUT_SENTINEL = object()
-# Structural marker: in OpGroup.branches, means "after previous branch, emit CUT_SENTINEL and stop".
+# Structural marker: in OpGroup.branches, means "when the previous branch matches, try no later branch".
 BRANCH_CUT = object()
 # Structural marker: soft cut (##) — after previous branch, suppress later branches for keys already yielded.
 BRANCH_SOFTCUT = object()

@@ -2684,6 +2684,25 @@ If it doesn't match, evaluation falls through to the next branch.
     >>> dotted.get({'b': 2}, '(a#, b)')
     (2,)
 
+A cut holds at each node the group is at: behind a pattern, each match
+takes its own branch.
+
+    >>> dotted.get({'x': [{'a': 1}, {'a': 2, 'b': 9}, {'b': 3}]}, 'x[*].(a#, b)')
+    (1, 2, 3)
+
+A cut works in a conjunction too: in `(a#&b)`, once `a` matches, `b`
+isn't tried.
+
+    >>> dotted.get({'a': 1, 'b': 2}, '(a#&b)')
+    (1,)
+
+Parentheses alone don't make a group, so `(a#)` is the branch `a` with
+its cut, and the cut is on the group it's in: `((a#)&b)` is `(a#&b)`,
+and `((a#), b)` is `(a#, b)`. A trailing comma, `(a#,)`, keeps the
+group and its cut. A soft cut works in a conjunction as it does in a
+disjunction: in `(a##&*)`, `*` skips what overlaps `a`'s matches, and a
+branch a soft cut covers whole adds nothing but still matched.
+
 This is especially useful for "update if exists, else create" patterns:
 
     >>> data = {'emails': [{'email': 'alice@x.com', 'verified': False}]}

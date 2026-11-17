@@ -164,25 +164,12 @@ def simple_get(chain, node, strict=False):
 
 def values(ops, node, strict=False, settings=None, transforms=True, resolver=None, default=None):
     """
-    Yield the value of every match, stopping at a cut. The same values as
-    iter_until_cut(gets(...)), through one generator. transforms=False
-    skips the ops' transforms (apply_transforms=False); default is what an
-    aligned (+) match yields when the rest of the path finds nothing.
+    Yield the value of every match. transforms=False skips the ops'
+    transforms (apply_transforms=False); default is what an aligned (+)
+    match yields when the rest of the path finds nothing.
     """
     for path, val in walk(ops, node, False, strict, settings, transforms, resolver, default):
-        if path is base.CUT_SENTINEL:
-            return
         yield val
-
-
-def iter_until_cut(gen):
-    """
-    Consume a get generator until base.CUT_SENTINEL; yield values, stop on sentinel.
-    """
-    for x in gen:
-        if x is base.CUT_SENTINEL:
-            return
-        yield x
 
 
 def process(stack, paths):
@@ -243,8 +230,6 @@ def aligned(op, stack, frame, paths):
         results = list(process(stack, paths))
         stack.pop_level()
         found.extend(results)
-        if results and results[-1][0] is base.CUT_SENTINEL:
-            return found
         if not results:
             found.append((missing, match.settings.default))
     return found
@@ -272,17 +257,6 @@ def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, re
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
-
-
-def gets(ops, node, strict=False, settings=None, resolver=None):
-    """
-    Yield values for all matches. Thin wrapper around walk().
-    """
-    for path, val in walk(ops, node, False, strict, settings, True, resolver):
-        if path is base.CUT_SENTINEL:
-            yield base.CUT_SENTINEL
-        else:
-            yield val
 
 
 def _is_container(obj):
@@ -345,6 +319,4 @@ def expands(ops, node, strict=False, settings=None, resolver=None):
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
     for path, val in walk(ops, node, True, strict, settings, False, resolver):
-        if path is base.CUT_SENTINEL:
-            return
         yield Dotted({'ops': path})

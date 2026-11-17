@@ -304,60 +304,11 @@ class OpGroup(base.TraversalOp):
     def as_attrs(self):
         """
         Promote unresolved bare identifiers (parsed as Keys) to Attrs in all
-        branches.  Subclasses override to handle cut/softcut markers.
+        branches; cut markers pass through.
         """
-        return type(self)(*[_attr_branch(b) for b in self.branches])
-
-
-class OpGroupOr(OpGroup):
-    """
-    Disjunction: branches from a common point, yields all matches from all branches.
-
-    This enables syntax like:
-        a(.b,[])     - from a, get both a.b and a[]
-        a(.b#, .c)   - from a, first branch that matches wins (cut); if .b matches, stop
-        a(.b##, .c)  - soft cut: like hard cut but later branches still run for keys not covered
-
-    base.BRANCH_CUT in the sequence means: after yielding from the previous branch, yield base.CUT_SENTINEL and stop.
-    base.BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
-    """
-    def translated(self, translation, *args):
-        return translation.or_group(self, *args)
-
-    def as_attrs(self):
-        new_branches = []
-        for b in self.branches:
-            if isinstance(b, tuple):
-                new_branches.append(_attr_branch(b))
-            else:
-                new_branches.append(b)  # cut markers pass through
-        return OpGroupOr(*new_branches)
-
-    def leaf_op(self):
-        """
-        Recurse into the first non-cut branch.
-        """
-        for branch in base.branches_only(self.branches):
-            if branch:
-                return branch[0].leaf_op()
-        return self
-
-    def _render(self, top=True):
-        parts = []
-        for item in self.branches:
-            if item is base.BRANCH_CUT:
-                if parts:
-                    parts[-1] += '#'
-            elif item is base.BRANCH_SOFTCUT:
-                if parts:
-                    parts[-1] += '##'
-            else:
-                s = ''.join(op.operator(top=(top and j == 0)) for j, op in enumerate(item))
-                parts.append(s)
-        return '(' + ','.join(parts) + ')'
-
-    def __repr__(self):
-        return self._render(top=True)
+        return type(self)(*[
+            b if b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) else _attr_branch(b)
+            for b in self.branches])
 
     def _next_marker(self, i):
         """
@@ -371,6 +322,96 @@ class OpGroupOr(OpGroup):
             return nxt
         return None
 
+
+def _uncovered(results, softcut_paths, is_softcut):
+    """
+    The (path, value) `results` no soft cut before them covered: one
+    whose path overlaps a path in softcut_paths is dropped. A soft-cut
+    branch's own paths join softcut_paths as they pass (`is_softcut`).
+    """
+    for path, val in results:
+        if softcut_paths and path and softcut_paths.overlaps(path):
+            continue
+        if is_softcut and path:
+            softcut_paths.add(path)
+        yield path, val
+
+
+def _updated_at(paths, branch, node, val, has_defaults, _path, nop, settings):
+    """
+    node updated at each of `paths`, the concrete paths `branch`
+    reached. The walked paths lose their ~, so a ~ in the branch holds
+    each write back.
+    """
+    branch_nop = nop or any(isinstance(op, wrappers.NopWrap) for op in branch)
+    for path in paths:
+        node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, settings=settings)
+    return node
+
+
+def _removed_at(paths, branch, node, val, nop, settings):
+    """
+    node with each of `paths`, the concrete paths `branch` reached,
+    removed. The walked paths lose their ~, so a ~ in the branch holds
+    the branch back whole, as in _updated_at.
+    """
+    if nop or any(isinstance(op, wrappers.NopWrap) for op in branch):
+        return node
+    for path in paths:
+        node = engine.removes(list(path), node, val, settings=settings)
+    return node
+
+
+def _rendered(branches, sep, top):
+    """
+    A group's branches as written, joined by `sep`: a cut marker is `#`
+    or `##` on the branch before it.
+    """
+    parts = []
+    for item in branches:
+        if item is base.BRANCH_CUT:
+            if parts:
+                parts[-1] += '#'
+            continue
+        if item is base.BRANCH_SOFTCUT:
+            if parts:
+                parts[-1] += '##'
+            continue
+        parts.append(''.join(op.operator(top=(top and j == 0)) for j, op in enumerate(item)))
+    return sep.join(parts)
+
+
+class OpGroupOr(OpGroup):
+    """
+    Disjunction: branches from a common point, yields all matches from all branches.
+
+    This enables syntax like:
+        a(.b,[])     - from a, get both a.b and a[]
+        a(.b#, .c)   - from a, first branch that matches wins (cut); if .b matches, stop
+        a(.b##, .c)  - soft cut: like hard cut but later branches still run for keys not covered
+
+    base.BRANCH_CUT in the sequence means: when the previous branch matches, later branches are not tried.
+    base.BRANCH_SOFTCUT in the sequence means: later branches skip keys already yielded by this branch.
+    Either holds at each node the group is at: a cut ends the group's branches there, not the walk.
+    """
+    def translated(self, translation, *args):
+        return translation.or_group(self, *args)
+
+    def leaf_op(self):
+        """
+        Recurse into the first non-cut branch.
+        """
+        for branch in base.branches_only(self.branches):
+            if branch:
+                return branch[0].leaf_op()
+        return self
+
+    def _render(self, top=True):
+        return '(' + _rendered(self.branches, ',', top) + ')'
+
+    def __repr__(self):
+        return self._render(top=True)
+
     def push_children(self, stack, frame, paths):
         """
         Process branches sequentially via base.DepthStack levels.
@@ -382,9 +423,8 @@ class OpGroupOr(OpGroup):
 
     def _branch_results(self, stack, frame, paths):
         """
-        What push_children yields. A branch's level is popped before the
-        cut sentinel is yielded, so a consumer that stops at the cut
-        leaves the stack as it found it.
+        What push_children yields: each branch's results in turn, the
+        branches after a cut branch that matched left untried.
         """
         br = self.branches
         softcut_paths = SoftcutPaths()
@@ -401,20 +441,11 @@ class OpGroupOr(OpGroup):
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
             found = False
-            for path, val in engine.process(stack, use_paths):
-                if path is base.CUT_SENTINEL:
-                    break
-                if softcut_paths and path and softcut_paths.overlaps(path):
-                    continue
+            for path, val in _uncovered(engine.process(stack, use_paths), softcut_paths, is_softcut):
                 found = True
-                if is_softcut and path:
-                    softcut_paths.add(path)
                 yield (path if paths else None, val)
             stack.pop_level()
-            if not found:
-                continue
-            if marker is base.BRANCH_CUT:
-                yield (base.CUT_SENTINEL, None)
+            if found and marker is base.BRANCH_CUT:
                 return
 
     def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
@@ -429,22 +460,15 @@ class OpGroupOr(OpGroup):
             if not branch_ops:
                 continue
             marker = self._next_marker(i)
-            paths = []
-            for path, _ in engine.walk(branch_ops, node, paths=True, settings=settings):
-                if path is base.CUT_SENTINEL:
-                    break
-                if softcut_paths and path and softcut_paths.overlaps(path):
-                    continue
-                paths.append(path)
+            paths = [path for path, _ in _uncovered(
+                engine.walk(branch_ops, node, paths=True, settings=settings), softcut_paths, False)]
             if not paths and not appends(item):
                 continue
             matched_any = True
             if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths and paths:
-                branch_nop = nop or any(isinstance(op, wrappers.NopWrap) for op in item)
-                for path in paths:
-                    node = engine.updates(list(path), node, val, has_defaults, _path, branch_nop, settings=settings)
+                node = _updated_at(paths, item, node, val, has_defaults, _path, nop, settings)
             else:
                 node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
             if marker is base.BRANCH_CUT:
@@ -464,22 +488,14 @@ class OpGroupOr(OpGroup):
             if not branch_ops:
                 continue
             marker = self._next_marker(i)
-            paths = []
-            for path, _ in engine.walk(branch_ops, node, paths=True, settings=settings):
-                if path is base.CUT_SENTINEL:
-                    break
-                if softcut_paths and path and softcut_paths.overlaps(path):
-                    continue
-                paths.append(path)
+            paths = [path for path, _ in _uncovered(
+                engine.walk(branch_ops, node, paths=True, settings=settings), softcut_paths, False)]
             if not paths:
                 continue
             if marker is base.BRANCH_SOFTCUT:
                 softcut_paths.extend(p for p in paths if p)
             if softcut_paths:
-                # the walked paths lose their ~, so a branch with one is held back whole, as in do_update
-                if not (nop or any(isinstance(op, wrappers.NopWrap) for op in item)):
-                    for path in paths:
-                        node = engine.removes(list(path), node, val, settings=settings)
+                node = _removed_at(paths, item, node, val, nop, settings)
             else:
                 node = engine.removes(branch_ops, node, val, settings=settings)
             if marker is base.BRANCH_CUT:
@@ -496,9 +512,6 @@ class OpGroupTuple(OpGroupOr):
     def is_pattern(self):
         return True
 
-    def as_attrs(self):
-        return OpGroupTuple(*OpGroupOr.as_attrs(self).branches)
-
     def _render(self, top=True):
         return OpGroupOr._render(self, top)[:-1] + ',)'
 
@@ -510,15 +523,6 @@ class OpGroupFirst(OpGroup):
     def translated(self, translation, *args):
         return translation.first_group(self, *args)
 
-    def as_attrs(self):
-        new_branches = []
-        for b in self.branches:
-            if isinstance(b, tuple):
-                new_branches.append(_attr_branch(b))
-            else:
-                new_branches.append(b)
-        return OpGroupFirst(*new_branches)
-
     def leaf_op(self):
         """
         Recurse into the first non-cut branch.
@@ -529,8 +533,7 @@ class OpGroupFirst(OpGroup):
         return self
 
     def _render(self, top=True):
-        branch_strs = [''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(b)) for b in base.branches_only(self.branches)]
-        return '(' + ','.join(branch_strs) + ')?'
+        return '(' + _rendered(self.branches, ',', top) + ')?'
 
     def __repr__(self):
         return self._render(top=True)
@@ -554,8 +557,6 @@ class OpGroupFirst(OpGroup):
             if not branch:
                 continue
             for path, v in engine.walk(branch, node, paths, settings=settings):
-                if path is base.CUT_SENTINEL:
-                    break
                 return branch, path, v
         return None
 
@@ -590,8 +591,6 @@ class OpGroupFirst(OpGroup):
             if appends(branch):
                 return branch, None
             for path, v in engine.walk(branch, node, False, settings=settings):
-                if path is base.CUT_SENTINEL:
-                    break
                 return branch, v
         return None
 
@@ -659,10 +658,7 @@ class OpGroupAnd(OpGroup):
         return self
 
     def _render(self, top=True):
-        branch_strs = []
-        for branch in self.branches:
-            branch_strs.append(''.join(op.operator(top=(top and i == 0)) for i, op in enumerate(branch)))
-        return '(' + '&'.join(branch_strs) + ')'
+        return '(' + _rendered(self.branches, '&', top) + ')'
 
     def __repr__(self):
         return self._render(top=True)
@@ -688,47 +684,86 @@ class OpGroupAnd(OpGroup):
 
     def push_children(self, stack, frame, paths):
         """
-        All branches must match. Collect results per branch;
-        if any branch is empty, return nothing.
+        All branches tried must match. Collect results per branch; if
+        any branch is empty, return nothing. Once a branch a cut follows
+        matches, no later branch is tried; after a soft cut, a later
+        branch skips what overlaps its matches, and a branch it covers
+        whole adds nothing but still matched.
         """
         all_results = []
-        for branch in self.branches:
+        softcut_paths = SoftcutPaths()
+        for i, branch in enumerate(self.branches):
+            if branch in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
+                continue
             branch_ops = tuple(branch) + tuple(frame.ops)
             if not branch_ops:
                 continue
+            marker = self._next_marker(i)
+            is_softcut = marker is base.BRANCH_SOFTCUT
+            use_paths = paths or bool(softcut_paths) or is_softcut
             stack.push_level()
             stack.push(base.Frame(branch_ops, frame.node, frame.prefix, settings=frame.settings))
-            branch_results = list(engine.process(stack, paths))
+            found = list(engine.process(stack, use_paths))
             stack.pop_level()
-            if not branch_results:
+            if not found:
                 return ()
-            all_results.extend(branch_results)
+            # a loop, not a generator: push_children is cpdef, which takes no closure
+            for path, val in _uncovered(found, softcut_paths, is_softcut):
+                all_results.append((path if paths else None, val))
+            if marker is base.BRANCH_CUT:
+                break
         return all_results
 
-    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
-        for branch in self.branches:
+    def _writes(self, ops, node, creates, settings):
+        """
+        What this conjunction writes at node, or None when a branch it
+        tries neither matches there nor, with `creates`, can be created:
+        per branch, its ops (with `ops` after them), the concrete paths
+        to write at instead or None to write through the ops, and the
+        branch. Branches are tried as push_children tries them; one a
+        soft cut covers whole writes nothing.
+        """
+        writes = []
+        softcut_paths = SoftcutPaths()
+        for i, branch in enumerate(self.branches):
+            if branch in (base.BRANCH_CUT, base.BRANCH_SOFTCUT):
+                continue
             branch_ops = list(branch) + list(ops)
             if not branch_ops:
                 continue
-            if not _can_update_conjunctive_branch(branch_ops, node):
-                return node
-        for branch in self.branches:
-            branch_ops = list(branch) + list(ops)
-            if branch_ops:
+            marker = self._next_marker(i)
+            found = list(engine.walk(branch_ops, node, paths=True, settings=settings))
+            if not found and not (creates and _creatable(branch_ops)):
+                return None
+            # a branch that is created reaches the path it is
+            reached = found or [(tuple(branch_ops), None)]
+            kept = [path for path, _ in _uncovered(reached, softcut_paths, marker is base.BRANCH_SOFTCUT)]
+            if kept:
+                writes.append((branch_ops, kept if found and softcut_paths else None, branch))
+            if found and marker is base.BRANCH_CUT:
+                break
+        return writes
+
+    def do_update(self, ops, node, val, has_defaults, _path, nop, nop_from_unwrap=False, settings=base.SETTINGS):
+        writes = self._writes(ops, node, True, settings)
+        if writes is None:
+            return node
+        for branch_ops, paths, branch in writes:
+            if paths is None:
                 node = engine.updates(branch_ops, node, val, has_defaults, _path, nop, settings=settings)
+                continue
+            node = _updated_at(paths, branch, node, val, has_defaults, _path, nop, settings)
         return node
 
     def do_remove(self, ops, node, val, nop, settings=base.SETTINGS):
-        for branch in self.branches:
-            branch_ops = list(branch) + list(ops)
-            if not branch_ops:
-                continue
-            if not base.has_any(engine.gets(branch_ops, node, settings=settings)):
-                return node
-        for branch in self.branches:
-            branch_ops = list(branch) + list(ops)
-            if branch_ops:
+        writes = self._writes(ops, node, False, settings)
+        if writes is None:
+            return node
+        for branch_ops, paths, branch in writes:
+            if paths is None:
                 node = engine.removes(branch_ops, node, val, settings=settings)
+                continue
+            node = _removed_at(paths, branch, node, val, nop, settings)
         return node
 
 
@@ -800,15 +835,11 @@ class OpGroupNot(OpGroup):
 
     def _matched(self, node, settings):
         """
-        The paths, relative to node, of the inner pattern's matches, up to
-        a cut, each segment unwrapped to its access op.
+        The paths, relative to node, of the inner pattern's matches, each
+        segment unwrapped to its access op.
         """
-        out = []
-        for path, _ in engine.walk(self.inner, node, True, settings=settings):
-            if path is base.CUT_SENTINEL:
-                break
-            out.append(tuple(seg.most_inner for seg in path))
-        return out
+        return [tuple(seg.most_inner for seg in path)
+                for path, _ in engine.walk(self.inner, node, True, settings=settings)]
 
     def _complement(self, node, settings):
         """
@@ -1077,7 +1108,7 @@ class Pack(base.TraversalOp):
 
     def gather(self, node, settings=base.SETTINGS):
         """
-        The tuple of the group's matches from node, stopping at a cut.
+        The tuple of the group's matches from node, those a cut lets through.
         """
         return tuple(engine.values((self.inner,), node, settings=settings))
 
@@ -1141,18 +1172,12 @@ def _is_concrete_path(branch_ops):
     return True
 
 
-def _can_update_conjunctive_branch(branch_ops, node):
+def _creatable(branch_ops):
     """
-    Return True if we can update this conjunctive branch (for OpGroupAnd).
-    We can update if: path exists (gets yields something), OR it's a plain
-    concrete path we can create. We cannot update if: filter doesn't match
-    or path is a wildcard.
+    True if an update creates a conjunctive branch that isn't there
+    (for OpGroupAnd): a plain concrete path, no wildcard or filter.
     """
-    if base.has_any(engine.gets(branch_ops, node)):
-        return True
-    if not _is_concrete_path(branch_ops):
-        return False
-    return not _has_filter(branch_ops)
+    return _is_concrete_path(branch_ops) and not _has_filter(branch_ops)
 
 
 def _has_filter(ops):
