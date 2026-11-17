@@ -32,6 +32,19 @@ the ones listed are omitted — browse git history for earlier entries.
   `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
   "x": 1}`. They raise `TranslationError` until the translators build
   the complement, as cuts (`#`, `##`) do.
+- `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member,
+  `@.* == 1`; it read a key named `*`, `@."*" == 1`.
+- `sqlize` and `sparkize` raise `TranslationError` on inputs they
+  translated to something else: an append (`[+]`) or a concatenation
+  as a path segment, a wildcard guard value (`a=*` compared `a` with
+  the string `"*"`), and an unresolved substitution in a filter key
+  (`[$(k)=1]` read the key `k`).
+
+### Changed
+- Ops, matchers and filters reach the translators through hooks: each
+  class names its own with `translated(translation, *args)`, and a
+  translation reads each kind it supports in a `translators.core.Hooks`
+  subclass, a kind it doesn't raising in that subclass's `other`.
 
 ## [0.55.5]
 
