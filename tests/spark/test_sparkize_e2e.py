@@ -80,11 +80,14 @@ def test_top_level_group(df, path, expected):
     ('data.(user.age, users[*].age)', [1, 2, 3, 4, 5, 6]),
     ('data.users[*].(age >= 30 & active = True)', [2, 5]),
     ('data.user.(age >= 30, age < 18)', [2, 3, 4, 5, 6]),
+    ('data.(users[*], user)?.age >= 30', [2, 3, 5, 6]),
 ])
 def test_group_where(df, path, expected):
     """
     A group's `where` keeps rows where it matches. An `&` after `[*]`
-    holds per element: one user both 30+ and active.
+    holds per element: one user both 30+ and active. A first match is
+    the first user, or `user` where there are none: id=1's first user
+    is 25, so its 32 doesn't count.
     """
     assert where_ids(df, path) == expected
 
@@ -103,12 +106,15 @@ _USER_AND_USERS_AGES = {
       5: [50, 50, 18], 6: [], 7: []}),
     ('data.user.(age >= 30, age < 18)',
      {1: [], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: []}),
+    ('data.(users[*], user)?.age',
+     {1: [25], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: [None]}),
 ])
 def test_group_select(df, path, expected):
     """
     A group's `select` is each branch's matches in turn, the path after
     the group run on from each; for `&`, none unless every branch
-    matches.
+    matches. A first match is one node, the path after it run from it:
+    the first user, or `user` where there are none.
     """
     r = sparkize(path)
     assert selected(df, r.build(r.select)) == expected

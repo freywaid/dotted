@@ -524,14 +524,16 @@ class Translator:
         A path group's kind and its branches: `'or'` for `(a, b)`, each
         branch's matches in turn; `'and'` for `(a & b)`, those only
         where every branch matches. A branch runs on into the path after
-        the group, at each node the group is at.
+        the group, at each node the group is at. `'first'` for
+        `(a, b)?`: the first match of the first branch to match, the
+        branch alone; the path after the group runs on from it.
         """
         if isinstance(group_op, _groups.OpGroupNot):
             raise TranslationError('negation group (!) not supported yet')
-        if isinstance(group_op, _groups.OpGroupFirst):
-            raise TranslationError('first-match group (?) not supported yet')
         if any(b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) for b in group_op.branches):
             raise TranslationError('cut (# or ##) in a group not supported yet')
+        if isinstance(group_op, _groups.OpGroupFirst):
+            return 'first', group_op.branches
         if isinstance(group_op, _groups.OpGroupAnd):
             return 'and', group_op.branches
         if isinstance(group_op, _groups.OpGroupOr):
@@ -542,7 +544,8 @@ class Translator:
 
     def _combine_group(self, kind, preds):
         """
-        Branch predicates joined per the group's kind.
+        Branch predicates joined per the group's kind: a first match
+        is there where some branch matches, as for `'or'`.
         """
         if kind == 'and':
             return self._combine_and(preds)
@@ -554,6 +557,10 @@ class Translator:
         complete path from its own column, the rest of the path after it.
         """
         kind, branches = self._grouped(group_op)
+        if kind == 'first' and rest:
+            raise TranslationError(
+                'path after a top-level first-match group (?) not supported yet'
+            )
         wheres = []
         for branch in branches:
             where = self._translate(tuple(branch) + tuple(rest)).get('where')
@@ -567,14 +574,16 @@ class Translator:
     def _group(self, col, prefix, group_op, rest):
         """
         A group at one node, `rest` the path after it. Its matches are
-        the pattern path's. When no branch reaches a pattern, its
-        `where` is the branches' own, joined: a group of guards stays
-        plain predicates.
+        the pattern path's. When no branch of a `,` or `&` group reaches
+        a pattern, its `where` is the branches' own, joined: a group of
+        guards stays plain predicates. A first match's rest runs from
+        the match, not from each branch, so it keeps the pattern's.
         """
         kind, branches = self._grouped(group_op)
         ways = [tuple(branch) + rest for branch in branches]
         wheres = None
-        if not any(_op_is_pattern_like(op) for way in ways for op in way):
+        plain = not any(_op_is_pattern_like(op) for way in ways for op in way)
+        if kind != 'first' and plain:
             wheres = [self._walk(col, prefix, way).get('where') for way in ways]
         out = self._patterned(col, prefix, (group_op,) + rest)
         if wheres is None or any(where is None for where in wheres):

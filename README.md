@@ -3768,10 +3768,21 @@ both, a JSONPath filter on each element. A group of guards,
 `data.(a = 1, b = 2)`, keeps plain predicates for `r.where`; its
 `r.select` is its matches.
 
-`!` groups, cuts (`#`, `##`) and first-match groups (`?`) raise
-`TranslationError` for now. dotted's `!` is the complement of what its
-path matches, not `NOT`: `data.(!(status = "banned"))` matches `x` in
-`{"status": "banned", "x": 1}`.
+A first-match group, `(a, b)?`, is the first match of the first branch
+to have one, the branch alone; the path after the group runs on from
+that match, and a guard after it tests that match. JSONPath has no
+first, so it reads at each node with `jsonb_path_query_first` and
+`COALESCE`, a lateral per node, and `r.where` is an `EXISTS` over the
+same rows:
+
+    >>> r = dotted.sqlize('data.(users[*], user)?.age >= 30', driver='asyncpg')
+    >>> str(r.where)
+    "EXISTS (SELECT _pat1.value FROM LATERAL jsonb_path_query(COALESCE(jsonb_path_query_first(data, '$.users[*]'), jsonb_path_query_first(data, '$.user')), '$.age ? (@ >= 30)') AS _pat1(value))"
+
+`!` groups and cuts (`#`, `##`) raise `TranslationError` for now.
+dotted's `!` is the complement of what its path matches, not `NOT`:
+`data.(!(status = "banned"))` matches `x` in `{"status": "banned",
+"x": 1}`.
 
 Not yet supported:
 - Regex-in-access like `data./prefix_\d+/.field`
@@ -4074,10 +4085,19 @@ group matches only where every branch does, at each node it is at:
     r = dotted.sparkize('data.users[*].(age >= 30 & active = True)')
     df.where(r.build(r.where))      # rows with one user both 30+ and active
 
+A first-match group, `(a, b)?`, is the first match of the first branch
+to have one, the path after it run on from that match. A null is no
+match, as for `where`:
+
+    r = dotted.sparkize('data.(users[*], user)?.age')
+    df.select(r.build(r.select))    # per row, the first user's age, else user.age
+
 `concat` needs one element type, so a group whose branches reach
-different types fails when Spark analyzes the Column. `!` groups (the
-complement of what their path matches, not `~`), cuts (`#`, `##`) and
-first-match groups (`?`) raise `TranslationError` for now.
+different types fails when Spark analyzes the Column; after a
+first-match group, only what the rest of the path reaches needs to
+share one. `!` groups (the
+complement of what their path matches, not `~`) and cuts (`#`, `##`)
+raise `TranslationError` for now.
 
 `**`, and `*` over a struct's fields, need the schema — Spark can't
 iterate struct fields at run time — and raise `TranslationError`.

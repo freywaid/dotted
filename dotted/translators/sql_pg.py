@@ -196,6 +196,45 @@ def _segments(tail):
     return segments
 
 
+def _joined(fragments):
+    """
+    Fragments joined into one `(text, jvars)`.
+    """
+    text, jvars = '', {}
+    for fragment in fragments:
+        text += fragment.text
+        jvars = {**jvars, **fragment.jvars}
+    return text, jvars
+
+
+def _anywhere(parts, test):
+    """
+    True if `test` holds for a part of `parts`, one in a group's branch
+    included.
+    """
+    for part in parts:
+        if test(part):
+            return True
+        if isinstance(part, _Group) and any(_anywhere(b, test) for b in part.branches):
+            return True
+    return False
+
+
+def _is_first(part):
+    """
+    True if `part` is a first-match group (?).
+    """
+    return isinstance(part, _Group) and part.kind == 'first'
+
+
+def _is_split(part):
+    """
+    True if `part` is a group or an aligned (+) op: where rows read in
+    dotted's order take a lateral of their own.
+    """
+    return isinstance(part, _Group) or part.aligned
+
+
 # ---- Cast inference for Postgres ------------------------------------
 #
 # Postgres drivers that use server-side prepared statements (asyncpg
@@ -393,48 +432,154 @@ class PostgresMixin(Translator):
         its matches in a `LEFT JOIN LATERAL ... ON TRUE`, so a match the
         rest finds nothing under yields one NULL.
 
-        A path through groups runs as its tails (`_tails`): `where`
-        holds when any tail matches, and the lateral yields every
-        tail's matches, `UNION ALL`.
+        A path through `,` and `&` groups runs as its tails (`_tails`):
+        `where` holds when any tail matches, and the lateral yields
+        every tail's matches, `UNION ALL`. JSONPath has no first, so a
+        path through a first-match group (?) runs a lateral at each node
+        a group or aligned op is at (`_rows`), and `where` holds when it
+        yields a row.
         """
         parts = [self._jsonpath_head(prefix)] + self._jsonpath_parts(ops)
-        tails = [
-            [(_pg_string_literal('$' + text), jvars)
-             for text, jvars in _segments(tail)]
-            for tail in _tails(parts)
-        ]
-        wheres = [self._pattern_where(col_ident, *tail[0]) for tail in tails]
-        if len(tails) == 1:
-            lateral, alias = self._chain(col_ident, tails[0])
-            return {'select': f'{alias}.value', 'where': wheres[0],
-                    'lateral': lateral}
+        where = self._some(col_ident, parts)
+        if not _anywhere(parts, _is_first):
+            tails = _tails(parts)
+            if len(tails) == 1:
+                lateral, alias = self._chain(col_ident, _segments(tails[0]))
+                return {'select': f'{alias}.value', 'where': where,
+                        'lateral': lateral}
         alias = self._state.alloc_pattern_alias()
-        queries = []
-        for tail in tails:
-            chain, last = self._chain(col_ident, tail)
-            queries.append(f'SELECT {last}.value FROM {chain}')
-        union = ' UNION ALL '.join(queries)
-        return {'select': f'{alias}.value',
-                'where': self._combine_or(wheres),
-                'lateral': f'LATERAL ({union}) AS {alias}(value)'}
+        rows = self._rows(col_ident, parts)
+        return {'select': f'{alias}.value', 'where': where,
+                'lateral': f'LATERAL ({rows}) AS {alias}(value)'}
 
-    def _chain(self, col_ident, segments):
+    def _rows(self, src, parts, ordered=False):
         """
-        The laterals a tail's `(jsonpath_sql, jvars)` segments run
-        through, and the alias of the last: the first segment's matches
-        in `col_ident`, then each later segment under a match of the one
-        before.
+        SQL query of the rows `parts` reach from the jsonb `src`, a
+        `value` each. Without a first-match group, and unless `ordered`,
+        it runs as its tails, `UNION ALL`. Otherwise it runs a lateral
+        at each node a group or an aligned (+) op is at, so its rows
+        come in the order dotted reaches them. `ordered` is for a first
+        match: there an aligned op's default is a JSON null, a match.
         """
-        (jsonpath_sql, jvars), *rest = segments
+        if not ordered and not _anywhere(parts, _is_first):
+            return self._tail_rows(src, parts)
+        i = next((i for i, part in enumerate(parts) if _is_split(part)), None)
+        if i is None:
+            return self._tail_rows(src, parts)
+        part, rest = parts[i], parts[i + 1:]
+        if isinstance(part, _Group):
+            text, jvars = _joined(parts[:i])
+            if not text:
+                return self._rows_at(src, part, rest, ordered)
+            node = self._state.alloc_pattern_alias()
+            under = self._rows_at(f'{node}.value', part, rest, ordered)
+            found = self._state.alloc_pattern_alias()
+            nodes = self._path_call('jsonb_path_query', src, text, jvars)
+            return (f'SELECT {found}.value FROM {nodes} AS {node}(value) '
+                    f'CROSS JOIN LATERAL ({under}) AS {found}(value)')
+        # an aligned op: what follows runs under each of its matches,
+        # which keeps a row where it finds nothing
+        node = self._state.alloc_pattern_alias()
+        under = self._rows(f'{node}.value', rest, ordered)
+        found = self._state.alloc_pattern_alias()
+        nodes = self._path_call('jsonb_path_query', src, *_joined(parts[:i + 1]))
+        value = f'{found}.value'
+        if ordered:
+            value = f"COALESCE({value}, 'null'::jsonb)"
+        return (f'SELECT {value} FROM {nodes} AS {node}(value) '
+                f'LEFT JOIN LATERAL ({under}) AS {found}(value) ON TRUE')
+
+    def _rows_at(self, node, group, rest, ordered):
+        """
+        SQL query of the rows a group at the jsonb `node` reaches,
+        `rest` the parts after it: its ways' rows, `UNION ALL`; for an
+        `&`, only where every way reaches something; for a first match,
+        the rest's from it.
+        """
+        if group.kind == 'first':
+            return self._rows(self._first(node, group.branches), rest, ordered)
+        ways = [list(branch) + list(rest) for branch in group.branches]
+        union = ' UNION ALL '.join(self._rows(node, way, ordered) for way in ways)
+        if group.kind == 'or':
+            return union
+        held = self._combine_and([self._some(node, way) for way in ways])
         alias = self._state.alloc_pattern_alias()
-        lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
-        for jsonpath_sql, jvars in rest:
+        return (f'SELECT {alias}.value FROM ({union}) AS {alias}(value) '
+                f'WHERE {held}')
+
+    def _tail_rows(self, src, parts):
+        """
+        SQL query of the rows a path without a first-match group
+        reaches from the jsonb `src`: each tail's, `UNION ALL`.
+        """
+        queries = []
+        for tail in _tails(parts):
+            chain, alias = self._chain(src, _segments(tail))
+            queries.append(f'SELECT {alias}.value FROM {chain}')
+        return ' UNION ALL '.join(queries)
+
+    def _some(self, src, parts):
+        """
+        SQL boolean: `parts` reach something from the jsonb `src`.
+        Without a first-match group some tail does, up to its first
+        aligned (+) op; with one, its rows have a row.
+        """
+        if _anywhere(parts, _is_first):
+            return f'EXISTS ({self._rows(src, parts)})'
+        tests = [self._path_call('jsonb_path_exists', src, *_segments(tail)[0])
+                 for tail in _tails(parts)]
+        if len(tests) == 1:
+            return tests[0]
+        return self._combine_or(tests)
+
+    def _first(self, node, branches):
+        """
+        SQL jsonb of a first-match group's match at the jsonb `node`:
+        the first match of the first branch to have one, the branch
+        alone; NULL where none does.
+        """
+        firsts = [self._first_of(node, branch) for branch in branches]
+        if len(firsts) == 1:
+            return firsts[0]
+        return f'COALESCE({", ".join(firsts)})'
+
+    def _first_of(self, src, parts):
+        """
+        SQL jsonb of the first row `parts` reach from the jsonb `src`,
+        in the order dotted reaches them; NULL where there is none.
+        """
+        if not any(_is_split(part) for part in parts):
+            return self._path_call('jsonb_path_query_first', src, *_joined(parts))
+        alias = self._state.alloc_pattern_alias()
+        rows = self._rows(src, parts, ordered=True)
+        return f'(SELECT {alias}.value FROM ({rows}) AS {alias}(value) LIMIT 1)'
+
+    def _chain(self, src, segments):
+        """
+        The laterals a tail's `(text, jvars)` segments run through, and
+        the alias of the last: the first segment's matches in the jsonb
+        `src`, then each later segment under a match of the one before.
+        """
+        (text, jvars), *rest = segments
+        alias = self._state.alloc_pattern_alias()
+        query = self._path_call('jsonb_path_query', src, text, jvars)
+        lateral = f'LATERAL {query} AS {alias}(value)'
+        for text, jvars in rest:
             source = f'{alias}.value'
             alias = self._state.alloc_pattern_alias()
-            lateral += (f' LEFT JOIN '
-                        f'{self._pattern_lateral(source, jsonpath_sql, jvars, alias)}'
-                        f' ON TRUE')
+            query = self._path_call('jsonb_path_query', source, text, jvars)
+            lateral += f' LEFT JOIN LATERAL {query} AS {alias}(value) ON TRUE'
         return lateral, alias
+
+    def _path_call(self, fn, src, text, jvars):
+        """
+        `fn(src, '$text'[, vars])`: a JSONPath function on the jsonb
+        `src`, its JSONPath vars passed as a `jsonb_build_object`.
+        """
+        jsonpath_sql = _pg_string_literal('$' + text)
+        if not jvars:
+            return f'{fn}({src}, {jsonpath_sql})'
+        return f'{fn}({src}, {jsonpath_sql}, {self._build_jsonpath_vars(jvars)})'
 
     # ---- Pattern paths via jsonb_path_exists ------------------------
 
@@ -461,8 +606,15 @@ class PostgresMixin(Translator):
         parts = []
         for op in ops:
             if isinstance(op, _groups.OpGroup):
-                kind, branches = self._grouped(op)
-                parts.append(_Group(kind, [self._jsonpath_parts(b) for b in branches]))
+                parts.append(self._group_part(op))
+                continue
+            # a guard on a group, (a, b)?=1, tests each of its matches
+            if (isinstance(op, wrappers.ValueGuard)
+                    and isinstance(op.inner, _groups.OpGroup)):
+                parts.append(self._group_part(op.inner))
+                jvars = {}
+                guard = self._guard_to_jsonpath(op, jvars)
+                parts.append(_Fragment(f' ? ({guard})', jvars, False))
                 continue
             jvars = {}
             frag, trailing_filter = self._op_to_jsonpath(op, jvars)
@@ -471,33 +623,12 @@ class PostgresMixin(Translator):
             parts.append(_Fragment(frag, jvars, op.is_aligned()))
         return parts
 
-    def _pattern_where(self, col_ident, jsonpath_sql, jvars):
+    def _group_part(self, op):
         """
-        Emit `jsonb_path_exists(col, 'jsonpath'[, vars_jsonb])` — the
-        filter-style rendering of a pattern path. Keeps the rows where
-        the pattern matches; same input row → zero or one output row.
+        A group as a `_Group`: its kind and each branch's parts.
         """
-        if not jvars:
-            return f'jsonb_path_exists({col_ident}, {jsonpath_sql})'
-        return (f'jsonb_path_exists({col_ident}, {jsonpath_sql}, '
-                f'{self._build_jsonpath_vars(jvars)})')
-
-    def _pattern_lateral(self, col_ident, jsonpath_sql, jvars, alias):
-        """
-        Emit a `LATERAL jsonb_path_query(...) AS <alias>(value)` clause
-        — the extract-style rendering of a pattern path. One input row
-        → N output rows (one per match), each exposing the matched
-        value as `<alias>.value`.
-
-        Returned without a leading comma or `CROSS JOIN` keyword so the
-        caller picks the attachment syntax (comma, `CROSS JOIN`, `LEFT
-        JOIN ... ON TRUE`, …).
-        """
-        if not jvars:
-            return (f'LATERAL jsonb_path_query({col_ident}, {jsonpath_sql}) '
-                    f'AS {alias}(value)')
-        return (f'LATERAL jsonb_path_query({col_ident}, {jsonpath_sql}, '
-                f'{self._build_jsonpath_vars(jvars)}) AS {alias}(value)')
+        kind, branches = self._grouped(op)
+        return _Group(kind, [self._jsonpath_parts(b) for b in branches])
 
     def _build_jsonpath_vars(self, jvars):
         """

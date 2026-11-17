@@ -327,17 +327,97 @@ def test_top_level_group_continues_after():
     )
 
 
+def test_first_match_group():
+    """
+    A first-match group is the first match of the first branch to have
+    one: COALESCE over each branch's first, run on with the rest.
+    """
+    r = sqlize('data.(a, b)?.c')
+    first = ("COALESCE(jsonb_path_query_first(data, '$.a'), "
+             "jsonb_path_query_first(data, '$.b'))")
+    assert Resolver.build(r.where) == (
+        f"EXISTS (SELECT _pat1.value FROM LATERAL "
+        f"jsonb_path_query({first}, '$.c') AS _pat1(value))",
+        {},
+    )
+    assert Resolver.build(r.select) == ('_pat2.value', {})
+    assert Resolver.build(r.lateral) == (
+        f"LATERAL (SELECT _pat3.value FROM LATERAL "
+        f"jsonb_path_query({first}, '$.c') AS _pat3(value)) AS _pat2(value)",
+        {},
+    )
+
+
+def test_first_match_group_per_node():
+    """
+    After `[*]`, the first match is each element's.
+    """
+    r = sqlize('data.users[*].(a, b)?')
+    first = ("COALESCE(jsonb_path_query_first(_pat5.value, '$.a'), "
+             "jsonb_path_query_first(_pat5.value, '$.b'))")
+    assert Resolver.build(r.lateral) == (
+        "LATERAL (SELECT _pat7.value FROM "
+        "jsonb_path_query(data, '$.users[*]') AS _pat5(value) "
+        "CROSS JOIN LATERAL (SELECT _pat6.value FROM LATERAL "
+        f"jsonb_path_query({first}, '$') AS _pat6(value)) AS _pat7(value)) "
+        "AS _pat4(value)",
+        {},
+    )
+
+
+def test_guard_after_first_match_group():
+    """
+    A guard after a first-match group tests the first match; it does
+    not go on to the next branch.
+    """
+    r = sqlize('data.(a, b)?=1')
+    first = ("COALESCE(jsonb_path_query_first(data, '$.a'), "
+             "jsonb_path_query_first(data, '$.b'))")
+    assert Resolver.build(r.where) == (
+        f"EXISTS (SELECT _pat1.value FROM LATERAL "
+        f"jsonb_path_query({first}, '$ ? (@ == 1)') AS _pat1(value))",
+        {},
+    )
+
+
+def test_first_match_of_a_branch_through_a_group():
+    """
+    A branch through a group gives its first match in the order dotted
+    reaches them, per node: a lateral at each node, the first row.
+    """
+    r = sqlize('data.(a[*].(q, p))?')
+    sql, _ = Resolver.build(r.lateral)
+    assert ("(SELECT _pat8.value FROM (SELECT _pat12.value FROM "
+            "jsonb_path_query(data, '$.a[*]') AS _pat9(value) "
+            "CROSS JOIN LATERAL (SELECT _pat10.value FROM LATERAL "
+            "jsonb_path_query(_pat9.value, '$.q') AS _pat10(value) "
+            "UNION ALL SELECT _pat11.value FROM LATERAL "
+            "jsonb_path_query(_pat9.value, '$.p') AS _pat11(value)) "
+            "AS _pat12(value)) AS _pat8(value) LIMIT 1)") in sql
+
+
+def test_top_level_first_match_group():
+    """
+    At the top of a path, a first match is there where some branch
+    matches.
+    """
+    r = sqlize('(age=18, status="a")?')
+    assert Resolver.build(r.where) == (
+        '(age = :_p1) OR (status = :_p2)', {'_p1': 18, '_p2': 'a'})
+
+
 @pytest.mark.parametrize('path', [
     'data.(!(status="banned"))',
     '!(status="banned")',
     'data.(x#, y)',
     'data.(x##, y)',
-    'data.(x, y)?',
+    '(a, b)?.c',
 ])
 def test_group_not_supported_yet_raises(path):
     """
-    `!` (the complement of what its path matches, not NOT), cuts and
-    first-match raise rather than translate to anything else.
+    `!` (the complement of what its path matches, not NOT), cuts, and
+    a path after a top-level first-match group raise rather than
+    translate to anything else.
     """
     with pytest.raises(TranslationError, match='not supported yet'):
         sqlize(path)

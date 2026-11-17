@@ -129,6 +129,34 @@ def test_and_group_per_element(query):
                       'data.users[*].(age >= 30 & active = True)') == [2, 5]
 
 
+def test_first_match_group(query):
+    # the first user's age, or user's where there are no users: id=1's
+    # first user is 25, so its 32 doesn't count
+    assert _run_where(query, 'data.(users[*], user)?.age >= 30') \
+        == [2, 3, 5, 6]
+
+
+def test_guard_after_first_match_group(query):
+    # only id=7 has no user.age, so only there is role the first match;
+    # elsewhere the guard fails on age and doesn't go on to role
+    assert _run_where(query, 'data.user.(age, role)? = "guest"') == [7]
+
+
+def test_lateral_first_match_group(query):
+    """
+    One row per row with a first match: the first user's age, or
+    user's where there are no users; id=7's user has no age.
+    """
+    r = sqlize('data.(users[*], user)?.age', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    sql = (f'SELECT id, {sel_sql} AS age '
+           f'FROM dotted_test.items, {lat_sql}')
+    rows = query(sql, ())
+    pairs = sorted((r['id'], int(r['age'])) for r in rows)
+    assert pairs == [(1, 25), (2, 35), (3, 40), (4, 17), (5, 50), (6, 30)]
+
+
 def test_lateral_group_continues_after(query):
     """
     The path after a group runs on from each branch: user.age, then

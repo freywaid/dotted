@@ -98,6 +98,10 @@ def _compare(lhs, op_str, value):
 #                        of the steps after each: 'or' yields what they
 #                        all reach, 'and' that only where every branch
 #                        reaches something
+#   ('first', branches)
+#                      — the first match of the first branch to reach
+#                        one from the node, the branch alone; the rest
+#                        of the steps run from it
 #
 # An aligned (+) `each` carries a third item, ('each', kind, 'aligned'):
 # each element yields what the rest of the steps reach, or one null.
@@ -135,6 +139,11 @@ def _exists(c, steps, env):
         rest = steps[i + 1:]
         if kind == 'group':
             return _group_exists(c, step, rest, env)
+        if kind == 'first':
+            return _by_first(
+                c, step[1], env,
+                lambda first: _functions().exists(first, lambda x: _exists(x, rest, env)),
+                _functions().lit(False))
         if kind == 'cond':
             pred = step[1](c, env)
             if not rest:
@@ -182,29 +191,64 @@ def _collect(c, steps, env):
             continue
         if kind == 'group':
             return _group_collect(c, step, steps[i + 1:], env)
+        rest = steps[i + 1:]
+        if kind == 'first':
+            return _by_first(c, step[1], env,
+                             lambda first: _onward(first, rest, env), F.array())
         if kind == 'cond':
-            candidates = F.array(c)
-            rest = steps[i:]
-        else:
-            candidates = _elements(c, step[1])
-            rest = steps[i + 1:]
-        # conditions straight after filter these candidates; `filter`
-        # calls the lambda at once, so closing over `pred_fn` is safe
-        # (a default argument would be taken for the element index)
-        while rest and rest[0][0] == 'cond':
-            pred_fn = rest[0][1]
-            candidates = F.filter(candidates, lambda x: pred_fn(x, env))
-            rest = rest[1:]
-        if not rest:
-            return candidates
-        if len(step) > 2:
-            return F.flatten(
-                F.transform(candidates, lambda x: _filled(_collect(x, rest, env))))
-        if all(s[0] == 'get' for s in rest):
-            return F.transform(candidates, lambda x: _gets(x, rest, env))
-        return F.flatten(
-            F.transform(candidates, lambda x: _collect(x, rest, env)))
+            return _onward(F.array(c), steps[i:], env)
+        return _onward(_elements(c, step[1]), rest, env, aligned=len(step) > 2)
     return F.array(c)
+
+
+def _onward(candidates, rest, env, aligned=False):
+    """
+    Array Column of what the steps `rest` reach from each node of the
+    array `candidates`. For an aligned `each`, each node yields what
+    they reach, or one null.
+    """
+    F = _functions()
+    # conditions straight after filter these candidates; `filter`
+    # calls the lambda at once, so closing over `pred_fn` is safe
+    # (a default argument would be taken for the element index)
+    while rest and rest[0][0] == 'cond':
+        pred_fn = rest[0][1]
+        candidates = F.filter(candidates, lambda x: pred_fn(x, env))
+        rest = rest[1:]
+    if not rest:
+        return candidates
+    if aligned:
+        return F.flatten(
+            F.transform(candidates, lambda x: _filled(_collect(x, rest, env))))
+    if all(s[0] == 'get' for s in rest):
+        return F.transform(candidates, lambda x: _gets(x, rest, env))
+    return F.flatten(
+        F.transform(candidates, lambda x: _collect(x, rest, env)))
+
+
+def _first_of(c, branch, env):
+    """
+    Array Column of the first non-null node `branch` reaches from `c`,
+    or empty. A null is no match, as in `_exists`.
+    """
+    F = _functions()
+    found = F.filter(_collect(c, branch, env), lambda x: x.isNotNull())
+    return F.slice(found, 1, 1)
+
+
+def _by_first(c, branches, env, then, otherwise):
+    """
+    The Column `then(first)` gives for the first of `branches` to reach
+    a match from `c`, `first` the array of that match; `otherwise`
+    where none does. Each branch's case runs on from its own match, so
+    branches that reach different types still share what follows.
+    """
+    F = _functions()
+    firsts = [_first_of(c, branch, env) for branch in branches]
+    case = F.when(F.size(firsts[0]) > 0, then(firsts[0]))
+    for first in firsts[1:]:
+        case = case.when(F.size(first) > 0, then(first))
+    return case.otherwise(otherwise)
 
 
 _JOIN = {'or': operator.or_, 'and': operator.and_}
@@ -383,13 +427,16 @@ class PySparkMixin(Translator):
 
     def _group_steps(self, op):
         """
-        The one step for a group: its kind and each branch's steps.
-        Returns (steps, unbound).
+        The one step for a group: each branch's steps, for a first
+        match or for a group of its kind. Returns (steps, unbound).
         """
         kind, branches = self._grouped(op)
         parts = [self._ops_steps(branch) for branch in branches]
-        step = ('group', kind, tuple(steps for steps, _ in parts))
-        return [step], _merged(*(unbound for _, unbound in parts))
+        branch_steps = tuple(steps for steps, _ in parts)
+        unbound = _merged(*(unbound for _, unbound in parts))
+        if kind == 'first':
+            return [('first', branch_steps)], unbound
+        return [('group', kind, branch_steps)], unbound
 
     def _op_steps(self, op):
         """

@@ -90,6 +90,9 @@ def test_pattern_has_select_and_where():
     'event.data.(amount, reporting_amount)',
     'data.users[*].(age & active)',
     'data.(x=1, y)',
+    'data.(users[*], user)?.age',
+    'data.users[*].(a, b)?',
+    'data.(a, b)?=1',
 ])
 def test_group_has_select_and_where(path):
     """
@@ -105,12 +108,13 @@ def test_group_has_select_and_where(path):
     '!(status="banned")',
     'data.(x#, y)',
     'data.(x##, y)',
-    'data.(x, y)?',
+    '(a, b)?.c',
 ])
 def test_group_not_supported_yet_raises(path):
     """
-    `!` (the complement of what its path matches, not NOT), cuts and
-    first-match raise rather than translate to anything else.
+    `!` (the complement of what its path matches, not NOT), cuts, and
+    a path after a top-level first-match group raise rather than
+    translate to anything else.
     """
     with pytest.raises(TranslationError, match='not supported yet'):
         sparkize(path)

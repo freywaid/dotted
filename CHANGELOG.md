@@ -15,6 +15,13 @@ the ones listed are omitted — browse git history for earlier entries.
   True)` needs one user who is both. `sqlize` reads a path through
   groups as one JSONPath per way through them (`UNION ALL` in
   `r.lateral`); `sparkize` joins the branches' matches with `concat`.
+- `sqlize` and `sparkize` translate first-match groups, `(a, b)?`: the
+  first match of the first branch to have one, the branch alone, the
+  path after it run on from that match, at each node the group is at.
+  A guard after the group tests that match: `data.(users[*], user)?.age
+  >= 30` is the first user's age, or `user`'s where there are none.
+  `sqlize` reads it with `jsonb_path_query_first` and `COALESCE`, a
+  lateral per node; `sparkize` takes the first non-null match.
 
 ### Fixed
 - A group of guards, `data.(a = 1, b = 2)`, selects its matches, as
@@ -24,7 +31,7 @@ the ones listed are omitted — browse git history for earlier entries.
   they mean: `!` is the complement of what its path matches, so
   `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
   "x": 1}`. They raise `TranslationError` until the translators build
-  the complement, as cuts (`#`, `##`) and first-match groups (`?`) do.
+  the complement, as cuts (`#`, `##`) do.
 
 ## [0.55.5]
 
