@@ -85,6 +85,37 @@ def test_pattern_has_select_and_where():
     assert list(r) == ['select', 'where']
 
 
+@pytest.mark.parametrize('path', [
+    'event.(data, data.components[*]).(amount, reporting_amount)',
+    'event.data.(amount, reporting_amount)',
+    'data.users[*].(age & active)',
+    'data.(x=1, y)',
+])
+def test_group_has_select_and_where(path):
+    """
+    A group in a path, the path going on after it or not, is a pattern
+    path: both fragments.
+    """
+    r = sparkize(path)
+    assert list(r) == ['select', 'where']
+
+
+@pytest.mark.parametrize('path', [
+    'data.(!(status="banned"))',
+    '!(status="banned")',
+    'data.(x#, y)',
+    'data.(x##, y)',
+    'data.(x, y)?',
+])
+def test_group_not_supported_yet_raises(path):
+    """
+    `!` (the complement of what its path matches, not NOT), cuts and
+    first-match raise rather than translate to anything else.
+    """
+    with pytest.raises(TranslationError, match='not supported yet'):
+        sparkize(path)
+
+
 def test_unbound_substitution():
     """
     A value-position substitution stays unbound until build.

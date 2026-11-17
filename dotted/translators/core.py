@@ -28,7 +28,8 @@ Flavor hooks (each flavor mixin implements them):
                                       → predicate for a guard inside
                                         the column
     _pattern(col, prefix, ops)        → fragments dict for a pattern
-                                        path (wildcards, filters, `**`)
+                                        path (wildcards, filters, `**`,
+                                        groups)
     _combine_and(preds) / _combine_or(preds) / _combine_not(pred)
                                       → boolean composition
 
@@ -44,6 +45,7 @@ expression; turning that into the target's public result is the
 flavor's `translate()`.
 """
 from .. import access
+from .. import base
 from .. import filters as _filters
 from .. import groups as _groups
 from .. import matchers
@@ -77,6 +79,30 @@ def _op_is_pattern_like(op):
     if hasattr(op, 'is_pattern') and op.is_pattern():
         return True
     return False
+
+
+def _check_guards(ops, followed=False):
+    """
+    Raise if a value guard has more path after it, a group's branch
+    included: there the path goes on with what follows the group.
+    `followed` says more path follows `ops`.
+    """
+    for i, op in enumerate(ops):
+        more = followed or i < len(ops) - 1
+        if isinstance(op, wrappers.ValueGuard) and more:
+            raise TranslationError('path continues after value guard')
+        if not isinstance(op, _groups.OpGroup):
+            continue
+        for branch in base.branches_only(op.branches):
+            _check_guards(branch, more)
+
+
+def _only_branch(op):
+    """
+    The one branch of a group that is not a pattern, (a) or (a.b): it
+    reads as its branch spliced into the path.
+    """
+    return tuple(next(base.branches_only(op.branches)))
 
 
 def _is_table_key(op):
@@ -202,11 +228,12 @@ class Translator:
             col = self._column(self._column_name(col_op.inner))
             where = self._scalar_predicate(col_op, col)
             return self._result(select=col, where=where)
-        # Top-level group: each branch is a complete path with its own column.
+        # Top-level group: each branch is a complete path with its own
+        # column, the rest of the path after it.
         if isinstance(col_op, _groups.OpGroup):
-            if rest:
-                raise TranslationError('path continues after top-level group')
-            where = self._translate_top_group(col_op)
+            if not col_op.is_pattern():
+                return self._translate(_only_branch(col_op) + tuple(rest))
+            where = self._translate_top_group(col_op, rest)
             return self._result(where=where)
         # Otherwise first op must be a plain Key naming the column.
         col = self._column(self._column_name(col_op))
@@ -402,18 +429,17 @@ class Translator:
             raise TranslationError('type restriction not supported')
         if isinstance(op.most_inner, _groups.Pack):
             raise TranslationError('packed group not supported')
-        # Groups: each branch is walked independently, so dispatch first
-        # (OpGroup has is_pattern=True but shouldn't take the pattern-mode
-        # path wholesale).
         if isinstance(op, _groups.OpGroup):
-            if rest:
-                raise TranslationError('path continues after group')
-            return self._translate_group(op, col, prefix)
-        # If any remaining op introduces a pattern-like segment (wildcard,
-        # recursive, filter bracket), the flavor's pattern mode takes the
-        # whole remainder.
-        if any(_op_is_pattern_like(o) for o in ops):
-            return self._pattern(col, prefix, ops)
+            if not op.is_pattern():
+                return self._walk(col, prefix, _only_branch(op) + tuple(rest))
+            return self._group(col, prefix, op, tuple(rest))
+        # If a remaining op introduces a pattern-like segment (wildcard,
+        # recursive, filter bracket) before any group, the flavor's
+        # pattern mode takes the whole remainder; up to a group, the
+        # walk goes on, so the group is read at its node.
+        lead = next((o for o in ops if _op_is_pattern_like(o)), None)
+        if lead is not None and not isinstance(lead, _groups.OpGroup):
+            return self._patterned(col, prefix, ops)
         if isinstance(op, wrappers.ValueGuard):
             if rest:
                 raise TranslationError('path continues after value guard')
@@ -493,64 +519,75 @@ class Translator:
 
     # ---- groups -----------------------------------------------------
 
-    def _combine_group(self, group_op, preds):
+    def _grouped(self, group_op):
         """
-        Combine branch predicates per the group's boolean type.
+        A path group's kind and its branches: `'or'` for `(a, b)`, each
+        branch's matches in turn; `'and'` for `(a & b)`, those only
+        where every branch matches. A branch runs on into the path after
+        the group, at each node the group is at.
         """
-        if isinstance(group_op, _groups.OpGroupAnd):
-            return self._combine_and(preds)
-        if isinstance(group_op, _groups.OpGroupOr):
-            return self._combine_or(preds)
         if isinstance(group_op, _groups.OpGroupNot):
-            if len(preds) != 1:
-                raise TranslationError(
-                    'negation group must have exactly one branch'
-                )
-            return self._combine_not(preds[0])
+            raise TranslationError('negation group (!) not supported yet')
+        if isinstance(group_op, _groups.OpGroupFirst):
+            raise TranslationError('first-match group (?) not supported yet')
+        if any(b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) for b in group_op.branches):
+            raise TranslationError('cut (# or ##) in a group not supported yet')
+        if isinstance(group_op, _groups.OpGroupAnd):
+            return 'and', group_op.branches
+        if isinstance(group_op, _groups.OpGroupOr):
+            return 'or', group_op.branches
         raise TranslationError(
             f'unsupported group type: {type(group_op).__name__}'
         )
 
-    def _translate_top_group(self, group_op):
+    def _combine_group(self, kind, preds):
         """
-        Translate a group op at the top of a path — each branch is a
-        complete path starting from its own column.
+        Branch predicates joined per the group's kind.
         """
+        if kind == 'and':
+            return self._combine_and(preds)
+        return self._combine_or(preds)
+
+    def _translate_top_group(self, group_op, rest):
+        """
+        The `where` of a group at the top of a path: each branch is a
+        complete path from its own column, the rest of the path after it.
+        """
+        kind, branches = self._grouped(group_op)
         wheres = []
-        for branch in group_op.branches:
-            if not isinstance(branch, tuple):
-                raise TranslationError(
-                    f'unsupported branch form: {type(branch).__name__}'
-                )
-            br_result = self._translate(branch)
-            where = br_result.get('where')
+        for branch in branches:
+            where = self._translate(tuple(branch) + tuple(rest)).get('where')
             if where is None:
                 raise TranslationError(
                     'top-level group branch has no predicate'
                 )
             wheres.append(where)
-        return self._combine_group(group_op, wheres)
+        return self._combine_group(kind, wheres)
 
-    def _translate_group(self, group_op, col, prefix):
+    def _group(self, col, prefix, group_op, rest):
         """
-        Translate a group op nested inside a path — each branch is a
-        tail continuation sharing the outer column and prefix.
+        A group at one node, `rest` the path after it. Its matches are
+        the pattern path's. When no branch reaches a pattern, its
+        `where` is the branches' own, joined: a group of guards stays
+        plain predicates.
         """
-        wheres = []
-        for branch in group_op.branches:
-            if not isinstance(branch, tuple):
-                raise TranslationError(
-                    f'unsupported branch form: {type(branch).__name__}'
-                )
-            br = self._walk(col, prefix, branch)
-            if 'where' not in br:
-                raise TranslationError(
-                    'group branch without a guard (bare traversal) not supported in v1'
-                )
-            wheres.append(br['where'])
-        joined = self._combine_group(group_op, wheres)
-        select = self._select_expr(col, prefix)
-        return {'select': select, 'where': joined}
+        kind, branches = self._grouped(group_op)
+        ways = [tuple(branch) + rest for branch in branches]
+        wheres = None
+        if not any(_op_is_pattern_like(op) for way in ways for op in way):
+            wheres = [self._walk(col, prefix, way).get('where') for way in ways]
+        out = self._patterned(col, prefix, (group_op,) + rest)
+        if wheres is None or any(where is None for where in wheres):
+            return out
+        return dict(out, where=self._combine_group(kind, wheres))
+
+    def _patterned(self, col, prefix, ops):
+        """
+        The flavor's pattern path for `ops`, once no value guard in
+        them has more path after it.
+        """
+        _check_guards(ops)
+        return self._pattern(col, prefix, ops)
 
     # ---- flavor hooks -----------------------------------------------
 
@@ -590,7 +627,7 @@ class Translator:
         """
         Return the fragments dict for a pattern path: `ops` is the
         remainder after `prefix`, containing at least one pattern-like
-        op.
+        op or group. `self._grouped` reads a group.
         """
         raise NotImplementedError
 

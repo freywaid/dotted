@@ -116,9 +116,34 @@ def test_group_or(query):
                       '(status = "banned", status = "pending")') == [3, 7]
 
 
-def test_group_not(query):
-    # NOT (status = 'banned')
-    assert _run_where(query, '(!(status = "banned"))') == [1, 2, 4, 5, 6, 7]
+def test_group_of_traversals(query):
+    # id=7 has no user.age and no users
+    assert _run_where(query, 'data.(user.age, users[*].age)') \
+        == [1, 2, 3, 4, 5, 6]
+
+
+def test_and_group_per_element(query):
+    # one user must be both 30+ and active: id=1's 32 is inactive, its
+    # 25 active, so it is out
+    assert _run_where(query,
+                      'data.users[*].(age >= 30 & active = True)') == [2, 5]
+
+
+def test_lateral_group_continues_after(query):
+    """
+    The path after a group runs on from each branch: user.age, then
+    every users[*].age, one row each.
+    """
+    r = sqlize('data.(user, users[*]).age', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    sql = (f'SELECT id, {sel_sql} AS age '
+           f'FROM dotted_test.items, {lat_sql}')
+    rows = query(sql, ())
+    pairs = sorted((r['id'], int(r['age'])) for r in rows)
+    assert pairs == [(1, 25), (1, 25), (1, 32), (2, 35), (2, 35),
+                     (3, 40), (3, 40), (4, 17), (4, 17),
+                     (5, 18), (5, 50), (5, 50), (6, 30)]
 
 
 # ---------------- guard transforms (casts) ----------------

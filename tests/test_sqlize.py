@@ -215,11 +215,132 @@ def test_group_or():
     assert params == {'_p1': 18, '_p2': 21}
 
 
-def test_group_not():
-    r = sqlize('data.(!(status="banned"))')
-    sql, params = Resolver.build(r.where)
-    assert sql == "NOT ((data #>> '{status}') = :_p1)"
-    assert params == {'_p1': 'banned'}
+def test_guard_group_selects_matches():
+    """
+    A group of guards keeps its plain predicates for `where`; its
+    `select` is its matches, as get gives them.
+    """
+    r = sqlize('data.user.(age>=30, age<18)')
+    assert Resolver.build(r.where) == (
+        "((data #>> '{user,age}')::numeric >= :_p1) "
+        "OR ((data #>> '{user,age}')::numeric < :_p2)",
+        {'_p1': 30, '_p2': 18},
+    )
+    assert Resolver.build(r.select) == ('_pat1.value', {})
+    assert Resolver.build(r.lateral) == (
+        "LATERAL (SELECT _pat2.value FROM LATERAL "
+        "jsonb_path_query(data, '$.user.age ? (@ >= 30)') AS _pat2(value) "
+        "UNION ALL SELECT _pat3.value FROM LATERAL "
+        "jsonb_path_query(data, '$.user.age ? (@ < 18)') AS _pat3(value)) "
+        "AS _pat1(value)",
+        {},
+    )
+
+
+def test_and_group_lateral_needs_every_branch():
+    """
+    An `&` group's matches are there only where every branch matches:
+    a JSONPath filter on the node the group is at.
+    """
+    r = sqlize('data.(user.age>=30 & status="active")')
+    held = ("$ ? ((exists(@.user.age ? (@ >= 30))) "
+            "&& (exists(@.status ? (@ == $_p3))))")
+    assert Resolver.build(r.lateral) == (
+        "LATERAL (SELECT _pat2.value FROM LATERAL "
+        f"jsonb_path_query(data, '{held}.user.age ? (@ >= 30)', "
+        "jsonb_build_object('_p3', :_p3)) AS _pat2(value) "
+        "UNION ALL SELECT _pat3.value FROM LATERAL "
+        f"jsonb_path_query(data, '{held}.status ? (@ == $_p3)', "
+        "jsonb_build_object('_p3', :_p3)) AS _pat3(value)) "
+        "AS _pat1(value)",
+        {'_p3': 'active'},
+    )
+
+
+def test_group_bare_traversal():
+    """
+    A branch without a guard is a traversal: the group's matches are
+    each branch's, a JSONPath per branch, as JSONPath has no union.
+    """
+    r = sqlize('data.(x=1, y)')
+    assert Resolver.build(r.where) == (
+        "(jsonb_path_exists(data, '$.x ? (@ == 1)')) "
+        "OR (jsonb_path_exists(data, '$.y'))",
+        {},
+    )
+    assert Resolver.build(r.select) == ('_pat1.value', {})
+    assert Resolver.build(r.lateral) == (
+        "LATERAL (SELECT _pat2.value FROM LATERAL "
+        "jsonb_path_query(data, '$.x ? (@ == 1)') AS _pat2(value) "
+        "UNION ALL SELECT _pat3.value FROM LATERAL "
+        "jsonb_path_query(data, '$.y') AS _pat3(value)) "
+        "AS _pat1(value)",
+        {},
+    )
+
+
+def test_group_continues_after():
+    """
+    The path after a group runs on from each branch: one JSONPath per
+    way through the groups.
+    """
+    r = sqlize('event.(data, data.components[*]).(amount, reporting_amount)')
+    paths = [
+        '$.data.amount',
+        '$.data.reporting_amount',
+        '$.data.components[*].amount',
+        '$.data.components[*].reporting_amount',
+    ]
+    assert Resolver.build(r.where) == (
+        ' OR '.join(f"(jsonb_path_exists(event, '{p}'))" for p in paths), {})
+    union = ' UNION ALL '.join(
+        f"SELECT _pat{n}.value FROM LATERAL "
+        f"jsonb_path_query(event, '{p}') AS _pat{n}(value)"
+        for n, p in enumerate(paths, 2))
+    assert Resolver.build(r.lateral) == (
+        f'LATERAL ({union}) AS _pat1(value)', {})
+
+
+def test_and_group_in_pattern_is_per_node():
+    """
+    An `&` group after `[*]` holds per element: the element needs both
+    branches, not some element one and another the other.
+    """
+    r = sqlize('data.users[*].(age & active)')
+    held = '$.users[*] ? ((exists(@.age)) && (exists(@.active)))'
+    assert Resolver.build(r.where) == (
+        f"(jsonb_path_exists(data, '{held}.age')) "
+        f"OR (jsonb_path_exists(data, '{held}.active'))",
+        {},
+    )
+
+
+def test_top_level_group_continues_after():
+    """
+    The path after a top-level group runs on from each branch's column.
+    """
+    r = sqlize('(data, meta).user.age>=30')
+    assert Resolver.build(r.where) == (
+        "((data #>> '{user,age}')::numeric >= :_p1) "
+        "OR ((meta #>> '{user,age}')::numeric >= :_p2)",
+        {'_p1': 30, '_p2': 30},
+    )
+
+
+@pytest.mark.parametrize('path', [
+    'data.(!(status="banned"))',
+    '!(status="banned")',
+    'data.(x#, y)',
+    'data.(x##, y)',
+    'data.(x, y)?',
+])
+def test_group_not_supported_yet_raises(path):
+    """
+    `!` (the complement of what its path matches, not NOT), cuts and
+    first-match raise rather than translate to anything else.
+    """
+    with pytest.raises(TranslationError, match='not supported yet'):
+        sqlize(path)
 
 
 def test_top_level_and_across_columns():
@@ -246,11 +367,6 @@ def test_top_level_mixed_columns_and_jsonb():
         "AND (status = :_p2)"
     )
     assert params == {'_p1': 30, '_p2': 'active'}
-
-
-def test_group_branch_without_guard_errors():
-    with pytest.raises(TranslationError):
-        sqlize('data.(x=1, y)')
 
 
 # ---------------- absolute root references ----------------
@@ -706,15 +822,6 @@ def test_ps_group_and(paramstyle):
     assert sql == f'(age >= {p1}) AND (status = {p2})'
     assert values == _values(paramstyle,
                              [('_p1', 18), ('_p2', 'active')])
-
-
-@pytest.mark.parametrize('paramstyle', PARAMSTYLES)
-def test_ps_group_not(paramstyle):
-    r = sqlize('data.(!(status="banned"))')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == f"NOT ((data #>> '{{status}}') = {ph})"
-    assert values == _values(paramstyle, [('_p1', 'banned')])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)

@@ -9,8 +9,9 @@ Columns are native Spark types (struct, array, map); a path reaches
 into them with Column extraction. Pattern paths use Spark's
 higher-order functions: `[*]` and a map's `*` become `exists` for a
 predicate and `transform` / `filter` for a select, which is then an
-array of the matches. `**` and `*` over a struct's fields need the
-schema and are not supported.
+array of the matches. A group joins its branches' matches with
+`concat`, at each node it is at. `**` and `*` over a struct's fields
+need the schema and are not supported.
 
 Every hook returns a `ColumnFragment`; nothing calls into pyspark
 until `build`. Columns are made only through `pyspark.sql.functions`
@@ -92,6 +93,11 @@ def _compare(lhs, op_str, value):
 #   ('each', 'array')  — every element of an array
 #   ('each', 'map')    — every value of a map
 #   ('cond', pred_fn)  — keep the node only where pred_fn(node, env)
+#   ('group', kind, branches)
+#                      — each branch's steps from the node, the rest
+#                        of the steps after each: 'or' yields what they
+#                        all reach, 'and' that only where every branch
+#                        reaches something
 #
 # An aligned (+) `each` carries a third item, ('each', kind, 'aligned'):
 # each element yields what the rest of the steps reach, or one null.
@@ -127,6 +133,8 @@ def _exists(c, steps, env):
             c = _extract(c, step[1](env))
             continue
         rest = steps[i + 1:]
+        if kind == 'group':
+            return _group_exists(c, step, rest, env)
         if kind == 'cond':
             pred = step[1](c, env)
             if not rest:
@@ -172,6 +180,8 @@ def _collect(c, steps, env):
         if kind == 'get':
             c = _extract(c, step[1](env))
             continue
+        if kind == 'group':
+            return _group_collect(c, step, steps[i + 1:], env)
         if kind == 'cond':
             candidates = F.array(c)
             rest = steps[i:]
@@ -195,6 +205,37 @@ def _collect(c, steps, env):
         return F.flatten(
             F.transform(candidates, lambda x: _collect(x, rest, env)))
     return F.array(c)
+
+
+_JOIN = {'or': operator.or_, 'and': operator.and_}
+
+
+def _group_exists(c, step, rest, env):
+    """
+    Boolean Column: the group step reaches something from `c`, the rest
+    of the steps after each branch: some branch for 'or', every branch
+    for 'and'.
+    """
+    _, kind, branches = step
+    found = (_exists(c, branch + rest, env) for branch in branches)
+    return functools.reduce(_JOIN[kind], found)
+
+
+def _group_collect(c, step, rest, env):
+    """
+    Array Column of what the group step reaches from `c`: each branch's
+    matches in turn, the rest of the steps after it; for 'and', none
+    unless every branch reaches something. A branch that reaches a null
+    array adds nothing, as `concat` would make the whole null.
+    """
+    F = _functions()
+    _, kind, branches = step
+    found = F.concat(*(F.coalesce(_collect(c, branch + rest, env), F.array())
+                       for branch in branches))
+    if kind == 'or':
+        return found
+    held = _group_exists(c, step, rest, env)
+    return F.filter(found, lambda x: held)
 
 
 # ---- PySpark mixin --------------------------------------------------
@@ -300,15 +341,9 @@ class PySparkMixin(Translator):
         the array of matches.
         """
         key_fns, unbound = self._key_fns(prefix)
-        steps = [('get', key_fn) for key_fn in key_fns]
-        for i, op in enumerate(ops):
-            if isinstance(op, wrappers.ValueGuard) and i != len(ops) - 1:
-                raise TranslationError('path continues after value guard')
-            op_steps, op_unbound = self._op_steps(op)
-            steps.extend(op_steps)
-            unbound = _merged(unbound, op_unbound)
-        steps = tuple(steps)
-        unbound = _merged(col.unbound, unbound)
+        op_steps, op_unbound = self._ops_steps(ops)
+        steps = tuple(('get', key_fn) for key_fn in key_fns) + op_steps
+        unbound = _merged(col.unbound, unbound, op_unbound)
         make_col = col._make
         where = ColumnFragment(
             lambda env: _exists(make_col(env), steps, env), unbound)
@@ -333,6 +368,29 @@ class PySparkMixin(Translator):
             unbound = _merged(unbound, value.unbound)
         return key_fns, unbound
 
+    def _ops_steps(self, ops):
+        """
+        Translate a run of ops of a pattern path into pattern steps.
+        Returns (steps, unbound).
+        """
+        steps = []
+        unbound = {}
+        for op in ops:
+            op_steps, op_unbound = self._op_steps(op)
+            steps.extend(op_steps)
+            unbound = _merged(unbound, op_unbound)
+        return tuple(steps), unbound
+
+    def _group_steps(self, op):
+        """
+        The one step for a group: its kind and each branch's steps.
+        Returns (steps, unbound).
+        """
+        kind, branches = self._grouped(op)
+        parts = [self._ops_steps(branch) for branch in branches]
+        step = ('group', kind, tuple(steps for steps, _ in parts))
+        return [step], _merged(*(unbound for _, unbound in parts))
+
     def _op_steps(self, op):
         """
         Translate one op of a pattern path into pattern steps. Returns
@@ -342,6 +400,8 @@ class PySparkMixin(Translator):
             return self._op_steps(op.inner)
         if isinstance(op, wrappers.TypeRestriction):
             raise TranslationError('type restriction not supported')
+        if isinstance(op, _groups.OpGroup):
+            return self._group_steps(op)
         if isinstance(op.most_inner, _groups.Pack):
             raise TranslationError('packed group not supported')
         # NB: Slot and Attr are subclasses of Key, so check them first.

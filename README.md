@@ -3582,7 +3582,7 @@ Guards encode the predicate:
     >>> r.build(r.where)
     ('name ~ $1', ['^alice'])
 
-Boolean grouping maps directly onto `AND` / `OR` / `NOT`:
+Boolean grouping maps onto `AND` / `OR`:
 
     >>> r = dotted.sqlize('(age >= 18 & status = "active")', driver='asyncpg')
     >>> r.build(r.where)
@@ -3710,8 +3710,7 @@ and `psycopg` (v3) emit explicit SQL casts inside `jsonb_build_object`
 because their placeholders get typed server-side at PREPARE time;
 `psycopg2` substitutes client-side and has no such cast.
 
-Pattern predicates compose with scalar ones via dotted's `&` / `,` /
-`!`:
+Pattern predicates compose with scalar ones via dotted's `&` / `,`:
 
     >>> r = dotted.sqlize('(data.users[*].age >= 30 & status = "active")',
     ...                   driver='asyncpg')
@@ -3751,6 +3750,28 @@ TRUE` to keep rows without matches, etc.
 Lateral aliases (`_pat1`, `_pat2`, …) are allocated from the
 `ParamPool`, so two pattern paths sharing a pool pick distinct
 aliases and compose into one query without collision.
+
+A group in a path matches as `get` does: each branch's matches, with
+the path after the group run on from each branch. JSONPath has no
+union, so `r.where` and `r.lateral` take one JSONPath per way through
+the groups:
+
+    >>> r = dotted.sqlize('data.(user, users[*]).age', driver='asyncpg')
+    >>> str(r.where)
+    "(jsonb_path_exists(data, '$.user.age')) OR (jsonb_path_exists(data, '$.users[*].age'))"
+    >>> str(r.lateral)
+    "LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query(data, '$.user.age') AS _pat2(value) UNION ALL SELECT _pat3.value FROM LATERAL jsonb_path_query(data, '$.users[*].age') AS _pat3(value)) AS _pat1(value)"
+
+An `&` group matches only where every branch does, at each node it is
+at: `data.users[*].(age >= 30 & active = True)` needs one user who is
+both, a JSONPath filter on each element. A group of guards,
+`data.(a = 1, b = 2)`, keeps plain predicates for `r.where`; its
+`r.select` is its matches.
+
+`!` groups, cuts (`#`, `##`) and first-match groups (`?`) raise
+`TranslationError` for now. dotted's `!` is the complement of what its
+path matches, not `NOT`: `data.(!(status = "banned"))` matches `x` in
+`{"status": "banned", "x": 1}`.
 
 Not yet supported:
 - Regex-in-access like `data./prefix_\d+/.field`
@@ -4025,7 +4046,7 @@ below leave it out for brevity.
 | `= None`, `!= None` | `isNull()`, `isNotNull()` |
 | `= /re/`, `!= /re/` | `rlike(re)`, `~rlike(re)` |
 | `\|int \|float \|str \|bool` | `cast('int' \| 'double' \| 'string' \| 'boolean')` |
-| `(a & b)`, `(a, b)`, `!(a)` | `&`, `\|`, `~` |
+| `(a & b)`, `(a, b)` | `&`, `\|` in `where`; `concat` of the branches' matches in `select` |
 | `tags.$$(pick)` | map lookup by another column's value |
 | `arr[*].x = v`, `arr[x = v]` | `exists(arr, ...)` in `where`; `transform` / `filter` in `select` |
 | `map.*` | every value of a map (`map_values`) |
@@ -4042,6 +4063,21 @@ order:
 
     r = dotted.sparkize('data.users[active = True].age')
     df.select(r.build(r.select))    # per row, the active users' ages
+
+A group in a path matches as `get` does: `select` is each branch's
+matches in turn, the path after the group run on from each, and an `&`
+group matches only where every branch does, at each node it is at:
+
+    r = dotted.sparkize('data.(user, users[*]).age')
+    df.select(r.build(r.select))    # per row, user.age then each users[*].age
+
+    r = dotted.sparkize('data.users[*].(age >= 30 & active = True)')
+    df.where(r.build(r.where))      # rows with one user both 30+ and active
+
+`concat` needs one element type, so a group whose branches reach
+different types fails when Spark analyzes the Column. `!` groups (the
+complement of what their path matches, not `~`), cuts (`#`, `##`) and
+first-match groups (`?`) raise `TranslationError` for now.
 
 `**`, and `*` over a struct's fields, need the schema — Spark can't
 iterate struct fields at run time — and raise `TranslationError`.

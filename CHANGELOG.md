@@ -3,6 +3,29 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `sqlize` and `sparkize` translate `,` and `&` groups anywhere in a
+  path, and a path that goes on after a group:
+  `event.(data, data.components[*]).(amount, reporting_amount)`. A
+  group matches as `get` does: each branch's matches, the path after
+  the group run on from each; an `&` group only where every branch
+  matches, at each node it is at, so `users[*].(age >= 30 & active =
+  True)` needs one user who is both. `sqlize` reads a path through
+  groups as one JSONPath per way through them (`UNION ALL` in
+  `r.lateral`); `sparkize` joins the branches' matches with `concat`.
+
+### Fixed
+- A group of guards, `data.(a = 1, b = 2)`, selects its matches, as
+  `get` gives them, not the node the group is at. Its `where` is
+  unchanged.
+- `!` groups translated to SQL `NOT` and Spark `~`, which is not what
+  they mean: `!` is the complement of what its path matches, so
+  `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
+  "x": 1}`. They raise `TranslationError` until the translators build
+  the complement, as cuts (`#`, `##`) and first-match groups (`?`) do.
+
 ## [0.55.5]
 
 ### Fixed

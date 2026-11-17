@@ -66,13 +66,52 @@ def test_column_guard(df, path, expected):
 @pytest.mark.parametrize('path, expected', [
     ('(age >= 18 & status = "active")', [1, 2, 5, 6]),
     ('(status = "banned", status = "pending")', [3, 7]),
-    ('!(status = "active")', [3, 7]),
 ])
 def test_top_level_group(df, path, expected):
     """
-    `&`, `,` and `!` map onto `&`, `|` and `~`.
+    `&` and `,` map onto `&` and `|`.
     """
     assert where_ids(df, path) == expected
+
+
+# ---- groups in a path -----------------------------------------------
+
+@pytest.mark.parametrize('path, expected', [
+    ('data.(user.age, users[*].age)', [1, 2, 3, 4, 5, 6]),
+    ('data.users[*].(age >= 30 & active = True)', [2, 5]),
+    ('data.user.(age >= 30, age < 18)', [2, 3, 4, 5, 6]),
+])
+def test_group_where(df, path, expected):
+    """
+    A group's `where` keeps rows where it matches. An `&` after `[*]`
+    holds per element: one user both 30+ and active.
+    """
+    assert where_ids(df, path) == expected
+
+
+_USER_AND_USERS_AGES = {
+    1: [25, 25, 32], 2: [35, 35], 3: [40, 40], 4: [17, 17],
+    5: [50, 50, 18], 6: [30], 7: [None],
+}
+
+
+@pytest.mark.parametrize('path, expected', [
+    ('data.(user.age, users[*].age)', _USER_AND_USERS_AGES),
+    ('data.(user, users[*]).age', _USER_AND_USERS_AGES),
+    ('data.(user.age & users[*].age)',
+     {1: [25, 25, 32], 2: [35, 35], 3: [40, 40], 4: [17, 17],
+      5: [50, 50, 18], 6: [], 7: []}),
+    ('data.user.(age >= 30, age < 18)',
+     {1: [], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: []}),
+])
+def test_group_select(df, path, expected):
+    """
+    A group's `select` is each branch's matches in turn, the path after
+    the group run on from each; for `&`, none unless every branch
+    matches.
+    """
+    r = sparkize(path)
+    assert selected(df, r.build(r.select)) == expected
 
 
 # ---- struct traversal -----------------------------------------------

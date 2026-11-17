@@ -12,6 +12,7 @@ hook so `Resolver.build(sql, paramstyle='dollar-numeric')` keeps
 emitting explicit casts for the unit-test matrix, which exercises
 paramstyle emitters without a specific driver.
 """
+import collections
 import decimal
 import re
 
@@ -114,20 +115,84 @@ _PRED_JSONPATH = {
 }
 
 
-def _aligned_segments(ops):
+# ---- Pattern paths as JSONPath --------------------------------------
+#
+# A pattern path's ops become parts: a `_Fragment` per op — its
+# JSONPath text, the JSONPath vars it uses, and whether the op is
+# aligned (+) — and a `_Group` per group — its kind and each branch's
+# parts. JSONPath has no union, so a path through groups runs as its
+# tails: the group-free runs of fragments, one per way through each
+# group.
+
+_Fragment = collections.namedtuple('_Fragment', 'text jvars aligned')
+_Group = collections.namedtuple('_Group', 'kind branches')
+
+
+def _tails(parts):
     """
-    A pattern path's ops split after each aligned (+) op. The first
-    segment's matches are the rows; each later one runs under a match of
-    the one before, and a match it finds nothing under keeps a NULL row.
+    The group-free runs of fragments that `parts` reach, one per way
+    through each group, a way being a branch then the parts after the
+    group. A `,` group's matches are its ways' together. An `&` group
+    filters the node it is at, keeping it only where every way reaches
+    something from it.
+    """
+    for i, part in enumerate(parts):
+        if isinstance(part, _Fragment):
+            continue
+        head = list(parts[:i])
+        ways = [list(branch) + list(parts[i + 1:]) for branch in part.branches]
+        if part.kind == 'and':
+            head.append(_held(ways))
+        return [head + tail for way in ways for tail in _tails(way)]
+    return [list(parts)]
+
+
+def _held(ways):
+    """
+    A filter fragment keeping a node only where every one of `ways`
+    reaches something from it.
+    """
+    tests = [_reaches(way) for way in ways]
+    jvars = {}
+    for _, test_jvars in tests:
+        jvars.update(test_jvars)
+    text = ' && '.join(f'({test})' for test, _ in tests)
+    return _Fragment(f' ? ({text})', jvars, False)
+
+
+def _reaches(parts):
+    """
+    A JSONPath test, and its vars, that `parts` reach something from
+    `@`: some tail does, up to its first aligned (+) op, whose every
+    match yields at least one result.
+    """
+    tests = []
+    jvars = {}
+    for tail in _tails(parts):
+        text, tail_jvars = _segments(tail)[0]
+        tests.append(f'exists(@{text})')
+        jvars.update(tail_jvars)
+    return ' || '.join(tests), jvars
+
+
+def _segments(tail):
+    """
+    A tail's fragments joined into `(text, jvars)`, split after each
+    aligned (+) op. The first segment's matches are the rows; each later
+    one runs under a match of the one before, and a match it finds
+    nothing under keeps a NULL row.
     """
     segments = []
-    start = 0
-    for i, op in enumerate(ops):
-        if op.is_aligned():
-            segments.append(ops[start:i + 1])
-            start = i + 1
-    if start < len(ops):
-        segments.append(ops[start:])
+    text, jvars = '', {}
+    for fragment in tail:
+        text += fragment.text
+        jvars = {**jvars, **fragment.jvars}
+        if not fragment.aligned:
+            continue
+        segments.append((text, jvars))
+        text, jvars = '', {}
+    if text or not segments:
+        segments.append((text, jvars))
     return segments
 
 
@@ -327,59 +392,84 @@ class PostgresMixin(Translator):
         An aligned (+) op splits the path: the rest runs under each of
         its matches in a `LEFT JOIN LATERAL ... ON TRUE`, so a match the
         rest finds nothing under yields one NULL.
+
+        A path through groups runs as its tails (`_tails`): `where`
+        holds when any tail matches, and the lateral yields every
+        tail's matches, `UNION ALL`.
         """
-        first, *rest = _aligned_segments(ops)
-        jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
-            col_ident, prefix, first)
-        where = self._pattern_where(col_ident, jsonpath_sql, jvars)
+        parts = [self._jsonpath_head(prefix)] + self._jsonpath_parts(ops)
+        tails = [
+            [(_pg_string_literal('$' + text), jvars)
+             for text, jvars in _segments(tail)]
+            for tail in _tails(parts)
+        ]
+        wheres = [self._pattern_where(col_ident, *tail[0]) for tail in tails]
+        if len(tails) == 1:
+            lateral, alias = self._chain(col_ident, tails[0])
+            return {'select': f'{alias}.value', 'where': wheres[0],
+                    'lateral': lateral}
+        alias = self._state.alloc_pattern_alias()
+        queries = []
+        for tail in tails:
+            chain, last = self._chain(col_ident, tail)
+            queries.append(f'SELECT {last}.value FROM {chain}')
+        union = ' UNION ALL '.join(queries)
+        return {'select': f'{alias}.value',
+                'where': self._combine_or(wheres),
+                'lateral': f'LATERAL ({union}) AS {alias}(value)'}
+
+    def _chain(self, col_ident, segments):
+        """
+        The laterals a tail's `(jsonpath_sql, jvars)` segments run
+        through, and the alias of the last: the first segment's matches
+        in `col_ident`, then each later segment under a match of the one
+        before.
+        """
+        (jsonpath_sql, jvars), *rest = segments
         alias = self._state.alloc_pattern_alias()
         lateral = self._pattern_lateral(col_ident, jsonpath_sql, jvars, alias)
-        for segment in rest:
+        for jsonpath_sql, jvars in rest:
             source = f'{alias}.value'
-            jsonpath_sql, jvars = self._pattern_jsonpath_and_vars(
-                source, (), segment)
             alias = self._state.alloc_pattern_alias()
             lateral += (f' LEFT JOIN '
                         f'{self._pattern_lateral(source, jsonpath_sql, jvars, alias)}'
                         f' ON TRUE')
-        select = f'{alias}.value'
-        return {'select': select, 'where': where, 'lateral': lateral}
+        return lateral, alias
 
     # ---- Pattern paths via jsonb_path_exists ------------------------
 
-    def _pattern_jsonpath_and_vars(self, col_ident, prefix, ops):
+    def _jsonpath_head(self, prefix):
         """
-        Walk a pattern path and build the JSONPath expression + the
-        SQL-placeholder vars map. Shared by the WHERE (jsonb_path_exists)
-        and LATERAL (jsonb_path_query) emitters below.
-
-        Returns `(jsonpath_sql, jvars)` where `jsonpath_sql` is the
-        SQL-literal form of the jsonpath string (single-quoted, ready
-        to embed) and `jvars` is a dict of `jsonpath var name → SQL
-        placeholder marker` for any hoisted values / substitutions.
+        The literal prefix as a fragment of plain `.key` accessors.
         """
-        jvars = {}
-        parts = ['$']
-        # Literal prefix becomes plain `.key` accessors.
+        text = ''
         for kind, value in prefix:
             if kind != 'lit':
                 raise TranslationError(
                     'dynamic path segments (references) combined with '
                     'patterns are not supported yet'
                 )
-            parts.append('.' + _jsonpath_key(value))
-        # Walk remaining ops.
-        for i, op in enumerate(ops):
+            text += '.' + _jsonpath_key(value)
+        return _Fragment(text, {}, False)
+
+    def _jsonpath_parts(self, ops):
+        """
+        A pattern path's ops as parts: a `_Fragment` per op, a `_Group`
+        per group. Each op is translated once, so a value it hoists is
+        hoisted once, however many tails it is in.
+        """
+        parts = []
+        for op in ops:
+            if isinstance(op, _groups.OpGroup):
+                kind, branches = self._grouped(op)
+                parts.append(_Group(kind, [self._jsonpath_parts(b) for b in branches]))
+                continue
+            jvars = {}
             frag, trailing_filter = self._op_to_jsonpath(op, jvars)
-            parts.append(frag)
             if trailing_filter:
-                parts.append(f' ? ({trailing_filter})')
-            # If this op was a terminal ValueGuard, it consumed the
-            # guard; anything after is a bug.
-            if isinstance(op, wrappers.ValueGuard) and i != len(ops) - 1:
-                raise TranslationError('path continues after value guard')
-        jsonpath_str = ''.join(parts)
-        return _pg_string_literal(jsonpath_str), jvars
+                frag += f' ? ({trailing_filter})'
+            parts.append(_Fragment(frag, jvars, op.is_aligned()))
+        return parts
 
     def _pattern_where(self, col_ident, jsonpath_sql, jvars):
         """
