@@ -157,6 +157,68 @@ def test_lateral_first_match_group(query):
     assert pairs == [(1, 25), (2, 35), (3, 40), (4, 17), (5, 50), (6, 30)]
 
 
+def test_lateral_cut_group(query):
+    """
+    (age >= 30#, age >= 18) at each user: a user 30+ once, by the
+    first branch; one 18 to 29 by the second; one under 18 not at all.
+    """
+    r = sqlize('data.users[*].(age >= 30#, age >= 18)', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    sql = (f'SELECT id, {sel_sql} AS age '
+           f'FROM dotted_test.items, {lat_sql}')
+    rows = query(sql, ())
+    pairs = sorted((r['id'], int(r['age'])) for r in rows)
+    assert pairs == [(1, 25), (1, 32), (2, 35), (3, 40), (5, 18), (5, 50)]
+
+
+def _lateral_counts(query, path):
+    """
+    id → how many rows the path's lateral yields for it.
+    """
+    r = sqlize(path, driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    sql = (f'SELECT id, count({sel_sql}) AS n '
+           f'FROM dotted_test.items, {lat_sql} GROUP BY id')
+    return {r['id']: r['n'] for r in query(sql, ())}
+
+
+def test_lateral_soft_cut_group(query):
+    """
+    (age##, *) at user: * skips age, the soft-cut branch's match, so
+    a user with an age yields three rows, not four; id=7's has none.
+    """
+    assert _lateral_counts(query, 'data.user.(age, *)') == {
+        1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4, 7: 1}
+    assert _lateral_counts(query, 'data.user.(age##, *)') == {
+        1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 1}
+
+
+def test_lateral_soft_cut_per_element(query):
+    """
+    (age >= 30##, age) at each user: the age a soft cut kept isn't read
+    again, so each user's age comes once.
+    """
+    r = sqlize('data.users[*].(age >= 30##, age)', driver=query.driver)
+    sel_sql, _ = r.build(r.select)
+    lat_sql, _ = r.build(r.lateral)
+    rows = query(f'SELECT id, {sel_sql} AS age FROM dotted_test.items, {lat_sql}', ())
+    pairs = sorted((r['id'], int(r['age'])) for r in rows)
+    assert pairs == [(1, 25), (1, 32), (2, 35), (3, 40), (4, 17), (5, 18), (5, 50)]
+
+
+def test_lateral_soft_cut_keeps_in_order(query):
+    """
+    ((.user.age, .user, .user.role)##, .*): user overlaps the age kept
+    before it, so it is dropped, and role, overlapping only user, is
+    kept; * then adds users. id=7's user has no age, so user is kept
+    and role dropped.
+    """
+    assert _lateral_counts(query, 'data((.user.age, .user, .user.role)##, .*)') == {
+        1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 2}
+
+
 def test_lateral_group_continues_after(query):
     """
     The path after a group runs on from each branch: user.age, then

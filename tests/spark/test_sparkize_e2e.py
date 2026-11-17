@@ -81,6 +81,7 @@ def test_top_level_group(df, path, expected):
     ('data.users[*].(age >= 30 & active = True)', [2, 5]),
     ('data.user.(age >= 30, age < 18)', [2, 3, 4, 5, 6]),
     ('data.(users[*], user)?.age >= 30', [2, 3, 5, 6]),
+    ('data.users[*].(age >= 30#, age >= 18)', [1, 2, 3, 5]),
 ])
 def test_group_where(df, path, expected):
     """
@@ -108,13 +109,24 @@ _USER_AND_USERS_AGES = {
      {1: [], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: []}),
     ('data.(users[*], user)?.age',
      {1: [25], 2: [35], 3: [40], 4: [17], 5: [50], 6: [30], 7: [None]}),
+    ('data.users[*].(age >= 30, age >= 18)',
+     {1: [25, 32, 32], 2: [35, 35], 3: [40, 40], 4: [], 5: [50, 50, 18],
+      6: [], 7: []}),
+    ('data.users[*].(age >= 30#, age >= 18)',
+     {1: [25, 32], 2: [35], 3: [40], 4: [], 5: [50, 18], 6: [], 7: []}),
+    ('data.users[*].(age >= 30##, age)',
+     {1: [25, 32], 2: [35], 3: [40], 4: [17], 5: [50, 18], 6: [], 7: []}),
+    ('data.users[*]((.age >= 30, .age)##, .age)',
+     {1: [25, 32], 2: [35], 3: [40], 4: [17], 5: [50, 18], 6: [], 7: []}),
 ])
 def test_group_select(df, path, expected):
     """
     A group's `select` is each branch's matches in turn, the path after
     the group run on from each; for `&`, none unless every branch
     matches. A first match is one node, the path after it run from it:
-    the first user, or `user` where there are none.
+    the first user, or `user` where there are none. After a cut, a
+    branch runs only where the cut branch found nothing: a user 30+
+    isn't read again as 18+.
     """
     r = sparkize(path)
     assert selected(df, r.build(r.select)) == expected

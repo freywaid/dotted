@@ -224,22 +224,25 @@ class Hooks:
         raise TranslationError('packed group not supported')
 
     def or_group(self, op, *args):
-        return self.group(op, 'or', _branches(op), *args)
+        return self.group(op, 'or', *_branches(op, 'or'), *args)
 
     def and_group(self, op, *args):
-        return self.group(op, 'and', _branches(op), *args)
+        return self.group(op, 'and', *_branches(op, 'and'), *args)
 
     def first_group(self, op, *args):
-        return self.group(op, 'first', _branches(op), *args)
+        return self.group(op, 'first', *_branches(op, 'first'), *args)
 
-    def group(self, op, kind, branches, *args):
+    def group(self, op, kind, branches, cuts, softs, *args):
         """
         A group of `kind`: `'or'` for `(a, b)`, each branch's matches
         in turn; `'and'` for `(a & b)`, those only where every branch
         matches, a branch running on into the path after the group;
         `'first'` for `(a, b)?`, the first match of the first branch to
         match, the branch alone, the path after the group running on
-        from it.
+        from it. `cuts` says, per branch, whether a cut follows it: at
+        a node where that branch yields, no later branch is tried.
+        `softs` says whether a soft cut does: a later branch skips what
+        overlaps that branch's matches.
         """
         return self.other(op, *args)
 
@@ -317,14 +320,35 @@ class Hooks:
         return self.other(m, *args)
 
 
-def _branches(group_op):
+def _branches(group_op, kind):
     """
-    A group's branches. A cut, `#` or `##`, raises: the translators
-    don't take one yet.
+    A group of `kind`'s branches, and per branch whether a cut follows
+    it and whether a soft cut does. Neither changes anything in a
+    first-match group, whose first match ends it anyway. In a
+    conjunction a cut ends the branches: the conjunction holds only
+    where the cut branch matched, and there the cut stops it.
     """
-    if any(b in (base.BRANCH_CUT, base.BRANCH_SOFTCUT) for b in group_op.branches):
-        raise TranslationError('cut (# or ##) in a group not supported yet')
-    return group_op.branches
+    branches = []
+    cuts = []
+    softs = []
+    for item in group_op.branches:
+        if item is base.BRANCH_CUT:
+            cuts[-1] = True
+            continue
+        if item is base.BRANCH_SOFTCUT:
+            softs[-1] = True
+            continue
+        branches.append(item)
+        cuts.append(False)
+        softs.append(False)
+    if kind == 'first':
+        return tuple(branches), (False,) * len(branches), (False,) * len(branches)
+    if kind == 'and' and True in cuts:
+        n = cuts.index(True) + 1
+        branches, softs = branches[:n], softs[:n]
+    if kind == 'and':
+        cuts = [False] * len(branches)
+    return tuple(branches), tuple(cuts), tuple(softs)
 
 
 class _Column(Hooks):
@@ -348,7 +372,9 @@ class _Column(Hooks):
         col = t._column(t._column_name(op.inner))
         return t._result(select=col, where=t._scalar_predicate(op, col))
 
-    def group(self, op, kind, branches, t, rest):
+    def group(self, op, kind, branches, cuts, softs, t, rest):
+        # a cut changes which branches yield, not whether the group
+        # matches, so the group's where takes no notice of it
         if not op.is_pattern():
             return t._translate(_only_branch(op) + rest)
         return t._result(where=t._translate_top_group(kind, branches, rest))
@@ -396,7 +422,7 @@ class _Walk(Hooks):
         return {'select': t._select_expr(col, full),
                 'where': t._nested_predicate(op, col, full)}
 
-    def group(self, op, kind, branches, t, col, prefix, rest):
+    def group(self, op, kind, branches, cuts, softs, t, col, prefix, rest):
         if not op.is_pattern():
             return t._walk(col, prefix, _only_branch(op) + rest)
         return t._group(col, prefix, op, kind, branches, rest)
@@ -809,7 +835,8 @@ class Translator:
         A group of `kind` at one node, `rest` the path after it. Its
         matches are the pattern path's. When no branch of a `,` or `&`
         group reaches a pattern, its `where` is the branches' own,
-        joined: a group of guards stays plain predicates. A first
+        joined: a group of guards stays plain predicates; a cut changes
+        which branches yield, not whether the group matches. A first
         match's rest runs from the match, not from each branch, so it
         keeps the pattern's.
         """

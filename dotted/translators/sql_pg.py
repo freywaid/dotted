@@ -119,13 +119,15 @@ _PRED_JSONPATH = {
 # runs of fragments, one per way through each group.
 
 class _Fragment(collections.namedtuple(
-        '_Fragment', 'text jvars aligned filter', defaults=(None,))):
+        '_Fragment', 'text jvars aligned filter steps', defaults=(None, ()))):
     """
     One op's JSONPath: its accessor `text` and the `filter` on what it
-    reaches.
+    reaches. `steps` are the accessor as a path-tracking walk takes it
+    (see `_path_step`).
     """
     kind = None
     branches = ()
+    softs = ()
 
     @property
     def path(self):
@@ -159,9 +161,10 @@ class _Fragment(collections.namedtuple(
         return t._aligned_rows(src, before + [self], rest, ordered)
 
 
-class _Group(collections.namedtuple('_Group', 'kind branches')):
+class _Group(collections.namedtuple('_Group', 'kind branches cuts softs')):
     """
-    A group's kind and each branch's parts.
+    A group's kind, each branch's parts, and per branch whether a cut
+    follows it and whether a soft cut does.
     """
     split = True
 
@@ -182,9 +185,10 @@ def _tails(parts):
     """
     The group-free runs of fragments that `parts` reach, one per way
     through each group, a way being a branch then the parts after the
-    group. A `,` group's matches are its ways' together. An `&` group
-    filters the node it is at, keeping it only where every way reaches
-    something from it.
+    group. A `,` group's matches are its ways' together; a way after a
+    branch a cut follows filters the node it is at, keeping it only
+    where that branch's way reaches nothing. An `&` group filters the
+    node, keeping it only where every way reaches something from it.
     """
     for i, part in enumerate(parts):
         if not part.branches:
@@ -192,21 +196,28 @@ def _tails(parts):
         head = list(parts[:i])
         ways = [list(branch) + list(parts[i + 1:]) for branch in part.branches]
         if part.kind == 'and':
-            head.append(_held(ways))
-        return [head + tail for way in ways for tail in _tails(way)]
+            head.append(_held(ways, True))
+            return [head + tail for way in ways for tail in _tails(way)]
+        tails = []
+        for j, way in enumerate(ways):
+            cut = [ways[k] for k in range(j) if part.cuts[k]]
+            lead = head + [_held(cut, False)] if cut else head
+            tails.extend(lead + tail for tail in _tails(way))
+        return tails
     return [list(parts)]
 
 
-def _held(ways):
+def _held(ways, reach):
     """
     A filter fragment keeping a node only where every one of `ways`
-    reaches something from it.
+    reaches something from it, or, unless `reach`, where none does.
     """
     tests = [_reaches(way) for way in ways]
     jvars = {}
     for _, test_jvars in tests:
         jvars.update(test_jvars)
-    text = ' && '.join(f'({test})' for test, _ in tests)
+    form = '({})' if reach else '!({})'
+    text = ' && '.join(form.format(test) for test, _ in tests)
     return _Fragment('', jvars, False, text)
 
 
@@ -275,6 +286,33 @@ def _is_first(part):
     True if `part` is a first-match group (?).
     """
     return part.kind == 'first'
+
+
+def _segment_sql(text_expr):
+    """
+    SQL of a path segment from the SQL text expression `text_expr`: a
+    JSON string and a comma, so a path starts another exactly when its
+    text does.
+    """
+    return f"to_jsonb({text_expr}::text)::text || ','"
+
+
+def _members(expr):
+    """
+    SQL of jsonb_each over the jsonb `expr`, with ordinality, where it
+    is an object; no rows where it isn't.
+    """
+    return (f"jsonb_each(CASE WHEN jsonb_typeof({expr}) = 'object' THEN {expr} END) "
+            f'WITH ORDINALITY')
+
+
+def _needs_laterals(part):
+    """
+    True if `part` is a group JSONPath can't read: a first-match group
+    (JSONPath has no first) or a group with a soft cut (it can't tell
+    one match's path from another's).
+    """
+    return part.kind == 'first' or any(part.softs)
 
 
 # ---- Cast inference for Postgres ------------------------------------
@@ -479,11 +517,12 @@ class PostgresMixin(Translator):
         every tail's matches, `UNION ALL`. JSONPath has no first, so a
         path through a first-match group (?) runs a lateral at each node
         a group or aligned op is at (`_rows`), and `where` holds when it
-        yields a row.
+        yields a row. Nor does it give a match's path, so a group with a
+        soft cut walks its branches with their paths (`_path_rows`).
         """
         parts = [self._jsonpath_head(prefix)] + self._jsonpath_parts(ops)
         where = self._some(col_ident, parts)
-        if not _anywhere(parts, _is_first):
+        if not _anywhere(parts, _needs_laterals):
             tails = _tails(parts)
             if len(tails) == 1:
                 lateral, alias = self._chain(col_ident, _segments(tails[0]))
@@ -497,13 +536,14 @@ class PostgresMixin(Translator):
     def _rows(self, src, parts, ordered=False):
         """
         SQL query of the rows `parts` reach from the jsonb `src`, a
-        `value` each. Without a first-match group, and unless `ordered`,
-        it runs as its tails, `UNION ALL`. Otherwise it runs a lateral
-        at each node a group or an aligned (+) op is at, so its rows
-        come in the order dotted reaches them. `ordered` is for a first
-        match: there an aligned op's default is a JSON null, a match.
+        `value` each. Without a first-match group or a soft cut, and
+        unless `ordered`, it runs as its tails, `UNION ALL`. Otherwise it
+        runs a lateral at each node a group or an aligned (+) op is at,
+        so its rows come in the order dotted reaches them. `ordered` is
+        for a first match: there an aligned op's default is a JSON null,
+        a match.
         """
-        if not ordered and not _anywhere(parts, _is_first):
+        if not ordered and not _anywhere(parts, _needs_laterals):
             return self._tail_rows(src, parts)
         i = next((i for i, part in enumerate(parts) if part.split), None)
         if i is None:
@@ -544,20 +584,213 @@ class PostgresMixin(Translator):
     def _rows_at(self, node, group, rest, ordered):
         """
         SQL query of the rows a group at the jsonb `node` reaches,
-        `rest` the parts after it: its ways' rows, `UNION ALL`; for an
-        `&`, only where every way reaches something; for a first match,
-        the rest's from it.
+        `rest` the parts after it: its ways' rows, `UNION ALL`, a way
+        after a branch a cut follows only where that branch's way
+        reaches nothing; for an `&`, only where every way reaches
+        something; for a first match, the rest's from it. A group with a
+        soft cut takes its ways with their paths (`_path_group_rows`).
         """
+        if any(group.softs):
+            rows = self._path_group_rows(node, "''", 'ARRAY[]::bigint[]', group, rest)
+            alias = self._state.alloc_pattern_alias()
+            return f'SELECT {alias}.value FROM ({rows}) AS {alias}'
         if group.kind == 'first':
             return self._rows(self._first(node, group.branches), rest, ordered)
         ways = [list(branch) + list(rest) for branch in group.branches]
-        union = ' UNION ALL '.join(self._rows(node, way, ordered) for way in ways)
-        if group.kind == 'or':
-            return union
-        held = self._combine_and([self._some(node, way) for way in ways])
+        if group.kind == 'and':
+            union = ' UNION ALL '.join(self._rows(node, way, ordered) for way in ways)
+            return self._rows_where(union, self._combine_and([self._some(node, way) for way in ways]))
+        queries = []
+        for j, way in enumerate(ways):
+            rows = self._rows(node, way, ordered)
+            cut = [ways[k] for k in range(j) if group.cuts[k]]
+            if cut:
+                rows = self._rows_where(rows, self._combine_and(
+                    [self._combine_not(self._some(node, w)) for w in cut]))
+            queries.append(rows)
+        return ' UNION ALL '.join(queries)
+
+    def _rows_where(self, rows, pred, columns=('value',)):
+        """
+        SQL query of the rows of `rows`, whose columns are `columns`,
+        where `pred` holds.
+        """
         alias = self._state.alloc_pattern_alias()
-        return (f'SELECT {alias}.value FROM ({union}) AS {alias}(value) '
-                f'WHERE {held}')
+        picked = ', '.join(f'{alias}.{c}' for c in columns)
+        return (f'SELECT {picked} FROM ({rows}) AS {alias}({", ".join(columns)}) '
+                f'WHERE {pred}')
+
+    # ---- Path-tracking rows, for a soft cut -------------------------
+    #
+    # A soft cut compares the paths of matches, which JSONPath doesn't
+    # give, so a group with one walks its ways a step at a time instead,
+    # each row a (path, ord, value): `path` the segments from the
+    # group's node as text, each a JSON string and a comma, so that one
+    # path starts another exactly when its text does; `ord` the bigint[]
+    # that orders the rows as dotted reaches them.
+
+    _PATH_COLUMNS = ('path', 'ord', 'value')
+
+    def _path_rows(self, v, p, o, parts):
+        """
+        SQL query of the (path, ord, value) rows `parts` reach from the
+        jsonb `v`, whose own path and ord are `p` and `o`.
+        """
+        query = f'SELECT {p} AS path, {o} AS ord, {v} AS value'
+        for i, part in enumerate(parts):
+            if part.branches:
+                return self._path_lateral(
+                    query, lambda a, part=part, rest=parts[i + 1:]: self._path_group_rows(
+                        f'{a}.value', f'{a}.path', f'{a}.ord', part, rest))
+            if part.aligned:
+                raise TranslationError('aligned (+) under a soft cut not supported yet')
+            for step in part.steps:
+                query = self._path_step(query, step)
+            if part.filter:
+                query = self._path_filtered(query, part.filter, part.jvars)
+        return query
+
+    def _path_lateral(self, query, under):
+        """
+        The (path, ord, value) rows `under(alias)` gives at each row of
+        `query`, `alias` naming that row.
+        """
+        a = self._state.alloc_pattern_alias()
+        b = self._state.alloc_pattern_alias()
+        rows = under(a)
+        return (f'SELECT {b}.path, {b}.ord, {b}.value FROM ({query}) AS {a} '
+                f'CROSS JOIN LATERAL ({rows}) AS {b}')
+
+    def _path_filtered(self, query, test, jvars):
+        """
+        The rows of `query` whose value passes the JSONPath filter `test`.
+        """
+        a = self._state.alloc_pattern_alias()
+        passes = self._path_call('jsonb_path_exists', f'{a}.value', f' ? ({test})', jvars)
+        return f'SELECT {a}.path, {a}.ord, {a}.value FROM ({query}) AS {a} WHERE {passes}'
+
+    def _path_step(self, query, step):
+        """
+        The rows one step reaches from each row of `query`, by `step`:
+        ('key', name), ('index', n), every member ('keys',), every
+        element ('items',), or every value under it at any depth,
+        reached by keys, as dotted's ** reads ('descend',).
+        """
+        a = self._state.alloc_pattern_alias()
+        kind = step[0]
+        if kind == 'unread':
+            raise TranslationError(f'{step[1]} under a soft cut not supported yet')
+        if kind == 'key':
+            key = _pg_string_literal(step[1])
+            return (f'SELECT {a}.path || {_segment_sql(key)} AS path, {a}.ord, '
+                    f'{a}.value -> {key} AS value FROM ({query}) AS {a} '
+                    f'WHERE ({a}.value -> {key}) IS NOT NULL')
+        if kind == 'index':
+            n = int(step[1])
+            index = str(n) if n >= 0 else (
+                f"(CASE WHEN jsonb_typeof({a}.value) = 'array' "
+                f'THEN jsonb_array_length({a}.value) END + ({n}))')
+            return (f'SELECT {a}.path || {_segment_sql(f"({index})::text")} AS path, '
+                    f'{a}.ord, {a}.value -> ({n}) AS value FROM ({query}) AS {a} '
+                    f"WHERE jsonb_typeof({a}.value) = 'array' "
+                    f'AND ({a}.value -> ({n})) IS NOT NULL')
+        e = self._state.alloc_pattern_alias()
+        if kind == 'keys':
+            return (f'SELECT {a}.path || {_segment_sql(f"{e}.key")} AS path, '
+                    f'{a}.ord || {e}.n AS ord, {e}.value AS value FROM ({query}) AS {a} '
+                    f'CROSS JOIN LATERAL {_members(f"{a}.value")} AS {e}(key, value, n)')
+        if kind == 'items':
+            return (f'SELECT {a}.path || {_segment_sql(f"({e}.n - 1)::text")} AS path, '
+                    f'{a}.ord || {e}.n AS ord, {e}.value AS value FROM ({query}) AS {a} '
+                    f"CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN "
+                    f"jsonb_typeof({a}.value) = 'array' THEN {a}.value END) "
+                    f'WITH ORDINALITY AS {e}(value, n)')
+        # descend: by keys only, the node itself not among them; the ord
+        # orders the values in pre-order, as dotted's ** yields them
+        d = self._state.alloc_pattern_alias()
+        f = self._state.alloc_pattern_alias()
+        g = self._state.alloc_pattern_alias()
+        return (f'SELECT {g}.path, {g}.ord, {g}.value FROM ({query}) AS {a} '
+                f'CROSS JOIN LATERAL (WITH RECURSIVE {d}(path, ord, value) AS ('
+                f'SELECT {a}.path || {_segment_sql(f"{e}.key")}, {a}.ord || {e}.n, {e}.value '
+                f'FROM {_members(f"{a}.value")} AS {e}(key, value, n) '
+                f'UNION ALL SELECT {d}.path || {_segment_sql(f"{f}.key")}, {d}.ord || {f}.n, '
+                f'{f}.value FROM {d} CROSS JOIN LATERAL {_members(f"{d}.value")} '
+                f'AS {f}(key, value, n)) SELECT {d}.path, {d}.ord, {d}.value FROM {d}) AS {g}')
+
+    def _path_group_rows(self, v, p, o, group, rest):
+        """
+        The (path, ord, value) rows a group at the jsonb `v` reaches,
+        `rest` the parts after it: what `_rows_at` reads, with paths.
+        Each branch's ord takes its index after `o`, so the rows order
+        as dotted reaches them.
+        """
+        if group.kind == 'first':
+            firsts = ' UNION ALL '.join(
+                self._path_rows(v, p, f'{o} || {j}::bigint', branch)
+                for j, branch in enumerate(group.branches))
+            a = self._state.alloc_pattern_alias()
+            first = (f'SELECT {a}.path, {a}.ord, {a}.value FROM ({firsts}) AS {a} '
+                     f'ORDER BY {a}.ord LIMIT 1')
+            return self._path_lateral(first, lambda b: self._path_rows(
+                f'{b}.value', f'{b}.path', f'{b}.ord', rest))
+        ways = [list(branch) + list(rest) for branch in group.branches]
+        rows = [self._path_rows(v, p, f'{o} || {j}::bigint', way) for j, way in enumerate(ways)]
+        if any(group.softs):
+            folded = self._uncovered(rows, group)
+            if group.kind == 'or':
+                return folded
+            held = self._combine_and([f'EXISTS ({r})' for r in rows])
+            return self._rows_where(folded, held, self._PATH_COLUMNS)
+        if group.kind == 'and':
+            held = self._combine_and([f'EXISTS ({r})' for r in rows])
+            return self._rows_where(' UNION ALL '.join(rows), held, self._PATH_COLUMNS)
+        queries = []
+        for j, r in enumerate(rows):
+            cut = [rows[k] for k in range(j) if group.cuts[k]]
+            if cut:
+                r = self._rows_where(r, self._combine_and(
+                    [f'NOT EXISTS ({c})' for c in cut]), self._PATH_COLUMNS)
+            queries.append(r)
+        return ' UNION ALL '.join(queries)
+
+    def _uncovered(self, rows, group):
+        """
+        The (path, ord, value) rows of the group's ways, `rows`, that a
+        soft cut didn't cover, in dotted's order: a fold over them all
+        in ord order (a recursive query), dropping one whose path
+        overlaps the path of one a soft-cut branch kept, keeping a
+        soft-cut branch's own as they pass, and after a branch a cut
+        follows keeps one, dropping the branches after it.
+        """
+        alloc = self._state.alloc_pattern_alias
+        tags = []
+        for j, rows_j in enumerate(rows):
+            a = alloc()
+            tags.append(f'SELECT {a}.path, {a}.ord, {a}.value, {j} AS branch, '
+                        f'{str(group.cuts[j]).upper()} AS cut, '
+                        f'{str(group.softs[j]).upper()} AS soft FROM ({rows_j}) AS {a}')
+        tagged = ' UNION ALL '.join(tags)
+        u, r, f, c, s, k, q = (alloc() for _ in range(7))
+        covered = (f'EXISTS (SELECT 1 FROM unnest({f}.kept) AS {q}(p) '
+                   f'WHERE starts_with({r}.path, {q}.p) OR starts_with({q}.p, {r}.path))')
+        return (
+            f'SELECT {k}.path, {k}.ord, {k}.value FROM (WITH RECURSIVE '
+            f'{r} AS (SELECT row_number() OVER (ORDER BY {u}.ord) AS n, {u}.* '
+            f'FROM ({tagged}) AS {u}), '
+            f'{f}(n, kept, branch, cut, found, stop, take, path, ord, value) AS ('
+            f'SELECT 0::bigint, ARRAY[]::text[], -1, FALSE, FALSE, FALSE, FALSE, '
+            f'NULL::text, NULL::bigint[], NULL::jsonb '
+            f'UNION ALL SELECT {r}.n, '
+            f'CASE WHEN {c}.take AND {r}.soft THEN {f}.kept || {r}.path ELSE {f}.kept END, '
+            f'{r}.branch, {r}.cut, '
+            f'CASE WHEN {r}.branch <> {f}.branch THEN {c}.take ELSE {f}.found OR {c}.take END, '
+            f'{c}.stop, {c}.take, {r}.path, {r}.ord, {r}.value '
+            f'FROM {f} JOIN {r} ON {r}.n = {f}.n + 1 '
+            f'CROSS JOIN LATERAL (SELECT {s}.stop, NOT {s}.stop AND NOT {covered} AS take '
+            f'FROM (SELECT {f}.stop OR ({r}.branch <> {f}.branch AND {f}.cut AND {f}.found) '
+            f'AS stop) AS {s}) AS {c}) '
+            f'SELECT {f}.path, {f}.ord, {f}.value FROM {f} WHERE {f}.take) AS {k}')
 
     def _tail_rows(self, src, parts):
         """
@@ -640,6 +873,7 @@ class PostgresMixin(Translator):
         The literal prefix as a fragment of plain `.key` accessors.
         """
         text = ''
+        steps = []
         for kind, value in prefix:
             if kind != 'lit':
                 raise TranslationError(
@@ -647,7 +881,8 @@ class PostgresMixin(Translator):
                     'patterns are not supported yet'
                 )
             text += '.' + _jsonpath_key(value)
-        return _Fragment(text, {}, False)
+            steps.append(('key', value))
+        return _Fragment(text, {}, False, None, tuple(steps))
 
     def _jsonpath_parts(self, ops):
         """
@@ -807,20 +1042,27 @@ class _Parts(Hooks):
 
     def key(self, op, t):
         # an Attr has no JSONPath of its own: it reads as a key
-        return [_Fragment(op.op.translated(_JSONPATH_KEY, t, True), {}, op.is_aligned())]
+        text = op.op.translated(_JSONPATH_KEY, t, True)
+        step = op.op.translated(_PATH_STEP, t, True)
+        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
 
     def slot(self, op, t):
-        return [_Fragment(op.op.translated(_JSONPATH_KEY, t, False), {}, op.is_aligned())]
+        text = op.op.translated(_JSONPATH_KEY, t, False)
+        step = op.op.translated(_PATH_STEP, t, False)
+        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
 
     def recursive(self, op, t):
         text = op.inner.translated(_RECURSIVE_JSONPATH, t)
-        return [_Fragment(text, {}, op.is_aligned())]
+        plain = (op.accessors is None
+                 and (op.depth_start, op.depth_stop, op.depth_step) == (None, None, None))
+        step = ('descend',) if plain else ('unread', 'a ** with depths or accessors')
+        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
 
     def slice_filter(self, op, t):
         # [pred] → [*] ? (pred)
         jvars = {}
         test = t._filters_to_jsonpath(op.filters, jvars)
-        return [_Fragment('[*]', jvars, op.is_aligned(), test)]
+        return [_Fragment('[*]', jvars, op.is_aligned(), test, (('items',),))]
 
     def filter_wrap(self, op, t):
         parts = op.inner.translated(self, t)
@@ -835,8 +1077,8 @@ class _Parts(Hooks):
         test = t._guard_to_jsonpath(op, jvars)
         return parts[:-1] + parts[-1].filtered(test, jvars)
 
-    def group(self, op, kind, branches, t):
-        return [_Group(kind, [t._jsonpath_parts(b) for b in branches])]
+    def group(self, op, kind, branches, cuts, softs, t):
+        return [_Group(kind, [t._jsonpath_parts(b) for b in branches], cuts, softs)]
 
 
 class _JsonPathKey(Hooks):
@@ -866,6 +1108,26 @@ class _JsonPathKey(Hooks):
 
     def reference(self, m, t, is_key):
         raise TranslationError('references inside pattern paths not supported yet')
+
+
+class _PathStep(Hooks):
+    """
+    A Key's or Slot's matcher as the step a path-tracking walk takes
+    (`_path_step`): ('key', name) for a key (`is_key`), ('index', n) for
+    a slot, or for a wildcard every member ('keys',) or element
+    ('items',). `_JsonPathKey` has already raised for any other.
+    """
+
+    def other(self, m, t, is_key):
+        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
+
+    def const(self, m, t, is_key):
+        if is_key:
+            return ('key', str(m.value))
+        return ('index', m.value)
+
+    def wildcard(self, m, t, is_key):
+        return ('keys',) if is_key else ('items',)
 
 
 class _FilterKeyJsonPath(_JsonPathKey):
@@ -1058,6 +1320,7 @@ class _JsonbPredicate(_ScalarPredicate):
 
 _PARTS = _Parts()
 _JSONPATH_KEY = _JsonPathKey()
+_PATH_STEP = _PathStep()
 _FILTER_KEY_JSONPATH = _FilterKeyJsonPath()
 _RECURSIVE_JSONPATH = _RecursiveJsonPath()
 _JSONPATH_VALUE = _JsonPathValue()

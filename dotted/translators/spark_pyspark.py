@@ -86,11 +86,14 @@ def _compare(lhs, op_str, value):
 #   ('each', 'array')  — every element of an array
 #   ('each', 'map')    — every value of a map
 #   ('cond', pred_fn)  — keep the node only where pred_fn(node, env)
-#   ('group', kind, branches)
+#   ('group', kind, branches, cuts, softs)
 #                      — each branch's steps from the node, the rest
 #                        of the steps after each: 'or' yields what they
-#                        all reach, 'and' that only where every branch
-#                        reaches something
+#                        all reach, up to the first branch a cut follows
+#                        (`cuts`) that reaches something; 'and' that only
+#                        where every branch reaches something. After a
+#                        branch a soft cut follows (`softs`), what overlaps
+#                        its matches is skipped.
 #   ('first', branches)
 #                      — the first match of the first branch to reach
 #                        one from the node, the branch alone; the rest
@@ -100,6 +103,11 @@ def _compare(lhs, op_str, value):
 # each element yields what the rest of the steps reach, or one null.
 # The conditions straight after an `each` are its op's own guards and
 # filters, so they decide which elements are matches.
+#
+# A select reads a node as its value. Under a soft cut it reads it as a
+# (path, value) struct instead, the path the segments from the node the
+# group is at, for a later branch to skip what overlaps: `_VALUES` and
+# `_PATHS` read nodes each way.
 
 def _elements(c, kind):
     """
@@ -110,12 +118,98 @@ def _elements(c, kind):
     return c
 
 
-def _gets(c, steps, env):
+def _node(path, value):
+    """
+    A node read with its path: a (path, value) struct.
+    """
+    F = _functions()
+    return F.struct(path.alias('path'), value.alias('value'))
+
+
+def _segment(c, key):
+    """
+    The path segment a reach into `c` by `key` adds, a string: the key,
+    or for an int the index it reads.
+    """
+    F = _functions()
+    if isinstance(key, bool) or not isinstance(key, int):
+        if isinstance(key, (str, bool, float)):
+            return F.lit(str(key))
+        return key.cast('string')
+    if key < 0:
+        return (F.size(c) + key).cast('string')
+    return F.lit(str(key))
+
+
+class _Values:
+    """
+    Nodes read as their values: what a select yields.
+    """
+
+    def start(self, c):
+        return _node(_functions().array().cast('array<string>'), c)
+
+    def read(self, nodes):
+        return _functions().transform(nodes, lambda n: n['value'])
+
+    def value(self, node):
+        return node
+
+    def get(self, node, key):
+        return _extract(node, key)
+
+    def elements(self, node, kind):
+        return _elements(node, kind)
+
+    def filled(self, found):
+        return _filled(found)
+
+
+class _Paths:
+    """
+    Nodes read as (path, value) structs, the path the segments from the
+    node a soft cut's group is at: what a soft cut compares.
+    """
+
+    def start(self, node):
+        return node
+
+    def read(self, nodes):
+        return nodes
+
+    def value(self, node):
+        return node['value']
+
+    def get(self, node, key):
+        F = _functions()
+        value = node['value']
+        return _node(F.concat(node['path'], F.array(_segment(value, key))),
+                     _extract(value, key))
+
+    def elements(self, node, kind):
+        F = _functions()
+        path = node['path']
+        value = node['value']
+        if kind == 'map':
+            return F.transform(F.map_entries(value), lambda e: _node(
+                F.concat(path, F.array(e['key'].cast('string'))), e['value']))
+        return F.transform(value, lambda x, i: _node(
+            F.concat(path, F.array(i.cast('string'))), x))
+
+    def filled(self, found):
+        raise TranslationError('aligned (+) under a soft cut not supported yet')
+
+
+_VALUES = _Values()
+_PATHS = _Paths()
+
+
+def _gets(c, steps, env, rd=_VALUES):
     """
     `c` reached into by a run of `get` steps.
     """
     for _, key_fn in steps:
-        c = _extract(c, key_fn(env))
+        c = rd.get(c, key_fn(env))
     return c
 
 
@@ -130,6 +224,8 @@ def _exists(c, steps, env):
             c = _extract(c, step[1](env))
             continue
         rest = steps[i + 1:]
+        # a soft cut changes which matches a group yields, not whether
+        # it yields any
         if kind == 'group':
             return _group_exists(c, step, rest, env)
         if kind == 'first':
@@ -172,29 +268,30 @@ def _filled(found):
     return F.when(F.size(found) > 0, found).otherwise(F.array(F.lit(None)))
 
 
-def _collect(c, steps, env):
+def _collect(c, steps, env, rd=_VALUES):
     """
-    Array Column of the nodes that `steps` reach from `c`.
+    Array Column of the nodes that `steps` reach from `c`, each read by
+    `rd`.
     """
     F = _functions()
     for i, step in enumerate(steps):
         kind = step[0]
         if kind == 'get':
-            c = _extract(c, step[1](env))
+            c = rd.get(c, step[1](env))
             continue
         if kind == 'group':
-            return _group_collect(c, step, steps[i + 1:], env)
+            return _group_collect(c, step, steps[i + 1:], env, rd)
         rest = steps[i + 1:]
         if kind == 'first':
             return _by_first(c, step[1], env,
-                             lambda first: _onward(first, rest, env), F.array())
+                             lambda first: _onward(first, rest, env, rd), F.array(), rd)
         if kind == 'cond':
-            return _onward(F.array(c), steps[i:], env)
-        return _onward(_elements(c, step[1]), rest, env, aligned=len(step) > 2)
+            return _onward(F.array(c), steps[i:], env, rd)
+        return _onward(rd.elements(c, step[1]), rest, env, rd, aligned=len(step) > 2)
     return F.array(c)
 
 
-def _onward(candidates, rest, env, aligned=False):
+def _onward(candidates, rest, env, rd=_VALUES, aligned=False):
     """
     Array Column of what the steps `rest` reach from each node of the
     array `candidates`. For an aligned `each`, each node yields what
@@ -206,30 +303,30 @@ def _onward(candidates, rest, env, aligned=False):
     # (a default argument would be taken for the element index)
     while rest and rest[0][0] == 'cond':
         pred_fn = rest[0][1]
-        candidates = F.filter(candidates, lambda x: pred_fn(x, env))
+        candidates = F.filter(candidates, lambda x: pred_fn(rd.value(x), env))
         rest = rest[1:]
     if not rest:
         return candidates
     if aligned:
         return F.flatten(
-            F.transform(candidates, lambda x: _filled(_collect(x, rest, env))))
+            F.transform(candidates, lambda x: rd.filled(_collect(x, rest, env, rd))))
     if all(s[0] == 'get' for s in rest):
-        return F.transform(candidates, lambda x: _gets(x, rest, env))
+        return F.transform(candidates, lambda x: _gets(x, rest, env, rd))
     return F.flatten(
-        F.transform(candidates, lambda x: _collect(x, rest, env)))
+        F.transform(candidates, lambda x: _collect(x, rest, env, rd)))
 
 
-def _first_of(c, branch, env):
+def _first_of(c, branch, env, rd=_VALUES):
     """
     Array Column of the first non-null node `branch` reaches from `c`,
     or empty. A null is no match, as in `_exists`.
     """
     F = _functions()
-    found = F.filter(_collect(c, branch, env), lambda x: x.isNotNull())
+    found = F.filter(_collect(c, branch, env, rd), lambda x: rd.value(x).isNotNull())
     return F.slice(found, 1, 1)
 
 
-def _by_first(c, branches, env, then, otherwise):
+def _by_first(c, branches, env, then, otherwise, rd=_VALUES):
     """
     The Column `then(first)` gives for the first of `branches` to reach
     a match from `c`, `first` the array of that match; `otherwise`
@@ -237,7 +334,7 @@ def _by_first(c, branches, env, then, otherwise):
     branches that reach different types still share what follows.
     """
     F = _functions()
-    firsts = [_first_of(c, branch, env) for branch in branches]
+    firsts = [_first_of(c, branch, env, rd) for branch in branches]
     case = F.when(F.size(firsts[0]) > 0, then(firsts[0]))
     for first in firsts[1:]:
         case = case.when(F.size(first) > 0, then(first))
@@ -251,14 +348,14 @@ def _group_exists(c, step, rest, env):
     """
     Boolean Column: the group step reaches something from `c`, the rest
     of the steps after each branch: some branch for 'or', every branch
-    for 'and'.
+    for 'and'. A cut changes which branches yield, not whether any does.
     """
-    _, kind, branches = step
+    _, kind, branches, _, _ = step
     found = (_exists(c, branch + rest, env) for branch in branches)
     return functools.reduce(_JOIN[kind], found)
 
 
-def _group_collect(c, step, rest, env):
+def _group_collect(c, step, rest, env, rd=_VALUES):
     """
     Array Column of what the group step reaches from `c`: each branch's
     matches in turn, the rest of the steps after it; for 'and', none
@@ -266,13 +363,100 @@ def _group_collect(c, step, rest, env):
     array adds nothing, as `concat` would make the whole null.
     """
     F = _functions()
-    _, kind, branches = step
-    found = F.concat(*(F.coalesce(_collect(c, branch + rest, env), F.array())
-                       for branch in branches))
+    _, kind, branches, _, softs = step
+    if any(softs):
+        return _softcut_collect(c, step, rest, env, rd)
+    found = [F.coalesce(_collect(c, branch + rest, env, rd), F.array()) for branch in branches]
     if kind == 'or':
-        return found
-    held = _group_exists(c, step, rest, env)
-    return F.filter(found, lambda x: held)
+        return _cut_concat(c, step, rest, env, found, rd)
+    held = _group_exists(rd.value(c), step, rest, env)
+    return F.filter(F.concat(*found), lambda x: held)
+
+
+def _cut_concat(c, step, rest, env, found, rd):
+    """
+    Array Column of the 'or' group step's branch matches, `found`, in
+    turn, ending after the first branch a cut follows that reaches
+    something from `c`: a null is no match, as in `_exists`.
+    """
+    F = _functions()
+    _, _, branches, cuts, _ = step
+    out = found[-1]
+    for branch, cut, matches in reversed(list(zip(branches, cuts, found))[:-1]):
+        if cut:
+            out = F.when(_exists(rd.value(c), branch + rest, env), F.array()).otherwise(out)
+        out = F.concat(matches, out)
+    return out
+
+
+def _softcut_collect(c, step, rest, env, rd):
+    """
+    Array Column of what a group step with a soft cut reaches from `c`:
+    each branch's matches in turn, read with their paths from the
+    group's node, less those that overlap a match a soft-cut branch
+    kept (`_uncovered`); for 'and', none unless every branch reaches
+    something.
+    """
+    F = _functions()
+    _, kind, branches, cuts, softs = step
+    node = rd.start(c)
+    tagged = []
+    for j, branch in enumerate(branches):
+        found = F.coalesce(_collect(node, branch + rest, env, _PATHS), F.array())
+        # transform calls the lambda at once, so j is this branch's
+        tagged.append(F.transform(found, lambda n: F.struct(
+            n.alias('node'), F.lit(j).alias('branch'),
+            F.lit(cuts[j]).alias('cut'), F.lit(softs[j]).alias('soft'))))
+    kept = _uncovered(F.concat(*tagged))
+    if kind == 'and':
+        held = _group_exists(rd.value(c), step, rest, env)
+        kept = F.filter(kept, lambda x: held)
+    return rd.read(kept)
+
+
+def _overlap(p, q):
+    """
+    Boolean Column: one of the paths `p` and `q` starts the other.
+    """
+    F = _functions()
+    return (F.slice(q, 1, F.size(p)) == p) | (F.slice(p, 1, F.size(q)) == q)
+
+
+def _uncovered(tagged):
+    """
+    Array Column of the nodes of `tagged`, (node, branch, cut, soft)
+    structs in order, that a soft cut didn't cover, in dotted's order:
+    one whose path overlaps the path of one a soft-cut branch kept is
+    dropped; a soft-cut branch's own nodes are kept as they pass; and
+    after a branch a cut follows keeps one, the branches after it are
+    dropped.
+    """
+    F = _functions()
+    init = F.struct(
+        F.array().cast('array<array<string>>').alias('kept'),
+        F.slice(F.transform(tagged, lambda t: t['node']), 1, 0).alias('out'),
+        F.lit(-1).alias('branch'),
+        F.lit(False).alias('cut'),
+        F.lit(False).alias('found'),
+        F.lit(False).alias('stop'))
+
+    def merge(acc, t):
+        moved = t['branch'] != acc['branch']
+        stop = acc['stop'] | (moved & acc['cut'] & acc['found'])
+        path = t['node']['path']
+        covered = F.exists(acc['kept'], lambda s: _overlap(s, path))
+        take = ~stop & ~covered
+        return F.struct(
+            F.when(take & t['soft'], F.concat(acc['kept'], F.array(path)))
+             .otherwise(acc['kept']).alias('kept'),
+            F.when(take, F.concat(acc['out'], F.array(t['node'])))
+             .otherwise(acc['out']).alias('out'),
+            t['branch'].alias('branch'),
+            t['cut'].alias('cut'),
+            F.when(moved, take).otherwise(acc['found'] | take).alias('found'),
+            stop.alias('stop'))
+
+    return F.aggregate(tagged, init, merge, lambda acc: acc['out'])
 
 
 # ---- PySpark mixin --------------------------------------------------
@@ -416,17 +600,18 @@ class PySparkMixin(Translator):
             unbound = _merged(unbound, op_unbound)
         return tuple(steps), unbound
 
-    def _group_steps(self, kind, branches):
+    def _group_steps(self, kind, branches, cuts, softs):
         """
         The one step for a group of `kind`: each branch's steps, for a
-        first match or for a group of its kind. Returns (steps, unbound).
+        first match or for a group of its kind, with the `cuts` and
+        `softs` after them. Returns (steps, unbound).
         """
         parts = [self._ops_steps(branch) for branch in branches]
         branch_steps = tuple(steps for steps, _ in parts)
         unbound = _merged(*(unbound for _, unbound in parts))
         if kind == 'first':
             return [('first', branch_steps)], unbound
-        return [('group', kind, branch_steps)], unbound
+        return [('group', kind, branch_steps, cuts, softs)], unbound
 
     # ---- predicates -------------------------------------------------
 
@@ -566,8 +751,8 @@ class _Steps(Hooks):
         pred_fn, unbound = t._guard_pred(op)
         return steps + [('cond', pred_fn)], _merged(inner_unbound, unbound)
 
-    def group(self, op, kind, branches, t):
-        return t._group_steps(kind, branches)
+    def group(self, op, kind, branches, cuts, softs, t):
+        return t._group_steps(kind, branches, cuts, softs)
 
 
 class _KeyStep(Hooks):

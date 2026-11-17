@@ -3798,7 +3798,21 @@ same rows:
     >>> str(r.where)
     "EXISTS (SELECT _pat1.value FROM LATERAL jsonb_path_query(COALESCE(jsonb_path_query_first(data, '$.users[*]'), jsonb_path_query_first(data, '$.user')), '$.age ? (@ >= 30)') AS _pat1(value))"
 
-`!` groups and cuts (`#`, `##`) raise `TranslationError` for now.
+A cut, `(a#, b)`, holds at each node: `b`'s JSONPath filters the node
+to where `a` reaches nothing, `$ ? (!(exists(@.a))).b`, so after `[*]`
+each element takes its own branch. In a conjunction, `(a#&b)`, the cut
+leaves `b` unneeded, and in a first-match group it changes nothing.
+
+A soft cut, `(a##, *)`, compares the paths of matches: `*` skips what
+overlaps `a`'s. JSONPath gives no match's path, so `r.lateral` walks
+the group's branches a step at a time with their paths
+(`jsonb_each`, `jsonb_array_elements`) and folds them in order with a
+recursive query, as dotted does; `r.where` stays JSONPath, as a soft
+cut changes which matches a group yields, not whether it yields any.
+An aligned op or a `**` with depths under a soft cut raises
+`TranslationError` for now.
+
+`!` groups raise `TranslationError` for now.
 dotted's `!` is the complement of what its path matches, not `NOT`:
 `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
 "x": 1}`.
@@ -4114,9 +4128,12 @@ match, as for `where`:
 `concat` needs one element type, so a group whose branches reach
 different types fails when Spark analyzes the Column; after a
 first-match group, only what the rest of the path reaches needs to
-share one. `!` groups (the
-complement of what their path matches, not `~`) and cuts (`#`, `##`)
-raise `TranslationError` for now.
+share one. After a cut, `(a#, b)`, `b` runs only where `a` found
+nothing, at each node; a null is no match, as for `where`. After a soft
+cut, `(a##, b)`, `b` skips what overlaps `a`'s matches: the group's
+branches are read with their paths and folded in order (`aggregate`).
+`!` groups (the complement of what their path matches, not `~`), and
+an aligned op under a soft cut, raise `TranslationError` for now.
 
 `**`, and `*` over a struct's fields, need the schema — Spark can't
 iterate struct fields at run time — and raise `TranslationError`.

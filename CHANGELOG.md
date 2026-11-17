@@ -22,6 +22,19 @@ the ones listed are omitted — browse git history for earlier entries.
   >= 30` is the first user's age, or `user`'s where there are none.
   `sqlize` reads it with `jsonb_path_query_first` and `COALESCE`, a
   lateral per node; `sparkize` takes the first non-null match.
+- `sqlize` and `sparkize` translate a cut, `#`, at each node the group
+  is at: after `(a#, b)`'s `a` reaches something, `b` isn't tried
+  there. `sqlize` filters `b`'s JSONPath to the nodes where `a`
+  reaches nothing; `sparkize` adds `b`'s matches only where `a` found
+  none. A cut in a conjunction leaves the branches after it unneeded.
+- `sqlize` and `sparkize` translate a soft cut, `##`: in `(a##, *)`,
+  `*` skips what overlaps `a`'s matches, at each node, folded in order
+  as dotted does, so `((a.b, a, a.d)##, *)` keeps `a.d`, the `a` it
+  overlaps having been dropped. `sqlize` walks such a group's branches
+  a step at a time with their paths (JSONPath gives none) and folds
+  them with a recursive query; `sparkize` reads them as (path, value)
+  structs and folds them with `aggregate`. An aligned op under a soft
+  cut, and in `sqlize` a `**` with depths, raise.
 - Cuts in a conjunction, by `get`, `update` and `remove` alike, at
   each node: in `(a#&b)`, once `a` matches, `b` isn't tried; in
   `(a##&*)`, `*` skips what overlaps `a`'s matches, a branch the soft
@@ -48,7 +61,7 @@ the ones listed are omitted — browse git history for earlier entries.
   they mean: `!` is the complement of what its path matches, so
   `data.(!(status = "banned"))` matches `x` in `{"status": "banned",
   "x": 1}`. They raise `TranslationError` until the translators build
-  the complement, as cuts (`#`, `##`) do.
+  the complement.
 - `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member,
   `@.* == 1`; it read a key named `*`, `@."*" == 1`.
 - `sqlize` and `sparkize` raise `TranslationError` on inputs they

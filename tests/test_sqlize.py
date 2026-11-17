@@ -406,18 +406,96 @@ def test_top_level_first_match_group():
         '(age = :_p1) OR (status = :_p2)', {'_p1': 18, '_p2': 'a'})
 
 
+def test_cut_group():
+    """
+    (a#, b): b's way runs only where a reaches nothing, a JSONPath
+    filter on the node; the cut changes which branches yield, not
+    whether the group matches.
+    """
+    r = sqlize('data.(a#, b)')
+    unless_a = "$ ? (!(exists(@.a))).b"
+    assert Resolver.build(r.where) == (
+        "(jsonb_path_exists(data, '$.a')) "
+        f"OR (jsonb_path_exists(data, '{unless_a}'))",
+        {},
+    )
+    assert Resolver.build(r.lateral) == (
+        "LATERAL (SELECT _pat2.value FROM LATERAL "
+        "jsonb_path_query(data, '$.a') AS _pat2(value) "
+        "UNION ALL SELECT _pat3.value FROM LATERAL "
+        f"jsonb_path_query(data, '{unless_a}') AS _pat3(value)) "
+        "AS _pat1(value)",
+        {},
+    )
+
+
+def test_cut_group_per_element():
+    """
+    After [*], the cut holds at each element: b where it has no a.
+    """
+    r = sqlize('data.x[*].(a#, b)')
+    assert Resolver.build(r.where) == (
+        "(jsonb_path_exists(data, '$.x[*].a')) "
+        "OR (jsonb_path_exists(data, '$.x[*] ? (!(exists(@.a))).b'))",
+        {},
+    )
+
+
+def test_cut_in_conjunction():
+    """
+    (a#&b): the conjunction holds only where a matches, and there the
+    cut ends it, so b is never needed.
+    """
+    r = sqlize('data.(a#&b)')
+    assert Resolver.build(r.where) == (
+        "jsonb_path_exists(data, '$ ? ((exists(@.a))).a')", {})
+
+
+def test_cut_in_first_match_group():
+    """
+    A cut changes nothing in a first-match group, whose first match
+    ends it anyway.
+    """
+    assert (Resolver.build(sqlize('data.(a#, b)?').lateral)
+            == Resolver.build(sqlize('data.(a, b)?').lateral))
+
+
+def test_soft_cut_group_where_is_the_groups():
+    """
+    A soft cut changes which matches a group yields, not whether it
+    yields any: the where is the plain group's.
+    """
+    assert (Resolver.build(sqlize('data.(a##, *)').where)
+            == Resolver.build(sqlize('data.(a, *)').where))
+
+
+def test_soft_cut_group_lateral_tracks_paths():
+    """
+    JSONPath gives no match's path, so a soft cut's lateral walks the
+    ways with their paths and folds them in order, a recursive query
+    keeping what no soft-cut branch's match overlaps.
+    """
+    sql, _ = Resolver.build(sqlize('data.(a##, *)').lateral)
+    assert 'jsonb_path_query' not in sql
+    assert "to_jsonb('a'::text)::text || ','" in sql
+    assert 'jsonb_each(CASE WHEN jsonb_typeof(' in sql
+    assert 'WITH RECURSIVE' in sql
+    assert 'starts_with(' in sql
+
+
 @pytest.mark.parametrize('path', [
     'data.(!(status="banned"))',
     '!(status="banned")',
-    'data.(x#, y)',
-    'data.(x##, y)',
     '(a, b)?.c',
+    'data.(x[*+]##, y)',
+    'data.(**:2##, y)',
 ])
 def test_group_not_supported_yet_raises(path):
     """
-    `!` (the complement of what its path matches, not NOT), cuts, and
-    a path after a top-level first-match group raise rather than
-    translate to anything else.
+    `!` (the complement of what its path matches, not NOT), a path
+    after a top-level first-match group, and under a soft cut an
+    aligned op or a ** with depths raise rather than translate to
+    anything else.
     """
     with pytest.raises(TranslationError, match='not supported yet'):
         sqlize(path)
