@@ -265,6 +265,39 @@ def test_build_needs_the_schema():
         r.build(r.where)
 
 
+def test_as_update_is_a_fragment():
+    """
+    A write translates without pyspark, to a fragment `build` makes,
+    with the substitutions its filters need.
+    """
+    r = sparkize('data.users[*&age >= $(min)].active')
+    u = r.as_update(True)
+    assert isinstance(u, ColumnFragment)
+    assert u.unbound == {'min': 'min'}
+
+
+@pytest.mark.parametrize('path', [
+    'data.(a, b)',
+    'data.(!a)',
+    'data.**.a',
+    'data.a[1:2]',
+])
+def test_unsupported_writes_raise(path):
+    """
+    Groups, negations, `**` and slices in a write raise, as in sqlize.
+    """
+    with pytest.raises(TranslationError):
+        sparkize(path).as_update(1)
+
+
+def test_table_search_write_raises():
+    """
+    A table search's write isn't built yet, as in sqlize.
+    """
+    with pytest.raises(TranslationError, match='table search'):
+        sparkize('books[*].title', root='table').as_update('x')
+
+
 @pytest.mark.parametrize('path', [
     '*.age = 1',
     '$(col).age = 1',

@@ -110,3 +110,14 @@ def df(spark):
     The sample DataFrame.
     """
     return spark.createDataFrame(_rows(), SCHEMA)
+
+
+@pytest.fixture(scope='session')
+def kinds(spark):
+    """
+    The DataFrame of every kind of column (`kinds.py`), and its rows as
+    Python sees them, by id.
+    """
+    from . import kinds as k
+    df = spark.createDataFrame(k.ROWS, k.SCHEMA)
+    return df, [row.asDict(recursive=True) for row in df.orderBy('id').collect()]

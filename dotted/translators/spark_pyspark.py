@@ -163,16 +163,16 @@ def _lit(test):
     return test
 
 
-def _fail(what):
+def _fail(what, who='dotted'):
     """
     A Column that fails the job when Spark reads it, where dotted raises
-    or Spark can't give what dotted would: `dotted: <what>`. It is made
+    or Spark can't give what dotted would: `<who>: <what>`. It is made
     in a lambda, which subexpression elimination doesn't read into, so
     it is never read ahead of the test that guards it: that pass reads
     both sides of an `AND` or `OR`.
     """
     F = _functions()
-    return F.get(F.transform(F.array(F.lit(0)), lambda v: F.raise_error(f'dotted: {what}')), 0)
+    return F.get(F.transform(F.array(F.lit(0)), lambda v: F.raise_error(f'{who}: {what}')), 0)
 
 
 def _failing(what):
@@ -413,7 +413,7 @@ def _shape(dtype):
     return dtype
 
 
-def _common(dtypes):
+def _common(dtypes, what='matches'):
     """
     The one Spark type matches of `dtypes` are read as, the values they
     are to Python kept: ints as a long, floats as a double. Matches of
@@ -439,7 +439,7 @@ def _common(dtypes):
         return T.StringType()
     names = ', '.join(s.simpleString() for s in real)
     raise TranslationError(
-        f'matches of more than one type ({names}): a Spark array holds one'
+        f'{what} of more than one type ({names}): a Spark array holds one'
     )
 
 
@@ -2162,6 +2162,596 @@ def _node_of(frag):
     return frag.node
 
 
+# ---- Writes ---------------------------------------------------------
+#
+# `as_update(value)` writes as dotted's `update` does: core's walk reads
+# the path, and each `_w_*` hook gives what the write does at one node,
+# a `_Writer` that `build` runs against the schema. A writer takes a
+# node that is there and not None and gives its new value, a node of
+# the type that value has: a struct's field takes the written value's
+# type; a map's values, and a list's elements, share one. Where Spark
+# can't hold a value as Python would — a struct whose dict lacks one of
+# its keys, a list of an int and a str — the job fails where a row has
+# it, as it does where dotted's update raises.
+
+_UNHELD = 'a value Spark cannot hold as Python does'
+
+
+class _Writer:
+    """
+    What a write does at a node: `write(node, env)` gives the node's new
+    value, a `_Node`. `value` marks the writer that puts the written
+    value there, whatever the node.
+    """
+
+    __slots__ = ('write', 'value')
+
+    def __init__(self, write, value=False):
+        self.write = write
+        self.value = value
+
+    def __call__(self, node, env):
+        return self.write(node, env)
+
+
+class _Written:
+    """
+    A write's value where it is a Spark Column, read by its type in the
+    active session; None for a literal, which dotted places itself.
+    """
+
+    __slots__ = ('column',)
+
+    def __init__(self, column):
+        self.column = column
+
+    def node(self, env):
+        return _Node(self.column, _column_type(self.column, env))
+
+
+def _wfail(what, node):
+    """
+    The node's new value where dotted's update raises: a failure, of the
+    node's own type.
+    """
+    return node.like(_fail(f'cannot write {what} at a {node.dtype.simpleString()}',
+                           'dotted update').cast(node.dtype), node.dtype)
+
+
+def _unheld(dtype, value=None):
+    """
+    A Column of the Spark type `dtype` that fails the job: a value Spark
+    can't hold as Python does, or one dotted can't build.
+    """
+    if isinstance(value, core.BuildError):
+        return _fail(f"what dotted can't build ({value.message})", 'dotted update').cast(dtype)
+    return _fail(_UNHELD, 'dotted update').cast(dtype)
+
+
+def _held(value, dtype, written, env):
+    """
+    The Python `value`, the written one or a node dotted built, as a
+    Column of the Spark type `dtype` that holds it exactly, as asDict
+    hands it back; None where no value of the type is it.
+    """
+    F = _functions()
+    kind = _kind(dtype)
+    if value is core.WRITTEN:
+        return _coerced(written.node(env), dtype)
+    if value is None:
+        return F.lit(None).cast(dtype)
+    if isinstance(value, bool):
+        return F.lit(value) if kind == 'boolean' else None
+    if isinstance(value, int):
+        if kind != 'integral':
+            return None
+        lo, hi = _int_range(dtype)
+        return F.lit(value).cast(dtype) if lo <= value <= hi else None
+    if isinstance(value, float):
+        if kind != 'fractional':
+            return None
+        if type(dtype).__name__ == 'FloatType' and not math.isnan(value) and _as_float32(value) is None:
+            return None
+        return F.lit(value).cast(dtype)
+    if isinstance(value, decimal.Decimal):
+        if kind != 'decimal' or not value.is_finite():
+            return None
+        lo, hi, step = _decimal_grid(dtype)
+        q = fractions.Fraction(value)
+        return F.lit(value).cast(dtype) if (q / step).denominator == 1 and lo <= q <= hi else None
+    if isinstance(value, str):
+        return F.lit(value).cast(dtype) if kind == 'string' else None
+    if isinstance(value, datetime.datetime):
+        return None
+    if isinstance(value, datetime.date):
+        return F.lit(value) if kind == 'date' else None
+    if isinstance(value, dict):
+        return _held_dict(value, dtype, written, env)
+    if isinstance(value, list) and kind == 'array':
+        items = [_held(v, dtype.elementType, written, env) for v in value]
+        if any(item is None for item in items):
+            return None
+        return F.array(*items).cast(dtype) if items else _empty_of(dtype.elementType)
+    return None
+
+
+def _held_dict(value, dtype, written, env):
+    """
+    `_held` for a dict: a struct of exactly its keys, or a map.
+    """
+    F = _functions()
+    kind = _kind(dtype)
+    if kind == 'struct':
+        names = [f.name for f in dtype.fields]
+        if len(value) != len(names) or set(value) != set(names):
+            return None
+        parts = [_held(value[f.name], f.dataType, written, env) for f in dtype.fields]
+        if any(part is None for part in parts):
+            return None
+        return F.struct(*(part.alias(f.name) for part, f in zip(parts, dtype.fields)))
+    if kind != 'map':
+        return None
+    pairs = []
+    for k, v in value.items():
+        key = _key_literal(dtype.keyType, k)
+        item = _held(v, dtype.valueType, written, env)
+        if key is _NO_KEY or item is None:
+            return None
+        pairs.extend((key, item))
+    return F.create_map(*pairs).cast(dtype)
+
+
+def _held_or_fail(value, dtype, written, env):
+    """
+    `_held`, or a Column of the type that fails where it's read.
+    """
+    if isinstance(value, core.BuildError):
+        return _unheld(dtype, value)
+    held = _held(value, dtype, written, env)
+    return _unheld(dtype) if held is None else held
+
+
+def _natural_type(value, written, env):
+    """
+    The Spark type that holds the Python `value` as Python does, nothing
+    else known: an int a long, a float a double, a dict of str keys a
+    struct, of others a map, a list an array of its items' one type.
+    One Spark can't hold raises.
+    """
+    T = _types()
+    if value is core.WRITTEN:
+        return written.node(env).dtype
+    if value is None:
+        return T.NullType()
+    if isinstance(value, bool):
+        return T.BooleanType()
+    if isinstance(value, int):
+        if -2 ** 63 <= value < 2 ** 63:
+            return T.LongType()
+        raise TranslationError(f'an int a long cannot hold: {value}')
+    if isinstance(value, float):
+        return T.DoubleType()
+    if isinstance(value, decimal.Decimal) and value.is_finite():
+        _, digits, exponent = value.as_tuple()
+        scale = max(-exponent, 0)
+        precision = max(len(digits) + max(exponent, 0), scale, 1)
+        if precision <= 38:
+            return T.DecimalType(precision, scale)
+    if isinstance(value, str):
+        return T.StringType()
+    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+        return T.DateType()
+    if isinstance(value, dict):
+        if not value:
+            return T.MapType(T.StringType(), T.StringType())
+        if all(isinstance(k, str) for k in value):
+            return T.StructType([T.StructField(k, _natural_type(v, written, env))
+                                 for k, v in value.items()])
+        key = _common([_natural_type(k, written, env) for k in value], 'keys')
+        return T.MapType(key, _common([_natural_type(v, written, env) for v in value.values()],
+                                      'values'))
+    if isinstance(value, list):
+        if not value:
+            return T.ArrayType(T.StringType())
+        return T.ArrayType(_common([_natural_type(v, written, env) for v in value], 'items'))
+    raise TranslationError(f'a value Spark cannot hold as Python does: {value!r}')
+
+
+def _natural(value, written, env):
+    """
+    The Python `value` as a node of the Spark type that holds it
+    (`_natural_type`).
+    """
+    if value is core.WRITTEN:
+        return written.node(env)
+    if isinstance(value, core.BuildError):
+        T = _types()
+        return _Node(_unheld(T.NullType(), value), T.NullType())
+    dtype = _natural_type(value, written, env)
+    return _Node(_held_or_fail(value, dtype, written, env), dtype)
+
+
+def _coerced(node, dtype):
+    """
+    The node's value as a Column of the Spark type `dtype`, the same
+    value to Python; where it can't be, as an int in a str's place, the
+    job fails.
+    """
+    F = _functions()
+    T = _types()
+    c = node.col
+    if _shape(node.dtype) == _shape(dtype):
+        return c
+    a, b = node.kind, _kind(dtype)
+    if a == 'null':
+        return F.lit(None).cast(dtype)
+    if a == b == 'integral':
+        lo, hi = _int_range(dtype)
+        return F.when((c < lo) | (c > hi), _unheld(dtype)).otherwise(c.cast(dtype))
+    if a == b == 'string':
+        return c.cast(dtype)
+    if a == b and a in ('fractional', 'decimal'):
+        cast = c.cast(dtype)
+        lossy = c.isNotNull() & (cast.isNull() | (cast.cast(node.dtype) != c))
+        if a == 'fractional':
+            lossy = lossy & ~F.isnan(c)
+        return F.when(lossy, _unheld(dtype)).otherwise(cast)
+    if a == b == 'array':
+        return F.transform(c, lambda x: _coerced(_Node(x, node.dtype.elementType),
+                                                 dtype.elementType))
+    if a == b == 'map' and _shape(node.dtype.keyType) == _shape(dtype.keyType):
+        return F.transform_values(c, lambda k, v: _coerced(_Node(v, node.dtype.valueType),
+                                                           dtype.valueType))
+    if a == b == 'struct':
+        theirs = {f.name: f for f in node.dtype.fields}
+        if len(theirs) == len(dtype.fields) and set(theirs) == {f.name for f in dtype.fields}:
+            fields = [_coerced(_Node(c.getField(f.name), theirs[f.name].dataType),
+                               f.dataType).alias(f.name) for f in dtype.fields]
+            return F.when(c.isNull(), F.lit(None).cast(dtype)).otherwise(F.struct(*fields))
+    return F.when(c.isNull(), F.lit(None).cast(dtype)).otherwise(_unheld(dtype))
+
+
+def _chosen(test, out, node):
+    """
+    `out`, the node written, where `test` holds; the node as it was,
+    read as `out`'s type, elsewhere.
+    """
+    if test is True:
+        return out
+    if test is False:
+        return node.like(_coerced(node, out.dtype), out.dtype)
+    F = _functions()
+    return out.like(F.when(test, out.col).otherwise(_coerced(node, out.dtype)), out.dtype)
+
+
+def _put(x, child, null, written, env):
+    """
+    The child `x` written: by `child`, or, where it is None, the node
+    dotted builds for a null one, `null`.
+    """
+    out = child(x, env)
+    if child.value:
+        return out
+    F = _functions()
+    built = _held_or_fail(null, out.dtype, written, env)
+    return out.like(F.when(x.col.isNull(), built).otherwise(out.col), out.dtype)
+
+
+def _written_at(node, value, written, env):
+    """
+    The written value at the node: in the node's own type where it holds
+    it as Python does, else in the type that does.
+    """
+    if value is core.WRITTEN:
+        made = written.node(env)
+        return node.like(made.col, made.dtype)
+    held = _held(value, node.dtype, written, env)
+    if held is not None:
+        return node.like(held, node.dtype)
+    made = _natural(value, written, env)
+    return node.like(made.col, made.dtype)
+
+
+def _with_field(node, name, out):
+    """
+    The struct node with its field `name` set to `out`, added at the
+    end where it has none, as a dict gains a key.
+    """
+    T = _types()
+    fields = [T.StructField(f.name, out.dtype if f.name == name else f.dataType)
+              for f in node.dtype.fields]
+    if all(f.name != name for f in fields):
+        fields.append(T.StructField(name, out.dtype))
+    return node.like(node.col.withField(name, out.col), T.StructType(fields))
+
+
+def _over_values(node, pick, child, null, written, env):
+    """
+    The map node with each value `pick(key, value, index)` picks written,
+    the rest as they were, all read as the written values' type.
+    """
+    F = _functions()
+    T = _types()
+    vt = node.dtype.valueType
+    seen = []
+
+    def each(e, i):
+        x = _Node(e['value'], vt)
+        out = _put(x, child, null, written, env)
+        seen.append(out.dtype)
+        chosen = _chosen(pick(e['key'], x, i), out, x)
+        return F.struct(e['key'].alias('key'), chosen.col.alias('value'))
+    entries = F.transform(F.map_entries(node.col), each)
+    return node.like(F.map_from_entries(entries), T.MapType(node.dtype.keyType, seen[0]))
+
+
+def _over_items(node, pick, child, null, written, env):
+    """
+    The list node with each element `pick(element, index)` picks
+    written, the rest as they were, all read as the written ones' type.
+    """
+    F = _functions()
+    T = _types()
+    et = node.dtype.elementType
+    seen = []
+
+    def each(x, i):
+        xn = _Node(x, et)
+        out = _put(xn, child, null, written, env)
+        seen.append(out.dtype)
+        return _chosen(pick(xn, i), out, xn).col
+    arr = F.transform(node.col, each)
+    return node.like(arr, T.ArrayType(seen[0]))
+
+
+def _key_writer(kind, value, child, absent, null, written):
+    """
+    The writer of a literal key ('key') or slot ('index'): the child it
+    names written, or where it is missing `absent`, the node dotted
+    builds (`core.UNBUILT`: the node stays). A struct reads it as a
+    field's name, a map as a key equal to it; a list an int as an index,
+    from the end where negative, a slot past the end appending.
+    """
+    def write(n, env):
+        k = n.kind
+        if k == 'struct':
+            return _struct_key(n, value, child, absent, null, written, env)
+        if k == 'map':
+            return _map_key(n, value, child, absent, null, written, env)
+        if k == 'array' and core._is_index(value):
+            return _list_index(n, value, kind == 'index', child, absent, null, written, env)
+        if k == 'array':
+            return _wfail('a key', n)
+        if k == 'string':
+            return _wfail('a key or slot', n)
+        return _wfail('a key or slot', n)
+    return _Writer(write)
+
+
+def _struct_key(n, value, child, absent, null, written, env):
+    """
+    `_key_writer` at a struct.
+    """
+    for f in n.dtype.fields:
+        if f.name == value:
+            return _with_field(n, value, _put(_field(n, f), child, null, written, env))
+    if absent is core.UNBUILT:
+        return n
+    if not isinstance(value, str):
+        # a dict gains a key no struct field can be
+        return n.like(_unheld(n.dtype), n.dtype)
+    return _with_field(n, value, _natural(absent, written, env))
+
+
+def _map_key(n, value, child, absent, null, written, env):
+    """
+    `_key_writer` at a map.
+    """
+    F = _functions()
+    T = _types()
+    k = _key_literal(n.dtype.keyType, value)
+    if k is _NO_KEY:
+        # a dict gains a key none of the map's can be
+        return n if absent is core.UNBUILT else n.like(_unheld(n.dtype), n.dtype)
+    present = _over_values(n, lambda key, x, i: key == k, child, null, written, env)
+    vt = present.dtype.valueType
+    kept = _coerced(n, present.dtype)
+    if absent is core.UNBUILT:
+        missing = kept
+    else:
+        missing = F.map_concat(kept, F.create_map(k, _held_or_fail(absent, vt, written, env)))
+    has = F.array_contains(F.map_keys(n.col), k)
+    return n.like(F.when(has, present.col).otherwise(missing), T.MapType(n.dtype.keyType, vt))
+
+
+def _list_index(n, value, appends, child, absent, null, written, env):
+    """
+    `_key_writer` at a list: the element at the int `value`, from the
+    end where negative; past the end a slot (`appends`) appends
+    `absent`; before the start, or a key past either end, fails as
+    dotted's update does.
+    """
+    F = _functions()
+    T = _types()
+    size = F.size(n.col)
+    at = F.lit(value) if value >= 0 else size + value
+    inside = size > value if value >= 0 else size >= -value
+    present = _over_items(n, lambda x, i: i == at, child, null, written, env)
+    et = present.dtype.elementType
+    kept = _coerced(n, present.dtype)
+    if absent is core.UNBUILT:
+        outside = kept
+    elif appends and value >= 0:
+        outside = F.concat(kept, F.array(_held_or_fail(absent, et, written, env)))
+    else:
+        outside = _wfail('an index out of range', n.like(kept, present.dtype)).col
+    return n.like(F.when(inside, present.col).otherwise(outside), T.ArrayType(et))
+
+
+def _each_writer(kind, value, first, test, child, null, written):
+    """
+    The writer of the children an op picks that pass `test` (None: all):
+    a wildcard of keys' ('keys', `.*`) a dict's members, of slots'
+    ('items', `[*]`) those or a list's elements, or a literal's one
+    ('key', 'index'); for `first`, the first child alone, where it
+    passes. None is built where they're missing.
+    """
+    def picks(x, env, i):
+        held = True if test is None else test(x, env)
+        if first:
+            held = _and(held, i == 0) if not isinstance(i, int) else (held if i == 0 else False)
+        return held
+
+    def write(n, env):
+        k = n.kind
+        if kind in ('key', 'index'):
+            return _one_writer(n, value, test, child, null, written, env)
+        if k == 'struct':
+            out = n
+            for i, f in enumerate(n.dtype.fields):
+                x = _field(n, f)
+                held = picks(x, env, i)
+                if held is False:
+                    continue
+                out = _with_field(out, f.name, _chosen(held, _put(x, child, null, written, env), x))
+            return out
+        if k == 'map':
+            return _over_values(n, lambda key, x, i: picks(x, env, i), child, null, written, env)
+        if k in ('array', 'string') and kind == 'keys':
+            # a key reaches no element: nothing is written
+            return n
+        if k == 'array':
+            return _over_items(n, lambda x, i: picks(x, env, i), child, null, written, env)
+        if k == 'string':
+            return _wfail('a slot wildcard', n)
+        return _wfail('a wildcard', n)
+    return _Writer(write)
+
+
+def _one_writer(n, value, test, child, null, written, env):
+    """
+    The node with the one child a literal names written where it's there
+    and passes `test`.
+    """
+    k = n.kind
+    if k == 'struct':
+        for f in n.dtype.fields:
+            if f.name == value:
+                x = _field(n, f)
+                return _with_field(n, value, _chosen(test(x, env), _put(x, child, null, written, env), x))
+        return n
+    if k == 'map':
+        key = _key_literal(n.dtype.keyType, value)
+        if key is _NO_KEY:
+            return n
+        return _over_values(n, lambda kk, x, i: _and(kk == key, test(x, env)),
+                            child, null, written, env)
+    if k == 'array' and core._is_index(value):
+        F = _functions()
+        at = F.lit(value) if value >= 0 else F.size(n.col) + value
+        return _over_items(n, lambda x, i: _and(i == at, test(x, env)), child, null, written, env)
+    if k == 'array':
+        return n
+    return _wfail('a key or slot', n)
+
+
+def _append_writer(built, unique, written):
+    """
+    The writer of an append slot: `built` appended to the list, or, for
+    `unique`, only where the list doesn't hold it as Python's `in` tells.
+    """
+    def write(n, env):
+        if n.kind != 'array':
+            return _wfail('an append', n)
+        F = _functions()
+        et = n.dtype.elementType
+        item = None if isinstance(built, core.BuildError) else _held(built, et, written, env)
+        appended = (_unheld(n.dtype, built) if item is None
+                    else F.concat(n.col, F.array(item)))
+        if unique:
+            # held already, nothing is appended: what Spark couldn't hold isn't read
+            holds = F.exists(n.col, lambda x: _lit(_equals(_Node(x, et), built, written, env)))
+            appended = F.when(holds, n.col).otherwise(appended)
+        return n.like(appended, n.dtype)
+    return _Writer(write)
+
+
+def _equals(node, value, written, env):
+    """
+    The test that the node's value == the Python `value`, as Python
+    tells: a dict and a list by their items.
+    """
+    F = _functions()
+    if value is core.WRITTEN:
+        return _against(node, '=', written.node(env))
+    if isinstance(value, dict):
+        there = node.col.isNotNull()
+        if node.kind == 'struct':
+            names = [f.name for f in node.dtype.fields]
+            if len(value) != len(names) or set(value) != set(names):
+                return False
+            return _and(there, *(_equals(_field(node, f), value[f.name], written, env)
+                                 for f in node.dtype.fields))
+        if node.kind != 'map':
+            return False
+        tests = [there, F.size(node.col) == len(value)]
+        for k, v in value.items():
+            key = _key_literal(node.dtype.keyType, k)
+            if key is _NO_KEY:
+                return False
+            tests.append(F.array_contains(F.map_keys(node.col), key))
+            tests.append(_equals(_Node(node.col[key], node.dtype.valueType), v, written, env))
+        return _and(*tests)
+    if isinstance(value, (list, tuple)):
+        if node.kind != 'array':
+            return False
+        et = node.dtype.elementType
+        return _and(node.col.isNotNull(), F.size(node.col) == len(value),
+                    *(_equals(_Node(F.get(node.col, i), et), v, written, env)
+                      for i, v in enumerate(value)))
+    return _compared(node, '=', value, env)
+
+
+class _Update(ColumnFragment):
+    """
+    A write, not made yet: `build` makes a dict of each column it
+    touches, by name, to its new value, for `df.withColumns`.
+    """
+
+    __slots__ = ('pairs',)
+
+    def __init__(self, pairs, unbound=None):
+        def make(env):
+            out = {}
+            for name, frag in pairs:
+                node = frag.node(env)
+                if node is None:
+                    raise TranslationError(f'a write of a column the schema lacks: {name}')
+                out[name] = node.col
+            return out
+        super().__init__(make, unbound)
+        self.pairs = pairs
+
+
+class _WriteTest(Hooks):
+    """
+    A filter's or guard's test on a node a write reaches, as a read
+    takes it: `(test(node, env), unbound)`.
+    """
+
+    def other(self, op, t):
+        raise TranslationError(f'not a test in a write: {type(op).__name__}')
+
+    def filter_wrap(self, op, t):
+        return t._filters_pred(op.filters)
+
+    def value_guard(self, op, t):
+        return t._guard_pred(op)
+
+
+_WRITE_TEST = _WriteTest()
+
+
 # ---- Rows of a table search -----------------------------------------
 
 # the column a gate's count of rows is read from, dropped after
@@ -2214,6 +2804,8 @@ class PySparkMixin(Translator):
         and `self.unbound`, and a table search's `self.table`,
         `self.offset` and `self.limit`.
         """
+        self._ops = ops
+        self._root = root
         raw, (self.table, self.offset, self.limit) = (
             self._translate_root(ops, root))
         self.select = raw.get('select')
@@ -2491,6 +3083,104 @@ class PySparkMixin(Translator):
         for n, part in enumerate(parts):
             steps.extend(part.translated(_FILTER_KEY_STEP, self, n == len(parts) - 1))
         return tuple(steps)
+
+    # ---- writes -----------------------------------------------------
+
+    def as_update(self, value):
+        """
+        The write of `value` at the path's matches, as dotted's `update`
+        does it: a fragment `build` makes into a dict of each column the
+        write touches, by name, to its new value, for `df.withColumns`.
+        `value` is a literal, or a Spark Column read by its type.
+        """
+        column = value if _is_column(value) else None
+        self._wwritten = _Written(column)
+        self._wunbound = {}
+        pairs = self._translate_write(self._ops, self._root, value, column is None)
+        return _Update(pairs, self._wunbound)
+
+    def _w_test(self, op):
+        """
+        A filter's or guard's test on a child, as a read takes it.
+        """
+        test, unbound = op.translated(_WRITE_TEST, self)
+        self._wunbound = _merged(self._wunbound, unbound)
+        return test
+
+    def _w_column_test(self, op, col):
+        """
+        A filter's or guard's test on a column, as on any node.
+        """
+        return self._w_test(op)
+
+    def _w_keep(self):
+        """
+        The writer that leaves the node as it is: a `~` holds the write
+        back. dotted's update still raises on a scalar but a str.
+        """
+        def write(n, env):
+            if n.kind in ('struct', 'map', 'array', 'string'):
+                return n
+            return _wfail('a key or slot', n)
+        return _Writer(write)
+
+    def _w_value(self):
+        """
+        The writer that puts the written value at the node.
+        """
+        value, written = self._written, self._wwritten
+        return _Writer(lambda n, env: _written_at(n, value, written, env), value=True)
+
+    def _w_column_value(self, col, test):
+        """
+        A column's new value, the written value, where `test` holds.
+        """
+        value, written, make = self._written, self._wwritten, col.node
+
+        def node(env):
+            n = make(env)
+            if n is None:
+                return None
+            held = True if test is None else test(n, env)
+            if held is False:
+                return n
+            return _chosen(held, _written_at(n, value, written, env), n)
+        return _Typed(node)
+
+    def _w_column(self, col, child, null, test):
+        """
+        A column's new value: `child` written in it, or the node dotted
+        builds for a null one, where `test` holds.
+        """
+        written, make = self._wwritten, col.node
+
+        def node(env):
+            n = make(env)
+            if n is None:
+                return None
+            held = True if test is None else test(n, env)
+            if held is False:
+                return n
+            return _chosen(held, _put(n, child, null, written, env), n)
+        return _Typed(node)
+
+    def _w_key(self, kind, value, child, absent, null):
+        """
+        The writer of a literal key or slot (`_key_writer`).
+        """
+        return _key_writer(kind, value, child, absent, null, self._wwritten)
+
+    def _w_each(self, kind, value, first, test, child, null):
+        """
+        The writer of the children an op picks (`_each_writer`).
+        """
+        return _each_writer(kind, value, first, test, child, null, self._wwritten)
+
+    def _w_append(self, built, unique):
+        """
+        The writer of an append slot (`_append_writer`).
+        """
+        return _append_writer(built, unique, self._wwritten)
 
 
 # ---- Reading ops ----------------------------------------------------

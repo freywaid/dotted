@@ -630,10 +630,10 @@ class PostgresMixin(Translator):
     def _w_keep(self):
         """
         The writer that leaves the node as it is: a `~` holds the write
-        back. The node must still be a container, as for any write.
+        back. dotted's update still raises on a scalar but a string.
         """
         def body(n):
-            return (f"CASE WHEN jsonb_typeof({n}) IN ('object', 'array') THEN {n} "
+            return (f"CASE WHEN jsonb_typeof({n}) IN ('object', 'array', 'string') THEN {n} "
                     f"ELSE {self._w_error('a scalar', n)} END")
         return _Writer(lambda node: self._bound(node, body))
 
@@ -754,15 +754,13 @@ class PostgresMixin(Translator):
                 return self._w_one(n, value, test, child, null)
             obj = self._w_rebuilt(n, 'object', first, test, child, null)
             arr = self._w_rebuilt(n, 'array', first, test, child, null)
-            if kind == 'keys' and test is not None:
-                # a key reaches no element: the filter or guard keeps none
-                arr = n
-            elif kind == 'keys':
-                # dotted builds garbage from a full array there
-                arr = (f'CASE WHEN jsonb_array_length({n}) = 0 THEN {n} '
-                       f"ELSE {self._w_error('a key wildcard on an array', n)} END")
+            string = self._w_error('a slot wildcard', n)
+            if kind == 'keys':
+                # a key reaches no element or character: nothing is written
+                arr = string = n
             return (f"CASE jsonb_typeof({n}) WHEN 'object' THEN {obj} "
-                    f"WHEN 'array' THEN {arr} ELSE {self._w_error('a scalar', n)} END")
+                    f"WHEN 'array' THEN {arr} WHEN 'string' THEN {string} "
+                    f"ELSE {self._w_error('a scalar', n)} END")
         return _Writer(lambda node: self._bound(node, body))
 
     def _w_one(self, n, value, test, child, null):

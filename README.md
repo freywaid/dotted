@@ -4312,6 +4312,40 @@ A `Column` can't hold a placeholder, so `r.where` is a
     b = dotted.sparkize('status = "active"')
     df.where(a.build(a.where & b.where, schema=df.schema, min_age=30))
 
+### Writes (`as_update`)
+
+`r.as_update(value)` is the write of `value` at the path's matches, as
+dotted's `update` does it, and as `sqlize`'s `as_update` writes it.
+`build` makes it a dict of each column the write touches to its new
+value, for `df.withColumns`:
+
+    r = dotted.sparkize('data.user.role')
+    df = df.withColumns(r.build(r.as_update('admin'), schema=df.schema))
+
+The write is:
+- `value` at each match;
+- along literal keys and slots, the nodes the path lacks built, a null
+  one replaced, as dotted builds them, and a slot past the end
+  appending;
+- a pattern, filter or guard writing only what is there and passes;
+- `~` holding a segment back;
+- `[+]` appending, and `[+?]` where the list doesn't hold the value, as
+  Python's `in` tells.
+
+A value is a literal, or a `Column`, read by its type; a transform at
+the end of the path applies to a literal. A struct's field takes the
+written value's type; a map's values, and a list's elements, share
+one. Where Spark can't hold what dotted writes, the job fails, with a
+`dotted update: …` message, where a row has it:
+- a null struct, which dotted makes a dict of only the keys the path
+  names;
+- a field added to some of a list's structs and not to others;
+- a str written among a map's ints.
+
+So does a write where dotted's update raises: a key on a list, an
+index before its start. A slot on a str, which dotted writes, fails
+too for now, as in `sqlize` (#75).
+
 <a id="sparkize-table-search"></a>
 ### `sparkize` table search
 
@@ -4356,7 +4390,8 @@ Not yet supported (`TranslationError`):
 - Comparing a `DECIMAL` with a float `Column`; `str()` or a regex of a
   timestamp, whose Python value depends on the session's time zone;
   reading into a binary value
-- Writes
+- In a write: groups, `!`, `**` and slices; a table search; a column
+  the schema lacks
 
 ### API reference
 
@@ -4375,12 +4410,20 @@ Not yet supported (`TranslationError`):
 `r.build(fragment, schema=None, **bindings)`
 
 - `fragment` — a `ColumnFragment` (`r.where`, `r.select`, or a
-  composition of fragments).
+  composition of fragments), or `r.as_update(value)`, which builds to a
+  dict of column name to `Column`.
 - `schema` — **required**. The schema of the DataFrame the Column
   reads, `df.schema`: a path reads each node by its type.
 - `**bindings` — values for substitutions, keyed by original
   substitution name. An unknown or missing binding raises
   `TranslationError`.
+
+`r.as_update(value)`
+
+- `value` — a literal, or a Spark `Column`, read by its type.
+- Returns a fragment `build` makes into a dict of each column the write
+  touches, by name, to its new value, for `df.withColumns` (see
+  *Writes* above).
 
 Translation never imports pyspark; only `build` does.
 

@@ -3,6 +3,26 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `sparkize`'s `r.as_update(value)`, the write of `value` at a column
+  path's matches as dotted's `update` does it, as `sqlize`'s
+  `as_update` writes it: `build` makes it a dict for `df.withColumns`,
+  `df.withColumns(r.build(r.as_update('admin'), schema=df.schema))`.
+  Each node is written by its Spark type: a struct's field takes the
+  written value's type, a map's values and a list's elements share one.
+  Where Spark can't hold what dotted writes, as a null struct dotted
+  makes a dict of fewer keys, or where dotted's update raises, the job
+  fails with a `dotted update: …` message. Groups, `!`, `**` and slices
+  in a write raise, and a slot on a str fails the job, as in `sqlize`
+  (#75).
+
+### Fixed
+- `sqlize`'s `as_update` writes nothing under `~` at a string, and
+  nothing for `.*` at an array or a string, as dotted's update does;
+  it failed.
+
 ## [0.56.0]
 
 ### Added

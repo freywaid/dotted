@@ -3,65 +3,21 @@ sparkize reads as dotted does: each path's `where` against `dotted.has`
 and its `select` against `dotted.get`, on each row as Python sees it,
 `row.asDict(recursive=True)`, over a DataFrame of every kind of column.
 """
-import datetime
 import decimal
-import math
 
 import pytest
 
 pytest.importorskip('pyspark')
 
-from pyspark.sql import Row, functions as F
+from pyspark.sql import functions as F
 
 import dotted
 from dotted.translators import TranslationError
 
+from .kinds import py, same
+
 
 D = decimal.Decimal
-
-SCHEMA = ', '.join([
-    'id INT', 's STRING', 'i INT', 'l BIGINT', 'd DOUBLE', 'f FLOAT', 'b BOOLEAN',
-    'dec DECIMAL(10,2)', 'dt DATE',
-    'arr ARRAY<INT>', 'sarr ARRAY<STRING>', 'darr ARRAY<DOUBLE>',
-    'm MAP<STRING,INT>', 'mi MAP<INT,STRING>',
-    'st STRUCT<x: INT, y: STRING, z: ARRAY<INT>>',
-    'ast ARRAY<STRUCT<x: INT, y: STRING>>',
-    'mm MAP<STRING, STRUCT<x: INT, role: STRING>>',
-    'nest STRUCT<a: STRUCT<role: STRING, k: INT>, b: MAP<STRING, STRUCT<role: STRING, k: INT>>>',
-])
-
-ROWS = [
-    (1, 'active', 1, 1, 1.0, 1.5, True, D('1.00'), datetime.date(2024, 1, 2),
-     [1, 2, 3], ['a', 'b'], [1.0, float('nan'), 2.5],
-     {'k': 1, 'm': 2}, {0: 'zero', 1: 'one'},
-     {'x': 1, 'y': 'u', 'z': [1]},
-     [{'x': 1, 'y': 'a'}, {'x': 2, 'y': None}, None],
-     {'p': {'x': 1, 'role': 'admin'}, 'q': {'x': 2, 'role': 'user'}},
-     {'a': {'role': 'admin', 'k': 1}, 'b': {'z': {'role': 'user', 'k': 2}}}),
-    (2, '30', 30, 2 ** 40, 0.1, 0.1, False, D('0.10'), None,
-     [], [], [],
-     {}, {},
-     {'x': None, 'y': None, 'z': None},
-     [],
-     {},
-     {'a': None, 'b': {}}),
-    (3, None, None, None, None, None, None, None, None,
-     None, None, None, None, None, None, None, None, None),
-    (4, 'xyz', -5, -(2 ** 62), 1e16, float('inf'), True, D('-3.25'), datetime.date(1999, 12, 31),
-     [5, None], ['', 'x'], [1e-5, 123456789.0],
-     {'k': None}, {5: None},
-     {'x': 5, 'y': 'xyz', 'z': [5, 6]},
-     [{'x': 5, 'y': 'xyz'}],
-     {'r': None},
-     {'a': {'role': None, 'k': None}, 'b': {'y': None}}),
-    (5, ' 7 ', 7, 7, 7.0, -0.0, None, D('7.00'), None,
-     [7], ['7', '1_000'], [7.0],
-     {'7': 7}, {7: '7'},
-     None,
-     [{'x': 7, 'y': '7'}, {'x': 1, 'y': 'a'}],
-     {'s': {'x': 7, 'role': 'admin'}},
-     None),
-]
 
 # comparisons, as Python compares
 _COMPARISONS = [
@@ -141,44 +97,6 @@ MIXED = [
 ]
 
 
-@pytest.fixture(scope='module')
-def kinds(spark):
-    """
-    The DataFrame of every kind of column, and its rows as Python sees
-    them, by id.
-    """
-    df = spark.createDataFrame(ROWS, SCHEMA)
-    return df, [row.asDict(recursive=True) for row in df.orderBy('id').collect()]
-
-
-def _same(a, b):
-    """
-    Python's ==, types and NaN told apart as dotted's values are.
-    """
-    if isinstance(a, float) and isinstance(b, float) and math.isnan(a) and math.isnan(b):
-        return True
-    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, dict):
-        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
-    return a == b
-
-
-def _py(value):
-    """
-    A selected Spark value as Python sees a row's.
-    """
-    if isinstance(value, Row):
-        return {k: _py(v) for k, v in value.asDict().items()}
-    if isinstance(value, list):
-        return [_py(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _py(v) for k, v in value.items()}
-    return value
-
-
 def _dotted(rows, path, bindings):
     """
     dotted's (has, get) per row, or the error it raises on one.
@@ -219,11 +137,11 @@ def _compare(path, n, rows, want, got):
             assert bool(g[f'w{n}']) == has, (path, row['id'], 'where')
         if f's{n}' not in g:
             continue
-        sv = _py(g[f's{n}'])
+        sv = py(g[f's{n}'])
         if dotted.is_pattern(path):
-            assert _same(list(value or ()), sv or []), (path, row['id'], value, sv)
+            assert same(list(value or ()), sv or []), (path, row['id'], value, sv)
         else:
-            assert _same(value, sv), (path, row['id'], value, sv)
+            assert same(value, sv), (path, row['id'], value, sv)
 
 
 def _check(kinds, cases, select=True):
