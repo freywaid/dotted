@@ -229,6 +229,15 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### v0.56.0
+- **`sparkize`'s `build` takes the DataFrame's schema.** A path reads
+  each node by its type, so `r.build(fragment, schema=df.schema)`;
+  without it, `build` raises. See [Spark Translation](#spark-translation-sparkize).
+- **`sqlize` and `sparkize` read as dotted does.** A regex fullmatches,
+  `!=` holds for a null, a string never equals a number, and a slice
+  filter is one list: queries built on the old reads may match other
+  rows.
+
 ### v0.55.0
 - **`walk` dedups.** It is now `ipluck`, and `walk_multi` is `pluck_multi`,
   so a path a pattern reaches twice is yielded once, as `pluck` does:
