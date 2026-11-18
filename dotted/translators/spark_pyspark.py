@@ -2712,7 +2712,7 @@ def _equals(node, value, written, env):
     return _compared(node, '=', value, env)
 
 
-def _bound(node, fn):
+def _read_once(node, fn):
     """
     The node `fn` gives of `node`, read once: `fn` gets a node of a
     lambda's variable that stands for it (see `_let`).
@@ -2758,7 +2758,7 @@ def _or_writer(parts, fallback):
                 return step(i + 1, n, stopped, matched)
             out = _chosen(held, writer(n, env), n)
             following = _or(stopped, held) if cut else stopped
-            return _bound(out, lambda m: step(i + 1, m, following, _or(matched, held)))
+            return _read_once(out, lambda m: step(i + 1, m, following, _or(matched, held)))
         return _container(n0, lambda: step(0, n0, False, False))
     return _Writer(write)
 
@@ -2781,7 +2781,7 @@ def _and_writer(parts):
             ok = _and(ok, _or(stopped, held, creatable))
             out = _chosen(_not(stopped), writer(n, env), n)
             following = _or(stopped, held) if cut else stopped
-            return _bound(out, lambda m: step(i + 1, m, following, ok))
+            return _read_once(out, lambda m: step(i + 1, m, following, ok))
         return _container(n0, lambda: step(0, n0, False, True))
     return _Writer(write)
 
@@ -2799,7 +2799,7 @@ def _first_writer(cands, fallback):
                 held = True if test is True else test(m, env)
                 out = _chosen(held, writer(m, env), out)
             return out
-        return _container(n, lambda: _bound(n, body))
+        return _container(n, lambda: _read_once(n, body))
     return _Writer(write)
 
 
