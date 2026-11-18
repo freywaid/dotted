@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.56.1]
 
 ### Added
 - `sparkize`'s `r.as_update(value)`, the write of `value` at a column
