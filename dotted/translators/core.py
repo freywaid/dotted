@@ -74,6 +74,7 @@ import functools
 
 from .. import access
 from .. import base
+from .. import engine
 from .. import groups as _groups
 from .. import matchers
 from .. import predicates
@@ -101,7 +102,10 @@ def _op_is_pattern_like(op):
     True if the op introduces a set-returning or recursive element
     that can't be expressed as a literal path of segments.
     """
-    if isinstance(op, access.SliceFilter):
+    if isinstance(op, (access.SliceFilter, access.SlotSpecial, wrappers.FilterWrap,
+                       wrappers.TransformWrap)):
+        # a filter or an append slot may reach nothing, and a transform
+        # changes what the path after it reads: a pattern path reads them
         return True
     if hasattr(op, 'is_pattern') and op.is_pattern():
         return True
@@ -196,7 +200,8 @@ class Hooks:
     translation names the kinds it reads and never tests an op's class.
 
     A hook falls back to its kind's broader one: `attr` and `slot` to
-    `key`, `numeric` to `const`, `wildcard` to `pattern`, the `,`, `&`
+    `key`, `numeric` to `const`, `wildcard` and `wildcard_first` to
+    `pattern`, the `,`, `&`
     and `?` groups to `group` (with their kind and branches), and the
     broadest to `other`, which raises. A part of a translation
     overrides the hooks for what it reads, and `other` for its error.
@@ -242,6 +247,10 @@ class Hooks:
 
     def filter_wrap(self, op, *args):
         return self.other(op, *args)
+
+    def nop_wrap(self, op, *args):
+        # a `~` holds back a write, not a read: a read reads what it wraps
+        return op.inner.translated(self, *args)
 
     def pack(self, op, *args):
         raise TranslationError('packed group not supported')
@@ -325,6 +334,9 @@ class Hooks:
         return self.other(m, *args)
 
     def wildcard(self, m, *args):
+        return self.pattern(m, *args)
+
+    def wildcard_first(self, m, *args):
         return self.pattern(m, *args)
 
     def regex(self, m, *args):
@@ -661,7 +673,8 @@ class _RowFilter(Hooks):
         return t._combine_or([sub.translated(self, t) for sub in f.filters])
 
     def not_filter(self, f, t):
-        return t._combine_not(f.inner.translated(self, t))
+        # not true: a NULL compares to nothing, as None == x is false
+        return t._combine_not_true(f.inner.translated(self, t))
 
     def group_filter(self, f, t):
         return f.inner.translated(self, t)
@@ -731,6 +744,242 @@ class _RowGroup(Hooks):
 _KEY_PARTS = _KeyParts()
 _KINDS = _Kinds()
 _ROW_GROUP = _RowGroup()
+
+
+# ---- writes ---------------------------------------------------------
+#
+# A write (`as_update(value)`) does what dotted's `update` does: the
+# value at each match of the path, and along a path of literal keys
+# and slots, the nodes it lacks built. What dotted builds for a missing
+# or null node depends on the path alone, so dotted's own engine builds
+# it at translation time, and the flavor writes that value: with the
+# written value where it was placed, `WRITTEN` standing for it when it
+# is the target's own expression. A flavor's writer is what a write
+# does at one node, an existing container; it reads the node's own
+# type, an object's members or an array's elements.
+
+
+class _Written:
+    """
+    The written value inside a value dotted builds for a missing or
+    null node, where that value is the target's own expression (a
+    Column, a `Raw`), not a literal dotted can place itself.
+    """
+
+    def __repr__(self):
+        return 'WRITTEN'
+
+
+WRITTEN = _Written()
+
+
+class _Unbuilt:
+    """
+    Where a write builds no node for a missing one: a `~`, a filter or
+    a guard holds it back, or the op is a wildcard.
+    """
+
+    def __repr__(self):
+        return 'UNBUILT'
+
+
+UNBUILT = _Unbuilt()
+
+
+class BuildError:
+    """
+    A node dotted's update raises building: the flavor raises there at
+    run time, where the write reaches it.
+    """
+
+    def __init__(self, message):
+        self.message = message
+
+    def __repr__(self):
+        return f'BuildError({self.message!r})'
+
+
+class _IsFirst(Hooks):
+    """
+    True for a first wildcard's matcher, `*?`: it reaches its first
+    match alone, as the first-match group of the wildcard does.
+    """
+
+    def other(self, m, *args):
+        return False
+
+    def wildcard_first(self, m, *args):
+        return True
+
+
+IS_FIRST = _IsFirst()
+
+
+class _IsNop(Hooks):
+    """
+    True for a `~` op: a write doesn't build the node it holds back.
+    """
+
+    def other(self, op, *args):
+        return False
+
+    def nop_wrap(self, op, *args):
+        return True
+
+
+class _Access(Hooks):
+    """
+    The children an access op reaches, for a write: `(kind, value,
+    first)`, kind 'key' or 'index' for a literal key or slot, 'keys' or
+    'items' for a wildcard of keys or of slots, `first` for `*?`.
+    """
+
+    def other(self, op):
+        raise TranslationError(f'not supported in a write: {type(op).__name__} {op}')
+
+    def key(self, op):
+        return op.op.translated(_ACCESS_MATCH, 'key')
+
+    def slot(self, op):
+        return op.op.translated(_ACCESS_MATCH, 'index')
+
+    def slot_special(self, op):
+        return self.other(op)
+
+
+class _AccessMatch(Hooks):
+    """
+    A key's or slot's matcher, for `_Access`: a slot holding anything
+    but an int reaches a key.
+    """
+
+    def other(self, m, kind):
+        raise TranslationError(f'unsupported matcher in a write: {type(m).__name__}')
+
+    def const(self, m, kind):
+        if kind == 'index' and not _is_index(m.value):
+            return 'key', m.value, False
+        return kind, m.value, False
+
+    def wildcard(self, m, kind):
+        return ('keys' if kind == 'key' else 'items'), None, False
+
+    def wildcard_first(self, m, kind):
+        return ('keys' if kind == 'key' else 'items'), None, True
+
+    def subst(self, m, kind):
+        raise TranslationError(f'unresolved substitution in path position: {m}')
+
+    def reference(self, m, kind):
+        raise TranslationError('references in a write not supported yet')
+
+    def pattern(self, m, kind):
+        raise TranslationError(f'unsupported matcher in a write: {type(m).__name__}')
+
+
+def _is_index(value):
+    """
+    True for an int, not a bool: a slot holding it indexes an array.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+class _Write(Hooks):
+    """
+    An op of a write's path at a node, as the flavor's writer: what
+    dotted's update does there, `rest` the ops after it. `nop` says a
+    `~` holds this op back; `unwrapped`, that the `~` was this op's own,
+    so the ops after it write.
+    """
+
+    def other(self, op, t, rest, nop, unwrapped):
+        raise TranslationError(f'not supported in a write: {type(op).__name__} {op}')
+
+    def key(self, op, t, rest, nop, unwrapped):
+        return t._write_access(op, op, rest, nop, unwrapped)
+
+    def slot_special(self, op, t, rest, nop, unwrapped):
+        return t._write_append(op, rest, nop, unwrapped)
+
+    def filter_wrap(self, op, t, rest, nop, unwrapped):
+        return t._write_access(op, op.inner, rest, nop, unwrapped)
+
+    def value_guard(self, op, t, rest, nop, unwrapped):
+        if op.inner.translated(_IS_NOP):
+            return t._w_keep()
+        return t._write_access(op, op.inner, rest, nop, unwrapped)
+
+    def transform_wrap(self, op, t, rest, nop, unwrapped):
+        if rest:
+            return op.inner.translated(self, t, rest, nop, unwrapped)
+        return t._transformed(op, lambda: op.inner.translated(self, t, rest, nop, unwrapped))
+
+    def nop_wrap(self, op, t, rest, nop, unwrapped):
+        if op._group() is not None:
+            raise TranslationError('a ~ over a group in a write not supported yet')
+        return op.inner.translated(self, t, rest, True, True)
+
+    def slice_filter(self, op, t, rest, nop, unwrapped):
+        # dotted's update raises here too
+        raise TranslationError('a write not supported through a slice filter')
+
+    def slice(self, op, t, rest, nop, unwrapped):
+        raise TranslationError('a slice in a write not supported yet')
+
+    def recursive(self, op, t, rest, nop, unwrapped):
+        raise TranslationError('** in a write not supported yet')
+
+    def group(self, op, kind, branches, cuts, softs, t, rest, nop, unwrapped):
+        raise TranslationError('a group in a write not supported yet')
+
+    def not_group(self, op, t, rest, nop, unwrapped):
+        raise TranslationError('a negation in a write not supported yet')
+
+
+class _WriteRow(Hooks):
+    """
+    The first op of a write's path, at the row: the column a key names,
+    and what the rest writes in it. The row has every column, so none
+    is built.
+    """
+
+    def other(self, op, t, rest, nop, unwrapped):
+        return self.key(op, t, rest, nop, unwrapped)
+
+    def key(self, op, t, rest, nop, unwrapped):
+        return t._write_column(t._column_name(op), None, rest, nop, unwrapped)
+
+    def filter_wrap(self, op, t, rest, nop, unwrapped):
+        return t._write_column(t._column_name(op.inner), op, rest, nop, unwrapped)
+
+    def value_guard(self, op, t, rest, nop, unwrapped):
+        if op.inner.translated(_IS_NOP):
+            name = t._column_name(op.inner.inner)
+            return [(name, t._column(name))]
+        return t._write_column(t._column_name(op.inner), op, rest, nop, unwrapped)
+
+    def transform_wrap(self, op, t, rest, nop, unwrapped):
+        if rest:
+            return op.inner.translated(self, t, rest, nop, unwrapped)
+        return t._transformed(op, lambda: op.inner.translated(self, t, rest, nop, unwrapped))
+
+    def nop_wrap(self, op, t, rest, nop, unwrapped):
+        if op._group() is not None:
+            raise TranslationError('a ~ over a group in a write not supported yet')
+        return op.inner.translated(self, t, rest, True, True)
+
+    def group(self, op, kind, branches, cuts, softs, t, rest, nop, unwrapped):
+        raise TranslationError('a group in a write not supported yet')
+
+    def not_group(self, op, t, rest, nop, unwrapped):
+        raise TranslationError('a negation in a write not supported yet')
+
+
+_IS_NOP = _IsNop()
+_ACCESS = _Access()
+_ACCESS_MATCH = _AccessMatch()
+_WRITE = _Write()
+_WRITE_ROW = _WriteRow()
 
 
 class Translator:
@@ -1204,6 +1453,126 @@ class Translator:
         """
         _check_guards(ops)
         return self._pattern(col, prefix, ops)
+
+    # ---- writes -----------------------------------------------------
+
+    def _translate_write(self, ops, root, value, literal):
+        """
+        A write of `value` at the path's matches, as dotted's `update`
+        does it: `(column, flavor expression)` per column it touches,
+        each the column's new value. `literal` says `value` is a plain
+        value dotted can place itself, not the target's expression.
+        """
+        if root not in ROOTS:
+            raise TranslationError(
+                f'unknown root: {root!r}. expected one of {list(ROOTS)}'
+            )
+        if not ops:
+            raise TranslationError('empty path')
+        if root == 'table' or _is_row_step(ops[0]):
+            raise TranslationError('a write of a table search not supported yet')
+        _check_guards(ops)
+        self._written = value if literal else WRITTEN
+        self._written_literal = literal
+        return ops[0].translated(_WRITE_ROW, self, tuple(ops[1:]), False, False)
+
+    def _write(self, ops, nop=False):
+        """
+        The flavor's writer for `ops` at a node: dotted's update of
+        `ops` there, the node an existing container.
+        """
+        return ops[0].translated(_WRITE, self, tuple(ops[1:]), nop, False)
+
+    def _write_column(self, name, test_op, rest, nop, unwrapped):
+        """
+        The one column a write's first op names, with its new value: the
+        written value, or what `rest` writes in it, a null column
+        written as dotted writes a None. A filter or guard on the column,
+        `test_op`, holds the write back where it fails.
+        """
+        col = self._column(name)
+        test = None if test_op is None else self._w_column_test(test_op, col)
+        if not rest:
+            if nop:
+                return [(name, col)]
+            return [(name, self._w_column_value(col, test))]
+        pass_nop = nop and not unwrapped
+        child = self._write(rest, pass_nop)
+        null = self._built(rest, False, pass_nop)
+        return [(name, self._w_column(col, child, null, test))]
+
+    def _write_access(self, op, inner, rest, nop, unwrapped):
+        """
+        The writer of an access op, `op` (`inner` under its filter or
+        guard): each child it reaches written, the value at the end of
+        the path, else what `rest` writes there. A child that is null
+        is written as dotted writes a None: the node it builds. A
+        literal key or slot builds the child it lacks, unless a `~`, a
+        filter or a guard holds it back.
+        """
+        kind, value, first = inner.translated(_ACCESS)
+        test = None if op is inner else self._w_test(op)
+        if not rest:
+            if nop:
+                return self._w_keep()
+            child, absent, null = self._w_value(), self._written, self._written
+        else:
+            pass_nop = nop and not unwrapped
+            child = self._write(rest, pass_nop)
+            null = self._built(rest, False, pass_nop)
+            absent = UNBUILT
+            if not (nop or rest[0].translated(_IS_NOP)):
+                absent = self._built(rest, True, False)
+        if kind in ('keys', 'items') or first or test is not None:
+            return self._w_each(kind, value, first, test, child, null)
+        return self._w_key(kind, value, child, absent, null)
+
+    def _write_append(self, op, rest, nop, unwrapped):
+        """
+        The writer of an append slot, `[+]` (`[+?]` where the node
+        doesn't hold it already): the written value, or the node `rest`
+        builds, appended.
+        """
+        if nop:
+            return self._w_keep()
+        unique = op.op.value == '+?'
+        if not rest:
+            return self._w_append(self._written, unique)
+        if rest[0].translated(_IS_NOP):
+            return self._w_keep()
+        return self._w_append(self._built(rest, True, False), unique)
+
+    def _transformed(self, op, write):
+        """
+        `write()` with the written value put through the transforms of
+        `op`, as dotted's update does at the end of the path: a literal
+        value only, which dotted can transform itself.
+        """
+        if not self._written_literal:
+            raise TranslationError(
+                'a transform on a value that is the target\'s own expression '
+                'not supported: dotted transforms the value it writes'
+            )
+        written = self._written
+        self._written = op.apply(written)
+        try:
+            return write()
+        finally:
+            self._written = written
+
+    def _built(self, ops, has_defaults, nop):
+        """
+        The node dotted's update builds for `ops`, where the node is
+        missing (`has_defaults`) or null: dotted's own result, from the
+        path alone, the written value placed in it; a `BuildError` where
+        dotted raises building it.
+        """
+        ops = list(ops)
+        try:
+            return engine.updates(ops, engine.build_default(ops), self._written,
+                                  has_defaults, [], nop)
+        except Exception as e:
+            return BuildError(f'{type(e).__name__}: {e}')
 
     # ---- flavor hooks -----------------------------------------------
 

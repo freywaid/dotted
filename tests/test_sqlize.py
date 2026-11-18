@@ -11,6 +11,8 @@ tests don't care which driver picks the class as long as translation
 runs. Every concrete render in this file goes through the classmethod
 `Resolver.build(paramstyle=...)` which ignores the driver's paramstyle.
 """
+import re
+
 import pytest
 from dotted.translators import (
     sqlize as _sqlize, Resolver, SQLFragment, ParamStyle, ParamPool,
@@ -68,9 +70,12 @@ def test_column_ordering():
 
 
 def test_column_ne():
+    """
+    `!=` holds for a NULL, as Python's `None != x` does.
+    """
     r = sqlize('status!="banned"')
     assert Resolver.build(r.where) == (
-        'status != :_p1', {'_p1': 'banned'})
+        'status IS DISTINCT FROM :_p1', {'_p1': 'banned'})
 
 
 def test_column_null():
@@ -84,13 +89,20 @@ def test_column_not_null():
 
 
 def test_column_regex():
+    """
+    A regex fullmatches, as dotted's does: anchored at both ends.
+    """
     r = sqlize('name=/^alice/')
-    assert Resolver.build(r.where) == ('name ~ :_p1', {'_p1': '^alice'})
+    assert Resolver.build(r.where) == ('name ~ :_p1', {'_p1': '^(?:^alice)$'})
 
 
 def test_column_regex_ne():
+    """
+    `!=` a regex holds where it doesn't fullmatch, a NULL included.
+    """
     r = sqlize('name!=/^alice/')
-    assert Resolver.build(r.where) == ('name !~ :_p1', {'_p1': '^alice'})
+    assert Resolver.build(r.where) == (
+        '(name ~ :_p1) IS NOT TRUE', {'_p1': '^(?:^alice)$'})
 
 
 # ---------------- jsonb traversal ----------------
@@ -107,85 +119,108 @@ def test_jsonb_single_segment():
 
 
 def test_jsonb_string_guard():
+    """
+    A guard inside a column compares the value there, if any, by its
+    own type: a string with a string.
+    """
     r = sqlize('data.user.role="admin"')
     assert Resolver.build(r.where) == (
-        "(data #>> '{user,role}') = :_p1",
+        "(SELECT (_pat1.n IS NOT NULL AND (CASE WHEN jsonb_typeof(_pat1.n) = 'string' THEN (_pat1.n #>> '{}') = :_p1 ELSE FALSE END)) FROM (SELECT data #> '{user,role}' AS n) AS _pat1)",
         {'_p1': 'admin'},
     )
 
 
 def test_jsonb_numeric_guard():
+    """
+    A number compares with a number, and a string there is no match,
+    not a failed cast.
+    """
     r = sqlize('data.user.age>=30')
     assert Resolver.build(r.where) == (
-        "(data #>> '{user,age}')::numeric >= :_p1",
-        {'_p1': 30},
+        "(SELECT (_pat1.n IS NOT NULL AND (CASE jsonb_typeof(_pat1.n) WHEN 'number' THEN (_pat1.n)::numeric >= (30) ELSE FALSE END)) FROM (SELECT data #> '{user,age}' AS n) AS _pat1)",
+        {},
     )
 
 
 def test_jsonb_boolean_guard():
+    """
+    True compares as 1, as Python's does: a boolean or the number 1.
+    """
     r = sqlize('data.user.active=True')
-    sql, params = Resolver.build(r.where)
-    assert sql == "data #> '{user,active}' = 'true'::jsonb"
-    assert params == {}
+    assert Resolver.build(r.where) == (
+        "(SELECT (_pat1.n IS NOT NULL AND (CASE jsonb_typeof(_pat1.n) WHEN 'number' THEN (_pat1.n)::numeric = (1) WHEN 'boolean' THEN _pat1.n = 'true'::jsonb ELSE FALSE END)) FROM (SELECT data #> '{user,active}' AS n) AS _pat1)",
+        {},
+    )
 
 
 def test_jsonb_boolean_ne():
+    """
+    `!=` is `=`'s negation, on a value that is there.
+    """
     r = sqlize('data.user.active!=True')
-    sql, params = Resolver.build(r.where)
-    assert sql == "data #> '{user,active}' != 'true'::jsonb"
+    sql, _ = Resolver.build(r.where)
+    assert sql.startswith('(SELECT (_pat1.n IS NOT NULL AND NOT (CASE ')
 
 
 def test_jsonb_null_guard():
+    """
+    `= None` matches a JSON null that is there, not a missing key.
+    """
     r = sqlize('data.score=None')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "data #> '{score}' IS NULL "
-        "OR jsonb_typeof(data #> '{score}') = 'null'"
-    )
-    assert params == {}
+    assert Resolver.build(r.where) == (
+        "(SELECT (_pat1.n IS NOT NULL AND (jsonb_typeof(_pat1.n) = 'null')) FROM (SELECT data #> '{score}' AS n) AS _pat1)", {})
 
 
 def test_jsonb_not_null_guard():
+    """
+    `!= None` matches any value that is there but a JSON null.
+    """
     r = sqlize('data.score!=None')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "data #> '{score}' IS NOT NULL "
-        "AND jsonb_typeof(data #> '{score}') != 'null'"
-    )
+    assert Resolver.build(r.where) == (
+        "(SELECT (_pat1.n IS NOT NULL AND NOT (jsonb_typeof(_pat1.n) = 'null')) FROM (SELECT data #> '{score}' AS n) AS _pat1)", {})
 
 
 def test_jsonb_regex():
+    """
+    A regex fullmatches a string there, and a number as Python writes
+    it; it matches no boolean or null whose str() it doesn't.
+    """
     r = sqlize('data.user.name=/alice/')
-    assert Resolver.build(r.where) == (
-        "(data #>> '{user,name}') ~ :_p1",
-        {'_p1': 'alice'},
-    )
+    sql, params = Resolver.build(r.where)
+    assert params == {'_p1': '^(?:alice)$'}
+    assert "WHEN 'string' THEN (_pat1.n #>> '{}') ~ :_p1" in sql
+    assert "WHEN 'boolean' THEN FALSE WHEN 'null' THEN FALSE" in sql
 
 
 # ---------------- guard transforms (casts) ----------------
 
 def test_guard_transform_int():
-    r = sqlize('data.user.age|int>=30')
-    assert Resolver.build(r.where) == (
-        "(data #>> '{user,age}')::int >= :_p1",
-        {'_p1': 30},
-    )
+    """
+    `|int` is dotted's int(): a number truncated, a boolean 0 or 1, a
+    string of an int that int; the comparison then reads its type.
+    """
+    sql, _ = Resolver.build(sqlize('data.user.age|int>=30').where)
+    assert 'to_jsonb(trunc((_pat1.n)::numeric))' in sql
+    assert "(_pat2.n)::numeric >= (30)" in sql
 
 
 def test_guard_transform_float():
-    r = sqlize('data.user.score|float>=#"0.5"')
-    assert Resolver.build(r.where) == (
-        "(data #>> '{user,score}')::float >= :_p1",
-        {'_p1': 0.5},
-    )
+    """
+    `|float` is dotted's float(), a whole number with its `.0`.
+    """
+    sql, _ = Resolver.build(sqlize('data.user.score|float>=#"0.5"').where)
+    assert '::float8::numeric + 0.0' in sql
+    assert "(_pat2.n)::numeric >= (0.5)" in sql
 
 
 def test_guard_transform_str():
+    """
+    `|str` is str(): a boolean `True` / `False`, a null `None`.
+    """
     r = sqlize('data.user.id|str="42"')
-    assert Resolver.build(r.where) == (
-        "(data #>> '{user,id}')::text = :_p1",
-        {'_p1': '42'},
-    )
+    sql, params = Resolver.build(r.where)
+    assert params == {'_p1': '42'}
+    assert """'"True"'::jsonb""" in sql and """'"None"'::jsonb""" in sql
 
 
 def test_guard_transform_unknown():
@@ -196,173 +231,118 @@ def test_guard_transform_unknown():
 # ---------------- boolean groups ----------------
 
 def test_group_and():
+    """
+    A group of guards keeps its guards' own predicates, joined.
+    """
     r = sqlize('data.(user.age>=30 & status="active")')
     sql, params = Resolver.build(r.where)
-    assert sql == (
-        "((data #>> '{user,age}')::numeric >= :_p1) "
-        "AND ((data #>> '{status}') = :_p2)"
-    )
-    assert params == {'_p1': 30, '_p2': 'active'}
+    assert sql.startswith('((SELECT (_pat1.n IS NOT NULL')
+    assert ') AND ((SELECT (_pat2.n IS NOT NULL' in sql
+    assert params == {'_p1': 'active'}
 
 
 def test_group_or():
+    """
+    `,` joins its guards' predicates with OR.
+    """
     r = sqlize('data.(user.age=18, user.age=21)')
     sql, params = Resolver.build(r.where)
-    assert sql == (
-        "((data #>> '{user,age}')::numeric = :_p1) "
-        "OR ((data #>> '{user,age}')::numeric = :_p2)"
-    )
-    assert params == {'_p1': 18, '_p2': 21}
+    assert ') OR ((SELECT (_pat2.n IS NOT NULL' in sql
+    assert '= (18)' in sql and '= (21)' in sql
+    assert params == {}
 
 
 def test_guard_group_selects_matches():
     """
     A group of guards keeps its plain predicates for `where`; its
-    `select` is its matches, as get gives them.
+    `select` is its matches, as get gives them: a lateral of each
+    branch's rows in turn.
     """
     r = sqlize('data.user.(age>=30, age<18)')
-    assert Resolver.build(r.where) == (
-        "((data #>> '{user,age}')::numeric >= :_p1) "
-        "OR ((data #>> '{user,age}')::numeric < :_p2)",
-        {'_p1': 30, '_p2': 18},
-    )
-    assert Resolver.build(r.select) == ('_pat1.value', {})
-    assert Resolver.build(r.lateral) == (
-        "LATERAL (SELECT _pat2.value FROM LATERAL "
-        "jsonb_path_query(data, '$.user.age ? (@ >= 30)') AS _pat2(value) "
-        "UNION ALL SELECT _pat3.value FROM LATERAL "
-        "jsonb_path_query(data, '$.user.age ? (@ < 18)') AS _pat3(value)) "
-        "AS _pat1(value)",
-        {},
-    )
+    where, _ = Resolver.build(r.where)
+    assert ') OR (' in where
+    alias = Resolver.build(r.select)[0].split('.')[0]
+    lateral, _ = Resolver.build(r.lateral)
+    assert lateral.startswith('LATERAL (SELECT ')
+    assert lateral.endswith(f') AS {alias}(value)')
+    assert ' UNION ALL ' in lateral
 
 
 def test_and_group_lateral_needs_every_branch():
     """
-    An `&` group's matches are there only where every branch matches:
-    a JSONPath filter on the node the group is at.
+    An `&` group's matches are there only where every branch's way
+    reaches something from the node: an EXISTS per way.
     """
-    r = sqlize('data.(user.age>=30 & status="active")')
-    held = ("$ ? ((exists(@.user.age ? (@ >= 30))) "
-            "&& (exists(@.status ? (@ == $_p3))))")
-    assert Resolver.build(r.lateral) == (
-        "LATERAL (SELECT _pat2.value FROM LATERAL "
-        f"jsonb_path_query(data, '{held}.user.age ? (@ >= 30)', "
-        "jsonb_build_object('_p3', :_p3)) AS _pat2(value) "
-        "UNION ALL SELECT _pat3.value FROM LATERAL "
-        f"jsonb_path_query(data, '{held}.status ? (@ == $_p3)', "
-        "jsonb_build_object('_p3', :_p3)) AS _pat3(value)) "
-        "AS _pat1(value)",
-        {'_p3': 'active'},
-    )
+    lateral, params = Resolver.build(
+        sqlize('data.(user.age>=30 & status="active")').lateral)
+    assert ') AND (EXISTS (' in lateral
+    assert list(params.values()) == ['active']
 
 
 def test_group_bare_traversal():
     """
     A branch without a guard is a traversal: the group's matches are
-    each branch's, a JSONPath per branch, as JSONPath has no union.
+    each branch's, read a step at a time.
     """
     r = sqlize('data.(x=1, y)')
-    assert Resolver.build(r.where) == (
-        "(jsonb_path_exists(data, '$.x ? (@ == 1)')) "
-        "OR (jsonb_path_exists(data, '$.y'))",
-        {},
-    )
-    assert Resolver.build(r.select) == ('_pat1.value', {})
-    assert Resolver.build(r.lateral) == (
-        "LATERAL (SELECT _pat2.value FROM LATERAL "
-        "jsonb_path_query(data, '$.x ? (@ == 1)') AS _pat2(value) "
-        "UNION ALL SELECT _pat3.value FROM LATERAL "
-        "jsonb_path_query(data, '$.y') AS _pat3(value)) "
-        "AS _pat1(value)",
-        {},
-    )
+    where, _ = Resolver.build(r.where)
+    assert where.startswith('EXISTS (')
+    lateral, _ = Resolver.build(r.lateral)
+    assert "-> 'x'" in lateral and "-> 'y'" in lateral
+    assert ' UNION ALL ' in lateral
 
 
 def test_group_continues_after():
     """
-    The path after a group runs on from each branch: one JSONPath per
-    way through the groups.
+    The path after a group runs on from each branch: its steps read
+    under each way through the groups.
     """
     r = sqlize('event.(data, data.components[*]).(amount, reporting_amount)')
-    paths = [
-        '$.data.amount',
-        '$.data.reporting_amount',
-        '$.data.components[*].amount',
-        '$.data.components[*].reporting_amount',
-    ]
-    assert Resolver.build(r.where) == (
-        ' OR '.join(f"(jsonb_path_exists(event, '{p}'))" for p in paths), {})
-    union = ' UNION ALL '.join(
-        f"SELECT _pat{n}.value FROM LATERAL "
-        f"jsonb_path_query(event, '{p}') AS _pat{n}(value)"
-        for n, p in enumerate(paths, 2))
-    assert Resolver.build(r.lateral) == (
-        f'LATERAL ({union}) AS _pat1(value)', {})
+    lateral, _ = Resolver.build(r.lateral)
+    for key in ('data', 'components', 'amount', 'reporting_amount'):
+        assert f"-> '{key}'" in lateral
+    assert Resolver.build(r.where)[0].startswith('EXISTS (')
 
 
 def test_and_group_in_pattern_is_per_node():
     """
-    An `&` group after `[*]` holds per element: the element needs both
-    branches, not some element one and another the other.
+    An `&` group after `[*]` holds per element: the EXISTS of each way
+    reads from the element.
     """
-    r = sqlize('data.users[*].(age & active)')
-    held = '$.users[*] ? ((exists(@.age)) && (exists(@.active)))'
-    assert Resolver.build(r.where) == (
-        f"(jsonb_path_exists(data, '{held}.age')) "
-        f"OR (jsonb_path_exists(data, '{held}.active'))",
-        {},
-    )
+    lateral, _ = Resolver.build(sqlize('data.users[*].(age & active)').lateral)
+    assert ') AND (EXISTS (' in lateral
+    assert 'jsonb_array_elements' in lateral
 
 
 def test_top_level_group_continues_after():
     """
     The path after a top-level group runs on from each branch's column.
     """
-    r = sqlize('(data, meta).user.age>=30')
-    assert Resolver.build(r.where) == (
-        "((data #>> '{user,age}')::numeric >= :_p1) "
-        "OR ((meta #>> '{user,age}')::numeric >= :_p2)",
-        {'_p1': 30, '_p2': 30},
-    )
+    sql, params = Resolver.build(sqlize('(data, meta).user.age>=30').where)
+    assert "(SELECT data #> '{user,age}' AS n)" in sql
+    assert ') OR (' in sql
+    assert "(SELECT meta #> '{user,age}' AS n)" in sql
+    assert params == {}
 
 
 def test_first_match_group():
     """
     A first-match group is the first match of the first branch to have
-    one: COALESCE over each branch's first, run on with the rest.
+    one, in dotted's order, the path after it run on from it.
     """
     r = sqlize('data.(a, b)?.c')
-    first = ("COALESCE(jsonb_path_query_first(data, '$.a'), "
-             "jsonb_path_query_first(data, '$.b'))")
-    assert Resolver.build(r.where) == (
-        f"EXISTS (SELECT _pat1.value FROM LATERAL "
-        f"jsonb_path_query({first}, '$.c') AS _pat1(value))",
-        {},
-    )
-    assert Resolver.build(r.select) == ('_pat2.value', {})
-    assert Resolver.build(r.lateral) == (
-        f"LATERAL (SELECT _pat3.value FROM LATERAL "
-        f"jsonb_path_query({first}, '$.c') AS _pat3(value)) AS _pat2(value)",
-        {},
-    )
+    for sql in (Resolver.build(r.where)[0], Resolver.build(r.lateral)[0]):
+        assert 'ORDER BY' in sql and 'LIMIT 1' in sql
+        assert "-> 'c'" in sql
 
 
 def test_first_match_group_per_node():
     """
-    After `[*]`, the first match is each element's.
+    After `[*]`, the first match is each element's: a lateral at each.
     """
-    r = sqlize('data.users[*].(a, b)?')
-    first = ("COALESCE(jsonb_path_query_first(_pat5.value, '$.a'), "
-             "jsonb_path_query_first(_pat5.value, '$.b'))")
-    assert Resolver.build(r.lateral) == (
-        "LATERAL (SELECT _pat7.value FROM "
-        "jsonb_path_query(data, '$.users[*]') AS _pat5(value) "
-        "CROSS JOIN LATERAL (SELECT _pat6.value FROM LATERAL "
-        f"jsonb_path_query({first}, '$') AS _pat6(value)) AS _pat7(value)) "
-        "AS _pat4(value)",
-        {},
-    )
+    lateral, _ = Resolver.build(sqlize('data.users[*].(a, b)?').lateral)
+    assert 'jsonb_array_elements' in lateral
+    assert 'CROSS JOIN LATERAL' in lateral and 'LIMIT 1' in lateral
 
 
 def test_guard_after_first_match_group():
@@ -370,30 +350,19 @@ def test_guard_after_first_match_group():
     A guard after a first-match group tests the first match; it does
     not go on to the next branch.
     """
-    r = sqlize('data.(a, b)?=1')
-    first = ("COALESCE(jsonb_path_query_first(data, '$.a'), "
-             "jsonb_path_query_first(data, '$.b'))")
-    assert Resolver.build(r.where) == (
-        f"EXISTS (SELECT _pat1.value FROM LATERAL "
-        f"jsonb_path_query({first}, '$ ? (@ == 1)') AS _pat1(value))",
-        {},
-    )
+    sql, _ = Resolver.build(sqlize('data.(a, b)?=1').where)
+    first = sql.index('LIMIT 1')
+    assert sql.index('= (1)') > first
 
 
 def test_first_match_of_a_branch_through_a_group():
     """
     A branch through a group gives its first match in the order dotted
-    reaches them, per node: a lateral at each node, the first row.
+    reaches them: the first row by ord.
     """
-    r = sqlize('data.(a[*].(q, p))?')
-    sql, _ = Resolver.build(r.lateral)
-    assert ("(SELECT _pat8.value FROM (SELECT _pat12.value FROM "
-            "jsonb_path_query(data, '$.a[*]') AS _pat9(value) "
-            "CROSS JOIN LATERAL (SELECT _pat10.value FROM LATERAL "
-            "jsonb_path_query(_pat9.value, '$.q') AS _pat10(value) "
-            "UNION ALL SELECT _pat11.value FROM LATERAL "
-            "jsonb_path_query(_pat9.value, '$.p') AS _pat11(value)) "
-            "AS _pat12(value)) AS _pat8(value) LIMIT 1)") in sql
+    lateral, _ = Resolver.build(sqlize('data.(a[*].(q, p))?').lateral)
+    assert 'ORDER BY' in lateral and 'LIMIT 1' in lateral
+    assert "-> 'q'" in lateral and "-> 'p'" in lateral
 
 
 def test_top_level_first_match_group():
@@ -408,47 +377,32 @@ def test_top_level_first_match_group():
 
 def test_cut_group():
     """
-    (a#, b): b's way runs only where a reaches nothing, a JSONPath
-    filter on the node; the cut changes which branches yield, not
-    whether the group matches.
+    (a#, b): b's way yields only where a's reaches nothing, a NOT EXISTS
+    at the node; a cut changes which branches yield, not whether the
+    group matches, so `where` reads the group without it.
     """
     r = sqlize('data.(a#, b)')
-    unless_a = "$ ? (!(exists(@.a))).b"
-    assert Resolver.build(r.where) == (
-        "(jsonb_path_exists(data, '$.a')) "
-        f"OR (jsonb_path_exists(data, '{unless_a}'))",
-        {},
-    )
-    assert Resolver.build(r.lateral) == (
-        "LATERAL (SELECT _pat2.value FROM LATERAL "
-        "jsonb_path_query(data, '$.a') AS _pat2(value) "
-        "UNION ALL SELECT _pat3.value FROM LATERAL "
-        f"jsonb_path_query(data, '{unless_a}') AS _pat3(value)) "
-        "AS _pat1(value)",
-        {},
-    )
+    assert 'NOT EXISTS' in Resolver.build(r.lateral)[0]
+    assert Resolver.build(r.where) == Resolver.build(sqlize('data.(a, b)').where)
 
 
 def test_cut_group_per_element():
     """
     After [*], the cut holds at each element: b where it has no a.
     """
-    r = sqlize('data.x[*].(a#, b)')
-    assert Resolver.build(r.where) == (
-        "(jsonb_path_exists(data, '$.x[*].a')) "
-        "OR (jsonb_path_exists(data, '$.x[*] ? (!(exists(@.a))).b'))",
-        {},
-    )
+    lateral, _ = Resolver.build(sqlize('data.x[*].(a#, b)').lateral)
+    assert 'NOT EXISTS' in lateral and 'jsonb_array_elements' in lateral
 
 
 def test_cut_in_conjunction():
     """
     (a#&b): the conjunction holds only where a matches, and there the
-    cut ends it, so b is never needed.
+    cut ends it, so b is never read.
     """
     r = sqlize('data.(a#&b)')
-    assert Resolver.build(r.where) == (
-        "jsonb_path_exists(data, '$ ? ((exists(@.a))).a')", {})
+    for sql in (Resolver.build(r.where)[0], Resolver.build(r.lateral)[0]):
+        assert "-> 'a'" in sql
+        assert "-> 'b'" not in sql
 
 
 def test_cut_in_first_match_group():
@@ -502,22 +456,24 @@ def test_negation_is_a_complement():
 def test_negation_by_key_reads_no_array_at_its_node():
     """
     A key reads an object's members only, so (!x) splits no array at
-    its node, the empty path; a slot reads an array's elements.
+    its node, its own path; a slot reads an array's elements.
     """
     by_key, _ = Resolver.build(sqlize('data.(!x)').lateral)
     by_slot, _ = Resolver.build(sqlize('data.(![0])').lateral)
-    assert "= 'array' AND _pat16.path <> '' THEN" in by_key
-    assert "path <> ''" not in by_slot
+    node = r"= 'array' AND _pat\d+\.path <> _pat\d+\.path THEN"
+    assert re.search(node, by_key)
+    assert not re.search(node, by_slot)
 
 
 @pytest.mark.parametrize('path', [
-    'data.(x[*+]##, y)',
     'data.(**:2##, y)',
+    'data.**:1',
+    'data.*(*, [*])',
 ])
 def test_group_not_supported_yet_raises(path):
     """
-    Under a soft cut, an aligned op or a ** with depths raises rather
-    than translate to anything else.
+    A ** with depths or accessors raises rather than translate to
+    anything else.
     """
     with pytest.raises(TranslationError, match='not supported yet'):
         sqlize(path)
@@ -540,13 +496,13 @@ def test_top_level_or_across_columns():
 
 
 def test_top_level_mixed_columns_and_jsonb():
-    r = sqlize('(data.user.age>=30 & status="active")')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "((data #>> '{user,age}')::numeric >= :_p1) "
-        "AND (status = :_p2)"
-    )
-    assert params == {'_p1': 30, '_p2': 'active'}
+    """
+    A top-level group joins a JSONB guard and a column's guard.
+    """
+    sql, params = Resolver.build(sqlize('(data.user.age>=30 & status="active")').where)
+    assert sql.endswith(') AND (status = :_p1)')
+    assert "(SELECT data #> '{user,age}' AS n)" in sql
+    assert params == {'_p1': 'active'}
 
 
 # ---------------- groups over the row's columns ----------------
@@ -587,13 +543,10 @@ def test_row_group_reads_its_columns():
     group's lateral each branch's matches in turn.
     """
     r = sqlize('hello[*](.title, .author)', root='table')
-    row = "jsonb_build_object('title', title, 'author', author)"
-    assert Resolver.build(r.select) == ('_pat1.value', {})
-    assert Resolver.build(r.lateral) == (
-        f"LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query({row}, "
-        f"'$.title') AS _pat2(value) UNION ALL SELECT _pat3.value FROM "
-        f"LATERAL jsonb_path_query({row}, '$.author') AS _pat3(value)) "
-        f"AS _pat1(value)", {})
+    lateral, _ = Resolver.build(r.lateral)
+    assert "jsonb_build_object('title', title, 'author', author) AS value" in lateral
+    assert ' UNION ALL ' in lateral
+    assert lateral.endswith(f') AS {Resolver.build(r.select)[0].split(".")[0]}(value)')
 
 
 def test_row_group_of_guards_keeps_plain_where():
@@ -611,14 +564,12 @@ def test_row_group_of_guards_keeps_plain_where():
 
 def test_row_cut_group():
     """
-    (title#, author) at the row: author's JSONPath filters the row to
-    where title reaches nothing.
+    (title#, author) at the row: author's way yields only where
+    title's reaches nothing.
     """
-    r = sqlize('hello[*].(title#, author)', root='table')
-    row = "jsonb_build_object('title', title, 'author', author)"
-    assert Resolver.build(r.where) == (
-        f"(jsonb_path_exists({row}, '$.title')) OR "
-        f"(jsonb_path_exists({row}, '$ ? (!(exists(@.title))).author'))", {})
+    lateral, _ = Resolver.build(sqlize('hello[*].(title#, author)', root='table').lateral)
+    assert "jsonb_build_object('title', title, 'author', author)" in lateral
+    assert 'NOT EXISTS' in lateral
 
 
 def test_row_cut_in_conjunction():
@@ -626,10 +577,9 @@ def test_row_cut_in_conjunction():
     (title#&author) at the row: the cut ends the conjunction, so the
     row reads title alone.
     """
-    r = sqlize('hello[*].(title#&author)', root='table')
-    assert Resolver.build(r.where) == (
-        "jsonb_path_exists(jsonb_build_object('title', title), "
-        "'$ ? ((exists(@.title))).title')", {})
+    where, _ = Resolver.build(sqlize('hello[*].(title#&author)', root='table').where)
+    assert "jsonb_build_object('title', title) AS value" in where
+    assert 'author' not in where
 
 
 def test_row_soft_cut_group_lateral_tracks_paths():
@@ -648,13 +598,10 @@ def test_row_first_match_group_continues_after():
     The path after a first-match group over the row runs on from the
     match: the first user, or user where there are none.
     """
-    r = sqlize('hello[*].(data.users[*], data.user)?.age', root='table')
-    row = "jsonb_build_object('data', data)"
-    assert Resolver.build(r.where) == (
-        f"EXISTS (SELECT _pat1.value FROM LATERAL jsonb_path_query(COALESCE("
-        f"jsonb_path_query_first({row}, '$.data.users[*]'), "
-        f"jsonb_path_query_first({row}, '$.data.user')), '$.age') "
-        f"AS _pat1(value))", {})
+    where, _ = Resolver.build(
+        sqlize('hello[*].(data.users[*], data.user)?.age', root='table').where)
+    assert "jsonb_build_object('data', data) AS value" in where
+    assert where.index('LIMIT 1') < where.rindex("-> 'age'")
 
 
 @pytest.mark.parametrize('path', [
@@ -700,9 +647,11 @@ def test_ref_select():
 
 
 def test_ref_with_guard():
-    r = sqlize('data.$$(data.config.field)="Alice"')
-    sql, params = Resolver.build(r.where)
-    assert sql == "(data ->> (data #>> '{config,field}')) = :_p1"
+    """
+    A guard on a member a reference names compares the value there.
+    """
+    sql, params = Resolver.build(sqlize('data.$$(data.config.field)="Alice"').where)
+    assert sql.endswith("FROM (SELECT data -> (data #>> '{config,field}') AS n) AS _pat1)")
     assert params == {'_p1': 'Alice'}
 
 
@@ -714,12 +663,13 @@ def test_ref_mid_path():
 
 
 def test_ref_numeric_guard():
-    r = sqlize('data.$$(data.idx)=30')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "(data ->> (data #>> '{idx}'))::numeric = :_p1"
-    )
-    assert params == {'_p1': 30}
+    """
+    A number there compares as a number.
+    """
+    sql, params = Resolver.build(sqlize('data.$$(data.idx)=30').where)
+    assert "(_pat1.n)::numeric = (30)" in sql
+    assert "(SELECT data -> (data #>> '{idx}') AS n)" in sql
+    assert params == {}
 
 
 def test_ref_relative_errors():
@@ -735,89 +685,115 @@ def test_ref_parent_errors():
 # ---------------- pattern paths (jsonb_path_exists) ----------------
 
 def test_pattern_slot_wildcard_guard_numeric():
-    r = sqlize('data.users[*].age >= 30')
-    sql, params = Resolver.build(r.where)
-    assert sql == "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+    """
+    A pattern path's where is whether its walk reaches a match: each
+    element, its age, the guard on that.
+    """
+    sql, params = Resolver.build(sqlize('data.users[*].age >= 30').where)
+    assert sql.startswith('EXISTS (')
+    assert "-> 'users'" in sql
+    assert 'jsonb_array_elements' in sql
+    assert "-> 'age'" in sql
+    assert '.value)::numeric >= (30)' in sql
     assert params == {}
 
 
 def test_pattern_slot_wildcard_guard_boolean():
-    r = sqlize('data.users[*].active = True')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].active ? (@ == true)')"
-    )
+    """
+    True compares as 1, a boolean or the number 1.
+    """
+    sql, params = Resolver.build(sqlize('data.users[*].active = True').where)
+    assert sql.startswith('EXISTS (')
+    assert ".value = 'true'::jsonb ELSE FALSE END" in sql
+    assert '= (1)' in sql
+    assert params == {}
 
 
 def test_pattern_key_wildcard_guard_string():
-    r = sqlize('data.*.status = "on"')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
-        "jsonb_build_object('_p1', :_p1))"
-    )
+    """
+    A key wildcard reads an object's members; a string compares with
+    a string, hoisted.
+    """
+    sql, params = Resolver.build(sqlize('data.*.status = "on"').where)
+    assert sql.startswith('EXISTS (')
+    assert 'jsonb_each' in sql
+    assert ".value #>> '{}') = :_p1" in sql
     assert params == {'_p1': 'on'}
 
 
 def test_pattern_recursive_guard():
-    r = sqlize('data.**.flag = True')
-    sql, params = Resolver.build(r.where)
-    assert sql == "jsonb_path_exists(data, '$.**.flag ? (@ == true)')"
+    """
+    ** reads every value under the node by keys, a recursive query.
+    """
+    sql, params = Resolver.build(sqlize('data.**.flag = True').where)
+    assert sql.startswith('EXISTS (')
+    assert 'WITH RECURSIVE' in sql
+    assert "-> 'flag'" in sql
+    assert params == {}
 
 
 def test_pattern_slice_filter():
-    r = sqlize('data.users[age>=30]')
-    sql, params = Resolver.build(r.where)
-    assert sql == "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')"
+    """
+    A slice filter reads the filtered list as one value, as dotted
+    does: its where holds for every array, the list kept or empty.
+    """
+    sql, _ = Resolver.build(sqlize('data.users[age>=30]').where)
+    assert 'jsonb_agg(' in sql
+    assert "FILTER (WHERE (jsonb_typeof(" in sql
 
 
 def test_pattern_filter_wrap():
-    r = sqlize('data.users[*&age>=30]')
-    sql, params = Resolver.build(r.where)
-    assert sql == "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')"
+    """
+    A filter keeps the elements that are objects and whose key's value
+    compares.
+    """
+    sql, params = Resolver.build(sqlize('data.users[*&age>=30]').where)
+    assert sql.startswith('EXISTS (')
+    assert re.search(r"\(jsonb_typeof\(_pat\d+\.value\) = 'object' AND EXISTS \(SELECT 1 FROM", sql)
+    assert '>= (30)' in sql
+    assert params == {}
 
 
 def test_pattern_filter_and_trailing_guard():
-    r = sqlize('data.users[*&age>=30].name = "alice"')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "jsonb_path_exists(data, "
-        "'$.users[*] ? (@.age >= 30).name ? (@ == $_p1)', "
-        "jsonb_build_object('_p1', :_p1))"
-    )
+    """
+    A filter, then the path on from what it keeps, then a guard.
+    """
+    sql, params = Resolver.build(sqlize('data.users[*&age>=30].name = "alice"').where)
+    assert sql.startswith('EXISTS (')
+    assert '>= (30)' in sql
+    assert "-> 'name'" in sql
+    assert "#>> '{}') = :_p1" in sql
     assert params == {'_p1': 'alice'}
 
 
 def test_pattern_with_substitution():
+    """
+    A substitution compares as its binding's JSON, read by its type at
+    run time: the binding goes as JSON text, cast to jsonb.
+    """
     r = sqlize('data.users[*].age >= $(min_age)')
     sql, params = Resolver.build(r.where, min_age=30)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
-        "jsonb_build_object('min_age', :min_age))"
-    )
-    assert params == {'min_age': 30}
+    assert '(SELECT :min_age__json::jsonb AS n)' in sql
+    assert params == {'min_age__json': '30'}
 
 
 def test_pattern_with_substitution_dollar():
-    # Dollar-numeric: jsonb_build_object still takes value by position,
-    # and the placeholder carries an explicit cast so asyncpg can infer
-    # the type at prepare time.
+    """
+    Positionally, the JSON text is one argument, a jsonb placeholder.
+    """
     r = sqlize('data.users[*].age >= $(min_age)')
     sql, args = Resolver.build(r.where, paramstyle='dollar-numeric', min_age=30)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
-        "jsonb_build_object('min_age', $1::bigint))"
-    )
-    assert args == [30]
+    assert '(SELECT $1::jsonb AS n)' in sql
+    assert args == ['30']
 
 
 def test_pattern_mixed_in_group():
-    r = sqlize('(data.users[*].age >= 30 & status = "active")')
-    sql, params = Resolver.build(r.where)
-    assert sql == (
-        "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) "
-        "AND (status = :_p1)"
-    )
+    """
+    A top-level group joins a pattern path's where and a column's guard.
+    """
+    sql, params = Resolver.build(sqlize('(data.users[*].age >= 30 & status = "active")').where)
+    assert sql.startswith('(EXISTS (')
+    assert sql.endswith(') AND (status = :_p1)')
     assert params == {'_p1': 'active'}
 
 
@@ -1081,57 +1057,63 @@ def test_ps_not_null(paramstyle):
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_boolean_guard(paramstyle):
-    r = sqlize('data.user.active=True')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    assert sql == "data #> '{user,active}' = 'true'::jsonb"
+    """
+    A boolean compares inline: no parameter in any paramstyle.
+    """
+    sql, values = Resolver.build(sqlize('data.user.active=True').where, paramstyle=paramstyle)
+    assert "WHEN 'boolean' THEN _pat1.n = 'true'::jsonb" in sql
     assert values == _values(paramstyle, [])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_jsonb_null_guard(paramstyle):
-    r = sqlize('data.score=None')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    assert sql == (
-        "data #> '{score}' IS NULL "
-        "OR jsonb_typeof(data #> '{score}') = 'null'"
-    )
+    """
+    `= None` takes no parameter in any paramstyle.
+    """
+    sql, values = Resolver.build(sqlize('data.score=None').where, paramstyle=paramstyle)
+    assert "(jsonb_typeof(_pat1.n) = 'null')" in sql
     assert values == _values(paramstyle, [])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_regex(paramstyle):
-    r = sqlize('name=/^alice/')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == f'name ~ {ph}'
-    assert values == _values(paramstyle, [('_p1', '^alice')])
+    """
+    A regex is hoisted, anchored to fullmatch.
+    """
+    sql, values = Resolver.build(sqlize('name=/^alice/').where, paramstyle=paramstyle)
+    assert sql == f'name ~ {_placeholder(paramstyle, "_p1", 1)}'
+    assert values == _values(paramstyle, [('_p1', '^(?:^alice)$')])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_ref_with_guard(paramstyle):
-    r = sqlize('data.$$(data.config.field)="Alice"')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == f"(data ->> (data #>> '{{config,field}}')) = {ph}"
+    """
+    A string compared through a reference is hoisted.
+    """
+    sql, values = Resolver.build(
+        sqlize('data.$$(data.config.field)="Alice"').where, paramstyle=paramstyle)
+    assert f"(_pat1.n #>> '{{}}') = {_placeholder(paramstyle, '_p1', 1)}" in sql
     assert values == _values(paramstyle, [('_p1', 'Alice')])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_jsonb_numeric_guard(paramstyle):
-    r = sqlize('data.user.age>=30')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == f"(data #>> '{{user,age}}')::numeric >= {ph}"
-    assert values == _values(paramstyle, [('_p1', 30)])
+    """
+    A number compares inline: no parameter in any paramstyle.
+    """
+    sql, values = Resolver.build(sqlize('data.user.age>=30').where, paramstyle=paramstyle)
+    assert '(_pat1.n)::numeric >= (30)' in sql
+    assert values == _values(paramstyle, [])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_guard_transform(paramstyle):
-    r = sqlize('data.user.age|int>=30')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == f"(data #>> '{{user,age}}')::int >= {ph}"
-    assert values == _values(paramstyle, [('_p1', 30)])
+    """
+    A transform runs in SQL; the number it's compared to is inline.
+    """
+    sql, values = Resolver.build(sqlize('data.user.age|int>=30').where, paramstyle=paramstyle)
+    assert 'to_jsonb(trunc(' in sql
+    assert values == _values(paramstyle, [])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
@@ -1178,10 +1160,11 @@ def test_ps_subst_repeated_no_backref(paramstyle):
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_pattern_with_literal_inline(paramstyle):
-    r = sqlize('data.users[*].age >= 30')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    # Numeric literals inline inside JSONPath — no params hoisted.
-    assert sql == "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
+    """
+    A number in a pattern path's guard is inline: no parameter.
+    """
+    sql, values = Resolver.build(sqlize('data.users[*].age >= 30').where, paramstyle=paramstyle)
+    assert '>= (30)' in sql
     assert values == _values(paramstyle, [])
 
 
@@ -1196,42 +1179,35 @@ def _cast_suffix(paramstyle, sql_cast):
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_pattern_with_string_hoisted(paramstyle):
-    r = sqlize('data.*.status = "on"')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    cast = _cast_suffix(paramstyle, 'text')
-    # String values flow through jsonb_build_object vars
-    assert sql == (
-        f"jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
-        f"jsonb_build_object('_p1', {ph}{cast}))"
-    )
+    """
+    A string in a pattern path's guard is hoisted, its placeholder
+    typed by the text it compares with.
+    """
+    sql, values = Resolver.build(sqlize('data.*.status = "on"').where, paramstyle=paramstyle)
+    assert f"#>> '{{}}') = {_placeholder(paramstyle, '_p1', 1)} " in sql
     assert values == _values(paramstyle, [('_p1', 'on')])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_pattern_with_substitution(paramstyle):
-    r = sqlize('data.users[*].age >= $(min_age)')
-    sql, values = Resolver.build(r.where,
-                                 paramstyle=paramstyle,
-                                 min_age=30)
-    ph = _placeholder(paramstyle, 'min_age', 1)
-    cast = _cast_suffix(paramstyle, 'bigint')
-    assert sql == (
-        f"jsonb_path_exists(data, '$.users[*].age ? (@ >= $min_age)', "
-        f"jsonb_build_object('min_age', {ph}{cast}))"
-    )
-    assert values == _values(paramstyle, [('min_age', 30)])
+    """
+    A substitution goes as its binding's JSON text, once, cast to jsonb.
+    """
+    sql, values = Resolver.build(sqlize('data.users[*].age >= $(min_age)').where,
+                                 paramstyle=paramstyle, min_age=30)
+    ph = _placeholder(paramstyle, 'min_age__json', 1)
+    assert f'(SELECT {ph}::jsonb AS n)' in sql
+    assert values == _values(paramstyle, [('min_age__json', '30')])
 
 
 @pytest.mark.parametrize('paramstyle', PARAMSTYLES)
 def test_ps_mixed_pattern_and_scalar(paramstyle):
-    r = sqlize('(data.users[*].age >= 30 & status = "active")')
-    sql, values = Resolver.build(r.where, paramstyle=paramstyle)
-    ph = _placeholder(paramstyle, '_p1', 1)
-    assert sql == (
-        f"(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) "
-        f"AND (status = {ph})"
-    )
+    """
+    A pattern path's where and a column's guard in one group.
+    """
+    sql, values = Resolver.build(
+        sqlize('(data.users[*].age >= 30 & status = "active")').where, paramstyle=paramstyle)
+    assert sql.endswith(f'AND (status = {_placeholder(paramstyle, "_p1", 1)})')
     assert values == _values(paramstyle, [('_p1', 'active')])
 
 
@@ -1417,18 +1393,12 @@ def test_raw_repeated_emits_each_occurrence():
 
 def test_raw_drops_cast_inside_jsonb_build_object():
     """
-    In pattern-path contexts, value substitutions flow through
-    `jsonb_build_object(..., $N::cast)`. A Raw binding in that slot
-    emits the expression verbatim — no placeholder, no cast.
+    A Raw binding where a substitution compares as JSON is its SQL's
+    jsonb: no placeholder, no argument.
     """
     r = sqlize('data.users[*].customer = $(c)')
-    sql, args = Resolver.build(r.where,
-                               paramstyle='dollar-numeric',
-                               c=Raw('matched.customer'))
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].customer ? (@ == $c)', "
-        "jsonb_build_object('c', matched.customer))"
-    )
+    sql, args = Resolver.build(r.where, paramstyle='dollar-numeric', c=Raw('matched.customer'))
+    assert '(SELECT to_jsonb(matched.customer) AS n)' in sql
     assert args == []
 
 
@@ -1515,50 +1485,35 @@ def test_raw_rejects_non_string():
 
 def test_pattern_lateral_simple_wildcard():
     """
-    Wildcard pattern produces a LATERAL clause (extract-style) plus
-    the existing jsonb_path_exists WHERE predicate.
+    A pattern path gives a LATERAL of its matches (extract-style) and
+    a where of whether there is one (filter-style).
     """
     r = sqlize('data.users[*].age')
     assert str(r.select) == '_pat1.value'
-    assert str(r.where) == "jsonb_path_exists(data, '$.users[*].age')"
-    assert str(r.lateral) == (
-        "LATERAL jsonb_path_query(data, '$.users[*].age') AS _pat1(value)"
-    )
+    assert str(r.where).startswith('EXISTS (')
+    assert str(r.lateral).startswith('LATERAL (SELECT _pat2.value FROM (')
+    assert str(r.lateral).endswith(') AS _pat2) AS _pat1(value)')
 
 
 def test_pattern_lateral_with_guard():
     """
-    Pattern with a guard: the guard lives inside the jsonpath filter
-    in both the WHERE and LATERAL forms.
+    The guard tests each match in both the where and the lateral.
     """
     r = sqlize('data.users[*].age >= 30')
-    assert str(r.where) == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
-    )
-    assert str(r.lateral) == (
-        "LATERAL jsonb_path_query(data, '$.users[*].age ? (@ >= 30)') "
-        "AS _pat1(value)"
-    )
+    assert '>= (30)' in str(r.where)
+    assert '>= (30)' in str(r.lateral)
 
 
 def test_pattern_lateral_builds_with_driver_paramstyle():
     """
-    Rendering the lateral fragment under the driver paramstyle inlines
-    any hoisted placeholders (strings / substitutions) with casts per
-    driver. The lateral and where share the same jsonpath so their
-    jsonb_build_object vars match.
+    Each fragment renders its own hoisted values under the driver's
+    paramstyle.
     """
     r = sqlize('data.*.status = "on"')
     where_sql, where_args = Resolver.build(r.where, paramstyle='dollar-numeric')
     lat_sql, lat_args = Resolver.build(r.lateral, paramstyle='dollar-numeric')
-    assert where_sql == (
-        "jsonb_path_exists(data, '$.*.status ? (@ == $_p1)', "
-        "jsonb_build_object('_p1', $1::text))"
-    )
-    assert lat_sql == (
-        "LATERAL jsonb_path_query(data, '$.*.status ? (@ == $_p1)', "
-        "jsonb_build_object('_p1', $1::text)) AS _pat1(value)"
-    )
+    assert "#>> '{}') = $1 " in where_sql
+    assert "#>> '{}') = $1 " in lat_sql
     assert where_args == ['on']
     assert lat_args == ['on']
 
@@ -1572,10 +1527,11 @@ def test_pattern_lateral_alias_from_shared_pool():
     pool = ParamPool()
     r1 = sqlize('data.users[*].age', pool=pool)
     r2 = sqlize('data.orders[*].amount', pool=pool)
-    assert '_pat1' in str(r1.lateral)
-    assert '_pat2' in str(r2.lateral)
-    assert str(r1.select) == '_pat1.value'
-    assert str(r2.select) == '_pat2.value'
+    a1 = str(r1.select).split('.')[0]
+    a2 = str(r2.select).split('.')[0]
+    assert a1 != a2
+    assert str(r1.lateral).endswith(f' AS {a1}(value)')
+    assert str(r2.lateral).endswith(f' AS {a2}(value)')
 
 
 def test_pattern_lateral_alias_per_resolver_when_no_pool():
@@ -1609,15 +1565,10 @@ def test_pattern_extract_composition():
     supplies the pieces.
     """
     r = sqlize('data.users[*].age >= 30')
-    select_sql, select_args = Resolver.build(
-        r.select, paramstyle='dollar-numeric')
+    select_sql, select_args = Resolver.build(r.select, paramstyle='dollar-numeric')
     lat_sql, _ = Resolver.build(r.lateral, paramstyle='dollar-numeric')
     query = f"SELECT id, {select_sql} FROM items, {lat_sql}"
-    assert query == (
-        "SELECT id, _pat1.value "
-        "FROM items, LATERAL jsonb_path_query("
-        "data, '$.users[*].age ? (@ >= 30)') AS _pat1(value)"
-    )
+    assert query.startswith('SELECT id, _pat1.value FROM items, LATERAL (SELECT')
     assert select_args == []
 
 
@@ -1721,47 +1672,34 @@ def test_psycopg3_appears_in_drivers_list():
 
 def test_psycopg_emits_cast_inside_jsonb_build_object():
     """
-    Psycopg v3 uses pyformat but binary mode resolves placeholder
-    types server-side — it needs explicit casts the same way asyncpg
-    does. Driver classvar `cast = True` now honors the `:cast` marker
-    spec under pyformat.
+    Psycopg v3 sends a compared substitution as JSON text cast to
+    jsonb, so the server types it.
     """
     r = sqlize('data.users[*].age >= $(min)', driver='psycopg')
     sql, params = r.build(r.where, min=30)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
-        "jsonb_build_object('min', %(min)s::bigint))"
-    )
-    assert params == {'min': 30}
+    assert '(SELECT %(min__json)s::jsonb AS n)' in sql
+    assert params == {'min__json': '30'}
 
 
 def test_psycopg2_still_emits_no_cast():
     """
-    Psycopg2 substitutes placeholders client-side and has no
-    server-side type inference issue. `cast = False` (inherited) →
-    no cast emitted, even though the marker carries `:cast`.
+    Psycopg2 sends it the same way: JSON text cast to jsonb.
     """
     r = sqlize('data.users[*].age >= $(min)', driver='psycopg2')
     sql, params = r.build(r.where, min=30)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
-        "jsonb_build_object('min', %(min)s))"
-    )
-    assert params == {'min': 30}
+    assert '(SELECT %(min__json)s::jsonb AS n)' in sql
+    assert params == {'min__json': '30'}
 
 
 def test_cast_under_named_paramstyle_with_driver_cast_true():
     """
-    The `:cast` spec is now honored across every paramstyle when the
-    driver's `cast_fn` is active — not just dollar-numeric. Verify the
-    named-style renderer inherits the same fix.
+    Under the named paramstyle a compared substitution is its own
+    parameter, its JSON text, apart from the plain one of the same
+    name.
     """
     from dotted.translators import Resolver
     from dotted.translators.sql_pg import PostgresMixin
 
-    # Spin up an ad-hoc named-style driver with cast on, using
-    # PostgresMixin's cast_fn. (Don't register — this is unit-test
-    # local.)
     class _NamedCastResolver(PostgresMixin, Resolver):
         paramstyle = 'named'
         cast       = True
@@ -1770,11 +1708,8 @@ def test_cast_under_named_paramstyle_with_driver_cast_true():
     r.translate(__import__('dotted').parse(
         'data.users[*].age >= $(min)', partial=True).ops)
     sql, params = r.build(r.where, min=30)
-    assert sql == (
-        "jsonb_path_exists(data, '$.users[*].age ? (@ >= $min)', "
-        "jsonb_build_object('min', :min::bigint))"
-    )
-    assert params == {'min': 30}
+    assert '(SELECT :min__json::jsonb AS n)' in sql
+    assert params == {'min__json': '30'}
 
 
 # ---------------- table search ----------------
@@ -1788,11 +1723,11 @@ def test_cast_under_named_paramstyle_with_driver_cast_true():
     ('hello[*&book_id="b1"].title', 'hello', 'title',
      ('book_id = :_p1', {'_p1': 'b1'}), None, None),
     ('hello[*&data.user.age>30]', 'hello', '*',
-     ("(data #>> '{user,age}')::numeric > :_p1", {'_p1': 30}), None, None),
+     ("(SELECT (_pat1.n IS NOT NULL AND (CASE jsonb_typeof(_pat1.n) WHEN 'number' THEN (_pat1.n)::numeric > (30) ELSE FALSE END)) FROM (SELECT data #> '{user,age}' AS n) AS _pat1)", {}), None, None),
     ('hello[*].book_id = "b1"', 'hello', 'book_id',
      ('book_id = :_p1', {'_p1': 'b1'}), None, None),
     ('hello[*].data.user.age >= 30', 'hello', "data #>> '{user,age}'",
-     ("(data #>> '{user,age}')::numeric >= :_p1", {'_p1': 30}), None, None),
+     ("(SELECT (_pat1.n IS NOT NULL AND (CASE jsonb_typeof(_pat1.n) WHEN 'number' THEN (_pat1.n)::numeric >= (30) ELSE FALSE END)) FROM (SELECT data #> '{user,age}' AS n) AS _pat1)", {}), None, None),
     ('hello[0].title', 'hello', 'title', None, 0, 1),
     ('hello[10:20]', 'hello', '*', None, 10, 10),
     ('hello[10:]', 'hello', '*', None, 10, None),
@@ -1823,19 +1758,20 @@ def test_table_search(path, table, select, where, offset, limit):
 
 
 @pytest.mark.parametrize('path, where', [
-    ('hello[*&a=1&b!=2]', '(a = :_p1) AND (b != :_p2)'),
+    ('hello[*&a=1&b!=2]', '(a = :_p1) AND (b IS DISTINCT FROM :_p2)'),
     ('hello[*&(a=1,b=2)]', '(a = :_p1) OR (b = :_p2)'),
-    ('hello[*&!a=1]', 'NOT (a = :_p1)'),
+    ('hello[*&!a=1]', '(a = :_p1) IS NOT TRUE'),
     ('hello[*&name=/^a/]', 'name ~ :_p1'),
     ('hello[*&deleted_at=None]', 'deleted_at IS NULL'),
-    ('hello[*&tags[0]="x"]', "(tags #>> '{0}') = :_p1"),
+    ('hello[*&tags[0]="x"]', "(SELECT (_pat1.n IS NOT NULL AND (CASE WHEN jsonb_typeof(_pat1.n) = 'string' THEN (_pat1.n #>> '{}') = :_p1 ELSE FALSE END)) FROM (SELECT (CASE jsonb_typeof(tags) WHEN 'array' THEN tags -> (0) WHEN 'string' THEN (CASE WHEN 0 < char_length((tags #>> '{}')) THEN to_jsonb(substr((tags #>> '{}'), 0 + 1, 1)) END) END) AS n) AS _pat1)"),
     ('hello[a=1][*&b=2]', '(a = :_p1) AND (b = :_p2)'),
     ('hello[*&a=1].b = 2', '(a = :_p1) AND (b = :_p2)'),
 ])
 def test_table_search_filters(path, where):
     """
     Row filters combine with AND / OR / NOT, and AND with the `where`
-    of the path under each row.
+    of the path under each row. `!=` and a negation hold for a NULL, as
+    Python's `None != x` and `not (None == x)` do.
     """
     r = sqlize(path, root='table')
     assert Resolver.build(r.where)[0] == where
@@ -1868,7 +1804,9 @@ def test_column_root_is_the_default():
     """
     r = sqlize('hello[*&book_id="b1"]')
     assert r.table is None
-    assert Resolver.build(r.where)[0].startswith('jsonb_path_exists(hello, ')
+    where = Resolver.build(r.where)[0]
+    assert where.startswith('EXISTS (')
+    assert 'hello AS value' in where
 
 
 def test_column_path_has_no_table_values():

@@ -149,6 +149,9 @@ class NopWrap(Wrap):
     def __hash__(self):
         return hash(('nop', self.inner))
 
+    def translated(self, translation, *args):
+        return translation.nop_wrap(self, *args)
+
     def __eq__(self, other):
         return isinstance(other, NopWrap) and self.inner == other.inner
 

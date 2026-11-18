@@ -12,29 +12,27 @@ the ones listed are omitted — browse git history for earlier entries.
   group matches as `get` does: each branch's matches, the path after
   the group run on from each; an `&` group only where every branch
   matches, at each node it is at, so `users[*].(age >= 30 & active =
-  True)` needs one user who is both. `sqlize` reads a path through
-  groups as one JSONPath per way through them (`UNION ALL` in
-  `r.lateral`); `sparkize` joins the branches' matches with `concat`.
+  True)` needs one user who is both. `sqlize` reads each branch's
+  matches in turn (`UNION ALL` in `r.lateral`); `sparkize` joins the
+  branches' matches with `concat`.
 - `sqlize` and `sparkize` translate first-match groups, `(a, b)?`: the
   first match of the first branch to have one, the branch alone, the
   path after it run on from that match, at each node the group is at.
   A guard after the group tests that match: `data.(users[*], user)?.age
   >= 30` is the first user's age, or `user`'s where there are none.
-  `sqlize` reads it with `jsonb_path_query_first` and `COALESCE`, a
-  lateral per node; `sparkize` takes the first non-null match.
+  `sqlize` takes the first in dotted's order at each node; `sparkize`
+  takes the first non-null match.
 - `sqlize` and `sparkize` translate a cut, `#`, at each node the group
   is at: after `(a#, b)`'s `a` reaches something, `b` isn't tried
-  there. `sqlize` filters `b`'s JSONPath to the nodes where `a`
-  reaches nothing; `sparkize` adds `b`'s matches only where `a` found
-  none. A cut in a conjunction leaves the branches after it unneeded.
+  there. `sqlize` reads `b` only at the nodes where `a` reaches
+  nothing; `sparkize` adds `b`'s matches only where `a` found none. A cut in a conjunction leaves the branches after it unneeded.
 - `sqlize` and `sparkize` translate a soft cut, `##`: in `(a##, *)`,
   `*` skips what overlaps `a`'s matches, at each node, folded in order
   as dotted does, so `((a.b, a, a.d)##, *)` keeps `a.d`, the `a` it
-  overlaps having been dropped. `sqlize` walks such a group's branches
-  a step at a time with their paths (JSONPath gives none) and folds
-  them with a recursive query; `sparkize` reads them as (path, value)
-  structs and folds them with `aggregate`. An aligned op under a soft
-  cut, and in `sqlize` a `**` with depths, raise.
+  overlaps having been dropped. `sqlize` folds the branches' matches,
+  read with their paths, with a recursive query; `sparkize` reads them
+  as (path, value) structs and folds them with `aggregate`. An aligned
+  op under a soft cut raises.
 - `sqlize` and `sparkize` read a group at the top of a path,
   `(title, author)`, or after a table search's row step,
   `books[*](.title, .author)`, over the row's columns as one value: a
@@ -65,18 +63,69 @@ the ones listed are omitted — browse git history for earlier entries.
   where it needs it, or a group of row steps' rows. Select from it
   rather than `r.table`. `sparkize`'s `r.rows(df)` is `df` for a
   search without such a group.
+- `sqlize`'s `r.as_update(value)`: the write of `value` at a column
+  path's matches, as `update` does it, for an `UPDATE ... SET`:
+  `'UPDATE items SET ' + r.as_update('admin')`. `value` goes at each
+  match; along literal keys and slots the nodes the path lacks are
+  built, a null one replaced, as `update` builds them, and a slot past
+  the end appends; a pattern, filter or guard writes only what is
+  there and passes; `~` holds a segment back; `[+]` appends, and
+  `[+?]` where the array doesn't hold the value, as Python's `in`
+  tells. A value is a literal, sent as a parameter, or a `Raw` / `Col`
+  expression; a transform at the end of the path applies to a literal.
+  Where `update` raises, the query fails with a `dotted update: …`
+  message. Groups, `!`, `**` and slices in a write raise, as does a
+  table search's write; `sparkize` has no `as_update` yet.
 - Cuts in a conjunction, by `get`, `update` and `remove` alike, at
   each node: in `(a#&b)`, once `a` matches, `b` isn't tried; in
   `(a##&*)`, `*` skips what overlaps `a`'s matches, a branch the soft
   cut covers whole adding nothing but still matching.
 
 ### Changed
+- `sqlize` reads a JSONB column a step at a time, as dotted's walk
+  does, and compares as dotted compares; it read it with JSONPath,
+  whose lax mode and casts gave other answers:
+  - a guard compares by the value's type: a number with a number or a
+    boolean (`True == 1`), a string with a string in code-point order,
+    any other pairing unequal and unordered, so `'30' >= 30` is false
+    where a cast raised; `!=` is `=`'s negation, and `< None` is false;
+  - a guard tests a value that's there: a missing key is neither
+    `= None` nor `!= 1`;
+  - a regex fullmatches `str()` of the value, so `/^a/` no longer
+    finds `'active'`; on a SQL column too, `~ '^(?:…)$'`, where `!=`
+    now holds for a NULL, `IS DISTINCT FROM`;
+  - a key reads an object's member, an int an array's element or a
+    string's character, never a member; `[*]` reads an object's values
+    and a string's characters too; `*?` reads its first match alone;
+  - a slice filter, `users[age >= 30]`, reads the filtered list as one
+    value, there even when empty;
+  - a filter keeps a node that is an object whose key compares, so
+    `[*&x!=1]` keeps one with no `x`; a `!` filter holds for a NULL;
+  - a guard's `int`, `float` and `str` transforms run as dotted's;
+    other transforms, and any with arguments, raise where they were
+    ignored;
+  - a substitution compared inside JSONB is sent as its JSON text,
+    cast to `jsonb`, and compares by its bound type; a list or dict
+    bound there raises in `build`, as dotted raises;
+  - where dotted's answer is a Python repr, `str()` of an array or
+    object, the query fails with a `dotted: …` message;
+  - `r.where` is an `EXISTS` over the walk and `r.lateral` its
+    matches, with no `jsonb_path_*` call; numbers and booleans are
+    inline, and no parameter is cast. A `**` with depths or accessors,
+    `**:2`, raises.
 - A one-branch group's cut is on the group it's in, as parentheses
   alone don't make a group: `((a#)&b)` is `(a#&b)`, and `((a#), b)` is
   `(a#, b)`, which gave `(1, 2)` on `{a: 1, b: 2}` and gives `(1,)`. A
   trailing comma, `(a#,)`, keeps the group and its cut.
 
 ### Fixed
+- `update` with a key on a str, list or tuple, `a.b`, raises
+  `TypeError: Cannot update str by key 'b'`, as on an int; it built
+  `'<itertools.chain object …>'` or a list of pairs. A slot past the
+  end of a str appends, `'xyz'` to `'xyzV'`, where it appended a
+  generator's repr. A key wildcard on a list, `a.*`, writes nothing, as
+  a read there matches nothing, where it raised `IndexError`. The rest
+  of the fallbacks for immutable nodes is #72.
 - A first-match group's cut assembles: `(a#, b)?` assembled as
   `(a,b)?`, which parses without the cut.
 - A cut, `#`, ends only its group's later branches, at each node the
@@ -96,8 +145,8 @@ the ones listed are omitted — browse git history for earlier entries.
   `sparkize` level by level to the depth the negated path reads, over
   map entries and array elements. A negation reaching any depth
   raises in `sparkize`.
-- `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member,
-  `@.* == 1`; it read a key named `*`, `@."*" == 1`.
+- `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member;
+  it read a key named `*`.
 - `sqlize` and `sparkize` raise `TranslationError` on inputs they
   translated to something else: an append (`[+]`) or a concatenation
   as a path segment, a wildcard guard value (`a=*` compared `a` with

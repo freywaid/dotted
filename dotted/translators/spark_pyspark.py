@@ -923,6 +923,10 @@ class _Steps(Hooks):
             'recursive paths (**) need a schema — not supported in sparkize'
         )
 
+    def slot_special(self, op, t):
+        # an append slot is past the end: there is never a value there
+        return [('cond', lambda node, env: _functions().lit(False))], {}
+
     def slice_filter(self, op, t):
         pred_fn, unbound = t._filters_pred(op.filters)
         return [('each', 'array'), ('cond', pred_fn)], unbound
@@ -968,6 +972,10 @@ class _KeyStep(Hooks):
         if m.is_aligned():
             return [('each', each_kind, 'aligned')]
         return [('each', each_kind)]
+
+    def wildcard_first(self, m, t, each_kind, index):
+        # the first of the wildcard's matches alone: its first-match group
+        return [('first', ((('each', each_kind),),))]
 
     def pattern(self, m, t, each_kind, index):
         raise TranslationError(

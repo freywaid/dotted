@@ -3544,11 +3544,11 @@ View all registered transforms with `dotted.registry()`.
 <a id="sql-translation-sqlize"></a>
 ## SQL Translation (`sqlize`)
 
-> **Under development.** The API shape and supported subset of dotted
-> features may still change. Postgres-only. Pattern paths (`*`, `[*]`,
-> `**`, filter brackets) are supported only as WHERE-side existence
-> checks via `jsonb_path_exists`; pattern paths that yield sets as
-> SELECT (needing `LATERAL jsonb_path_query`) are not supported yet.
+> **Under development.** The API shape may still change. Postgres-only.
+> A translation does what dotted does, reading and writing. Where
+> Postgres can't give what dotted would, it raises: `TranslationError`
+> while translating, or a `dotted: …` error when the query meets a value
+> it can't read as dotted does.
 
 `dotted.sqlize(path, driver='<name>')` translates a dotted path into a
 driver-specific `Resolver` instance carrying SQL fragments.
@@ -3558,19 +3558,18 @@ driver.
 
 Registered drivers:
 
-| driver                  | placeholders      | output shape | notes                                                                                  |
-|-------------------------|-------------------|--------------|----------------------------------------------------------------------------------------|
-| `asyncpg`               | `$1, $2, ...`     | list         | Native Postgres; always server-side PREPARE — emits `::cast` for polymorphic contexts. |
-| `psycopg2`              | `%(name)s` / `%s` | dict         | Client-side parameter substitution. No casts.                                          |
-| `psycopg` / `psycopg3`  | `%(name)s` / `%s` | dict         | psycopg v3 (same class under either name) — server-side binding in binary mode, emits `::cast` for polymorphic contexts. |
+| driver                  | placeholders      | output shape | notes                                                   |
+|-------------------------|-------------------|--------------|---------------------------------------------------------|
+| `asyncpg`               | `$1, $2, ...`     | list         | Native Postgres; server-side PREPARE.                   |
+| `psycopg2`              | `%(name)s` / `%s` | dict         | Client-side parameter substitution.                     |
+| `psycopg` / `psycopg3`  | `%(name)s` / `%s` | dict         | psycopg v3 (same class under either name).              |
 
 Pick the driver you'll actually hand the SQL to; it determines the
-placeholder syntax and whether explicit SQL casts are emitted.
+placeholder syntax.
 
 The first segment of the dotted path is the SQL column; further
-segments are JSON navigation inside it (JSONB). (`root='table'` makes
-it a [table search](#sqlize-table-search) instead.) Scalar columns and
-JSONB columns share one surface:
+segments read the JSONB inside it. (`root='table'` makes it a [table
+search](#sqlize-table-search) instead.)
 
     >>> import dotted
     >>> r = dotted.sqlize("status = 'active'", driver='asyncpg')
@@ -3579,15 +3578,13 @@ JSONB columns share one surface:
     >>> r.build(r.where)
     ('status = $1', ['active'])
 
-    >>> r = dotted.sqlize("data.user.age >= 30", driver='asyncpg')
-    >>> r.build(r.where)
-    ("(data #>> '{user,age}')::numeric >= $1", [30])
-
     >>> r = dotted.sqlize("data.user.name", driver='asyncpg')   # pure traversal, no predicate
     >>> r.build(r.select)
     ("data #>> '{user,name}'", [])
 
-Guards encode the predicate:
+A guard on a column of a SQL type compares by SQL's own rules for that
+type, but `!=` holds for a NULL, as Python's `None != x` does, and a
+regex fullmatches, as dotted's does:
 
     >>> r = dotted.sqlize("age >= 30", driver='asyncpg')
     >>> r.build(r.where)
@@ -3597,9 +3594,13 @@ Guards encode the predicate:
     >>> r.build(r.where)
     ('deleted_at IS NULL', [])
 
-    >>> r = dotted.sqlize("name = /^alice/", driver='asyncpg')
+    >>> r = dotted.sqlize("status != 'banned'", driver='asyncpg')
     >>> r.build(r.where)
-    ('name ~ $1', ['^alice'])
+    ('status IS DISTINCT FROM $1', ['banned'])
+
+    >>> r = dotted.sqlize("name = /alice/", driver='asyncpg')
+    >>> r.build(r.where)
+    ('name ~ $1', ['^(?:alice)$'])
 
 Boolean grouping maps onto `AND` / `OR`:
 
@@ -3607,11 +3608,49 @@ Boolean grouping maps onto `AND` / `OR`:
     >>> r.build(r.where)
     ('(age >= $1) AND (status = $2)', [18, 'active'])
 
-Guard transforms become SQL casts (`int`, `float`, `str`, `bool`):
+### Comparing as dotted compares
+
+Inside a JSONB column a value is read by its own type (`jsonb_typeof`)
+and compared as dotted compares, which is as Python does:
+
+- a number and a boolean compare as numbers (`True == 1`);
+- a string compares with a string, in code-point order;
+- any other pairing is unequal and unordered: the string `'30'` is not
+  `>= 30`, and no cast fails;
+- `!=` is `=`'s negation;
+- a guard tests a value that's there, so a missing key matches neither
+  `= None` nor `!=`.
+
+Numbers and booleans are written inline; strings are hoisted:
+
+    >>> r = dotted.sqlize("data.user.age >= 30", driver='asyncpg')
+    >>> print(r.build(r.where)[0])
+    (SELECT (_pat1.n IS NOT NULL AND (CASE jsonb_typeof(_pat1.n) WHEN 'number' THEN (_pat1.n)::numeric >= (30) ELSE FALSE END)) FROM (SELECT data #> '{user,age}' AS n) AS _pat1)
+
+A substitution's type is known only when it's bound, so it goes to the
+driver as its JSON text, cast to `jsonb`, and compares by its type
+there. dotted raises on a list or dict bound where it compares; so does
+`build`:
+
+    >>> r = dotted.sqlize("data.user.age >= $(min)", driver='asyncpg')
+    >>> r.build(r.where, min=30)[1]
+    ['30']
+
+A regex fullmatches `str()` of the value, as dotted's does: a string, a
+number as Python writes it, `True` / `False`, `None`. A guard's
+transforms run in SQL as dotted's own: `int`, `float` and `str`,
+without arguments; any other raises:
 
     >>> r = dotted.sqlize("data.user.age|int >= 30", driver='asyncpg')
-    >>> r.build(r.where)
-    ("(data #>> '{user,age}')::int >= $1", [30])
+    >>> 'to_jsonb(trunc(' in r.build(r.where)[0]
+    True
+
+Where dotted's answer is a Python repr — `str()` of an array or object,
+or a regex that could match one — Postgres can't write it, as jsonb
+keeps no object's key order, and the query fails with a `dotted: …`
+message where it meets such a value. A regex that can't start with `[`
+or `{` matches no array or object, as in dotted. jsonb stores a JSON
+`1e3` as `1000`, so a float written with an exponent reads as an int.
 
 ### SQLFragment and composition
 
@@ -3630,7 +3669,7 @@ Fragments concatenate naturally via `+` / `__radd__`; metadata merges:
 
 ### Hoisted params
 
-Every RHS value is hoisted into a params entry keyed by a generated
+Every string value is hoisted into a params entry keyed by a generated
 name (`_p1`, `_p2`, …). This keeps values out of the SQL string:
 
     >>> user_input = "'; DROP TABLE users;--"
@@ -3687,79 +3726,51 @@ in `unbound`:
 Absolute-root references (`$$(path)`) map to dynamic JSON key lookups
 — Postgres's `->` / `#>` accept runtime-computed keys:
 
-    >>> r = dotted.sqlize('data.$$(data.config.field) = "Alice"',
-    ...                   driver='asyncpg')
-    >>> r.build(r.where)
-    ("(data ->> (data #>> '{config,field}')) = $1", ['Alice'])
+    >>> r = dotted.sqlize('data.$$(data.config.field)', driver='asyncpg')
+    >>> r.build(r.select)
+    ("data ->> (data #>> '{config,field}')", [])
 
 Relative references (`^`) and parent references (`^^+`) are not
 supported yet.
 
 ### Pattern paths
 
-Paths that contain wildcards (`*`, `[*]`), recursive descent (`**`),
-or bracket filters (`[pred]`, `[*&pred]`) translate to a Postgres
-`jsonb_path_exists(…)` WHERE predicate. The dotted path becomes a
-JSONPath expression; guard values embed inline when safely literal
-(numbers, booleans, null) or flow through a `jsonb_build_object` vars
-argument (strings, substitutions).
+A path with a wildcard (`*`, `[*]`), `**`, a filter (`[pred]`,
+`[*&pred]`), a group or a transform reads a step at a time, as dotted's
+walk reads it, each node by its own type:
 
-    >>> r = dotted.sqlize("data.users[*].age >= 30", driver='asyncpg')
-    >>> r.build(r.where)
-    ("jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')", [])
+- a key reads an object's member;
+- an int reads an array's element or a string's character, never an
+  object's member, whose names are strings;
+- `.*` reads an object's members, and `[*]` an array's elements, an
+  object's values or a string's characters;
+- `*?` reads its first match alone;
+- a filter keeps a node that is an object and whose key's value
+  compares, so `[*&x!=1]` keeps one that has no `x`;
+- a slice filter, `users[age >= 30]`, reads the filtered list as one
+  value.
 
-    >>> r = dotted.sqlize("data.**.active = True", driver='asyncpg')
-    >>> r.build(r.where)
-    ("jsonb_path_exists(data, '$.**.active ? (@ == true)')", [])
-
-    >>> r = dotted.sqlize("data.users[age>=30]", driver='asyncpg')
-    >>> r.build(r.where)
-    ("jsonb_path_exists(data, '$.users[*] ? (@.age >= 30)')", [])
-
-    >>> r = dotted.sqlize('data.users[*&age>=30].name = "alice"',
-    ...                   driver='asyncpg')
-    >>> sql, params = r.build(r.where)
-    >>> sql
-    "jsonb_path_exists(data, '$.users[*] ? (@.age >= 30).name ? (@ == $_p1)', jsonb_build_object('_p1', $1::text))"
-    >>> params
-    ['alice']
-
-The `::text` on the placeholder above is driver-dependent. `asyncpg`
-and `psycopg` (v3) emit explicit SQL casts inside `jsonb_build_object`
-because their placeholders get typed server-side at PREPARE time;
-`psycopg2` substitutes client-side and has no such cast.
-
-Pattern predicates compose with scalar ones via dotted's `&` / `,`:
-
-    >>> r = dotted.sqlize('(data.users[*].age >= 30 & status = "active")',
-    ...                   driver='asyncpg')
-    >>> sql, params = r.build(r.where)
-    >>> sql
-    "(jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')) AND (status = $1)"
-
-Pattern paths produce three fragments: the filter-style `r.where`
-(via `jsonb_path_exists`), the extract-style `r.lateral` (via
-`LATERAL jsonb_path_query`), and `r.select` pointing at the lateral's
-output alias. Use whichever matches your row semantics — filter-style
-keeps one row per source row, extract-style produces one row per
-match.
+A pattern path gives three fragments: the filter-style `r.where`,
+whether it reaches anything (an `EXISTS`); the extract-style
+`r.lateral`, its matches, a `value` each; and `r.select`, the lateral's
+value.
 
     >>> r = dotted.sqlize('data.users[*].age >= 30', driver='asyncpg')
-    >>> str(r.where)
-    "jsonb_path_exists(data, '$.users[*].age ? (@ >= 30)')"
-    >>> str(r.lateral)
-    "LATERAL jsonb_path_query(data, '$.users[*].age ? (@ >= 30)') AS _pat1(value)"
     >>> str(r.select)
     '_pat1.value'
+    >>> str(r.where).startswith('EXISTS (')
+    True
+    >>> str(r.lateral).startswith('LATERAL (SELECT _pat2.value FROM (')
+    True
 
 Filter-style — "which items have any matching user?":
 
-    SELECT id FROM items WHERE jsonb_path_exists(...)
+    SELECT id FROM items WHERE EXISTS (...)
     # composed:  "SELECT id FROM items WHERE " + r.where
 
 Extract-style — "each matching age, one row per match":
 
-    SELECT id, _pat1.value FROM items, LATERAL jsonb_path_query(...) AS _pat1(value)
+    SELECT id, _pat1.value FROM items, LATERAL (...) AS _pat1(value)
     # composed:  "SELECT id, " + r.select + " FROM items, " + r.lateral
 
 The lateral fragment has no leading comma or `JOIN` keyword — attach
@@ -3771,46 +3782,24 @@ Lateral aliases (`_pat1`, `_pat2`, …) are allocated from the
 aliases and compose into one query without collision.
 
 A group in a path matches as `get` does: each branch's matches, with
-the path after the group run on from each branch. JSONPath has no
-union, so `r.where` and `r.lateral` take one JSONPath per way through
-the groups:
-
-    >>> r = dotted.sqlize('data.(user, users[*]).age', driver='asyncpg')
-    >>> str(r.where)
-    "(jsonb_path_exists(data, '$.user.age')) OR (jsonb_path_exists(data, '$.users[*].age'))"
-    >>> str(r.lateral)
-    "LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query(data, '$.user.age') AS _pat2(value) UNION ALL SELECT _pat3.value FROM LATERAL jsonb_path_query(data, '$.users[*].age') AS _pat3(value)) AS _pat1(value)"
-
-An `&` group matches only where every branch does, at each node it is
-at: `data.users[*].(age >= 30 & active = True)` needs one user who is
-both, a JSONPath filter on each element. A group of guards,
-`data.(a = 1, b = 2)`, keeps plain predicates for `r.where`; its
-`r.select` is its matches.
+the path after the group run on from each branch. An `&` group matches
+only where every branch does, at each node it is at:
+`data.users[*].(age >= 30 & active = True)` needs one user who is both.
+A group of guards, `data.(a = 1, b = 2)`, keeps plain predicates for
+`r.where`; its `r.select` is its matches.
 
 A first-match group, `(a, b)?`, is the first match of the first branch
-to have one, the branch alone; the path after the group runs on from
-that match, and a guard after it tests that match. JSONPath has no
-first, so it reads at each node with `jsonb_path_query_first` and
-`COALESCE`, a lateral per node, and `r.where` is an `EXISTS` over the
-same rows:
+to have one, in dotted's order, the branch alone; the path after the
+group runs on from that match, and a guard after it tests that match.
 
-    >>> r = dotted.sqlize('data.(users[*], user)?.age >= 30', driver='asyncpg')
-    >>> str(r.where)
-    "EXISTS (SELECT _pat1.value FROM LATERAL jsonb_path_query(COALESCE(jsonb_path_query_first(data, '$.users[*]'), jsonb_path_query_first(data, '$.user')), '$.age ? (@ >= 30)') AS _pat1(value))"
-
-A cut, `(a#, b)`, holds at each node: `b`'s JSONPath filters the node
-to where `a` reaches nothing, `$ ? (!(exists(@.a))).b`, so after `[*]`
-each element takes its own branch. In a conjunction, `(a#&b)`, the cut
-leaves `b` unneeded, and in a first-match group it changes nothing.
-
-A soft cut, `(a##, *)`, compares the paths of matches: `*` skips what
-overlaps `a`'s. JSONPath gives no match's path, so `r.lateral` walks
-the group's branches a step at a time with their paths
-(`jsonb_each`, `jsonb_array_elements`) and folds them in order with a
-recursive query, as dotted does; `r.where` stays JSONPath, as a soft
-cut changes which matches a group yields, not whether it yields any.
-An aligned op or a `**` with depths under a soft cut raises
-`TranslationError` for now.
+A cut, `(a#, b)`, holds at each node: `b`'s way yields only where `a`'s
+reaches nothing there. In a conjunction, `(a#&b)`, the cut leaves `b`
+unread, and in a first-match group it changes nothing. A soft cut,
+`(a##, *)`, compares the paths of matches: `*` skips what overlaps
+`a`'s, the ways read with their paths and folded in order with a
+recursive query, as dotted does. A cut or a soft cut changes which
+matches a group yields, not whether it yields any, so `r.where` reads
+the group without them.
 
 A negation, `!`, is the complement of what its path matches, not
 `NOT`: `data.(!(status = "banned"))` matches `x` in `{"status":
@@ -3818,6 +3807,9 @@ A negation, `!`, is the complement of what its path matches, not
 no match, as dotted does: a recursive query walks down through the
 children the matches run through and keeps the children none reaches,
 and `r.where` is whether there is one.
+
+An aligned op, `[*+]`, yields for each match what the path after it
+reaches, or one null where it reaches nothing.
 
 A group at the top of a path, `(title, author)`, reads the row's
 columns as one value: a `jsonb_build_object` of the columns its
@@ -3829,9 +3821,40 @@ complement among all the row's columns, so it reads the whole row of a
 [table search](#sqlize-table-search)'s table; in a column path, which
 has no table, it raises `TranslationError`.
 
-Not yet supported:
-- Regex-in-access like `data./prefix_\d+/.field`
-- Pattern refs
+### Writes (`as_update`)
+
+`r.as_update(value)` is the write of `value` at the path's matches, as
+dotted's `update` does it: `value` at each match; along a path of
+literal keys and slots, the nodes it lacks built, a null one replaced,
+as dotted builds them; a slot past the end appending; a pattern, filter
+or guard writing only what is there and passes; `~` holding a segment
+back; `[+]` appending, and `[+?]` where the array doesn't hold it, as
+Python's `in` tells. For a column path it is the assignments, for an
+`UPDATE ... SET`:
+
+    >>> r = dotted.sqlize('status', driver='asyncpg')
+    >>> r.build('UPDATE items SET ' + r.as_update('banned'))
+    ('UPDATE items SET status = $1', ['banned'])
+
+    >>> r = dotted.sqlize('data.user.role', driver='asyncpg')
+    >>> sql, args = r.build('UPDATE items SET ' + r.as_update('admin'))
+    >>> sql.startswith('UPDATE items SET data = CASE WHEN data IS NULL')
+    True
+    >>> args[-1]
+    '"admin"'
+
+A value is a literal, sent as a parameter, or a `Raw` / `Col` SQL
+expression. A transform at the end of the path, `data.user.age|int`,
+applies to a literal value, as dotted's does; on a SQL expression it
+raises. Where dotted's update raises — a key on a string or an array,
+an index before an array's start — the query fails with a
+`dotted update: …` message.
+
+Not yet supported (`TranslationError`):
+- Regex keys, `data./prefix_\d+/.field`; references inside pattern
+  paths; a `**` with depths or accessors; first filters, `[*&a=1?]`
+- Transforms other than `int`, `float` and `str`, or with arguments
+- In a write: groups, `!`, `**` and slices; a table search
 
 <a id="sqlize-table-search"></a>
 ### `sqlize` table search
@@ -3867,8 +3890,8 @@ of a column path does ([pattern paths](#pattern-paths)); attach its
 lateral after the table:
 
     >>> r = dotted.sqlize('books[*](.title, .author)', driver='asyncpg', root='table')
-    >>> str(r.lateral)
-    "LATERAL (SELECT _pat2.value FROM LATERAL jsonb_path_query(jsonb_build_object('title', title, 'author', author), '$.title') AS _pat2(value) UNION ALL SELECT _pat3.value FROM LATERAL jsonb_path_query(jsonb_build_object('title', title, 'author', author), '$.author') AS _pat3(value)) AS _pat1(value)"
+    >>> "jsonb_build_object('title', title, 'author', author) AS value" in str(r.lateral)
+    True
     >>> sql = 'SELECT ' + r.select + ' FROM ' + r.from_ + ', ' + r.lateral
 
 A negation after the row step, `books[*](!.title)`, is the complement
@@ -4044,7 +4067,7 @@ registered drivers (built-ins + anything third-party code has added).
 | `.select`       | `SQLFragment` \| `None`      | Extraction expression (for pattern paths: ref into `.lateral`)      |
 | `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                                |
 | `.from_`        | `SQLFragment` \| `None`      | a table search's FROM: the table, or a group of row steps' rows     |
-| `.lateral`      | `SQLFragment` \| `None`      | `LATERAL jsonb_path_query(...) AS _patN(value)` for pattern paths   |
+| `.lateral`      | `SQLFragment` \| `None`      | `LATERAL (...) AS _patN(value)`: a pattern path's matches          |
 | `.unbound`      | `dict`                       | Union of fragments' unbound mappings: `{bind_name: original_name}`  |
 | `.table`        | `str` \| `None`              | Table search: the table's name, as the path spells it               |
 | `.offset`       | `int` \| `None`              | Table search: rows to skip                                          |

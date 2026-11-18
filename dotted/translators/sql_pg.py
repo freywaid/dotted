@@ -14,18 +14,21 @@ paramstyle emitters without a specific driver.
 """
 import collections
 import decimal
+import json
+import math
 import re
 
 from .. import predicates
 
+from . import core
 from .core import Hooks, TranslationError, Translator
 from .sql import (
     SQLFragment,
+    Raw,
     Resolver,
     ParamPool,
     _FORMATTER,
     _quote_ident,
-    _with_cast_spec,
     _register_dialect_cast,
     driver,
 )
@@ -58,65 +61,361 @@ def _pg_string_literal(s):
     return "'" + s.replace("'", "''") + "'"
 
 
-# ---- JSONPath fragments ---------------------------------------------
+# ---- Reading, as dotted reads ---------------------------------------
+#
+# A pattern path reads a step at a time, as dotted's walk does (see
+# `_path_rows`). A step reads a node by its own type (`jsonb_typeof`):
+# a key reads an object's member; an int an array's element or a
+# string's character, never an object's member, whose names are
+# strings; a wildcard of keys an object's members; a wildcard of slots
+# an array's elements, an object's values or a string's characters.
+#
+# Filters and guards compare as dotted does, which is as Python does:
+# a number and a boolean as numbers (True is 1), a string with a
+# string in code-point order, any other pairing unequal and unordered;
+# `!=` is `=`'s negation, so it holds for a filter's node that is no
+# object or lacks the key; a regex fullmatches str() of the value.
 
-_JP_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+# the path reading a jsonb value whole, as text (`#>>`), braces doubled
+# for the fragment's format string
+_WHOLE = "'{{}}'"
 
-
-def _jsonpath_key(name):
-    """
-    Format a key name for a JSONPath accessor. JSONPath uses double-
-    quoted strings for names that aren't plain identifiers.
-    """
-    if _JP_IDENT_RE.fullmatch(name):
-        return name
-    escaped = name.replace('\\', '\\\\').replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _jsonpath_string_literal(s):
-    """
-    Format a Python string as a JSONPath string literal. JSONPath
-    strings are double-quoted; escape backslashes and embedded double
-    quotes.
-    """
-    escaped = s.replace('\\', '\\\\').replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def _jsonpath_value_literal(value):
-    """
-    Inline a literal value in a JSONPath expression. Returns None if
-    the value cannot be safely inlined (caller should hoist to a
-    JSONPath variable instead).
-    """
-    if value is None:
-        return 'null'
-    if isinstance(value, bool):
-        return 'true' if value else 'false'
-    if isinstance(value, (int, float, decimal.Decimal)):
-        return str(value)
-    return None
-
-
-_PRED_JSONPATH = {
-    predicates.EQ: '==',
-    predicates.NE: '!=',
+_SQL_OPS = {
+    predicates.EQ: '=',
+    predicates.NE: '<>',
     predicates.LT: '<',
     predicates.GT: '>',
     predicates.LE: '<=',
     predicates.GE: '>=',
 }
 
+# what Python's int() and float() take from a string, as ARE regexes
+_INT_TEXT = r'^\s*[-+]?[0-9](_?[0-9])*\s*$'
+_DIGITS = r'[0-9](_?[0-9])*'
+_FLOAT_TEXT = (r'^\s*[-+]?(' + _DIGITS + r'(\.(' + _DIGITS + r')?)?|\.' + _DIGITS + r')'
+               r'([eE][-+]?' + _DIGITS + r')?\s*$')
+_NONFINITE_TEXT = r'^\s*[-+]?(inf|infinity|nan)\s*$'
 
-# ---- Pattern paths as JSONPath --------------------------------------
-#
-# A pattern path's ops become parts: a `_Fragment` per op — its
-# JSONPath accessor, the JSONPath vars it uses, whether the op is
-# aligned (+), and the filter it puts on what it reaches — and a
-# `_Group` per group — its kind and each branch's parts. JSONPath has
-# no union, so a path through groups runs as its tails: the group-free
-# runs of fragments, one per way through each group.
+
+def _numeric_sql(value):
+    """
+    A Python number as a SQL numeric literal, a bool as 1 or 0.
+    """
+    if isinstance(value, bool):
+        return str(int(value))
+    if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+        raise TranslationError(f'a non-finite number in a comparison not supported: {value!r}')
+    return repr(value) if isinstance(value, float) else str(value)
+
+
+def _number_of(j):
+    """
+    SQL numeric of the jsonb `j`, a number or a boolean: Python's True
+    is 1, its False 0.
+    """
+    return (f"(CASE WHEN {j} = 'true'::jsonb THEN 1::numeric "
+            f"WHEN {j} = 'false'::jsonb THEN 0::numeric ELSE ({j})::numeric END)")
+
+
+def _py_equal(j, b):
+    """
+    SQL boolean: the jsonb `j` equals the jsonb `b` as Python's `==`
+    does on their values: a number and a boolean as numbers (True is
+    1), other values of one type by jsonb equality, else unequal.
+    """
+    numbers = (f"jsonb_typeof({j}) IN ('number', 'boolean') "
+               f"AND jsonb_typeof({b}) IN ('number', 'boolean')")
+    return (f'(CASE WHEN {numbers} THEN {_number_of(j)} = {_number_of(b)} '
+            f'WHEN jsonb_typeof({j}) = jsonb_typeof({b}) THEN {j} = {b} ELSE FALSE END)')
+
+
+def _failing(what, j):
+    """
+    SQL int that fails at run time, where dotted raises or the target
+    can't say what dotted would give: a cast of the message to an int,
+    which Postgres reports with the message whole. It reads the jsonb
+    `j`, so the planner can't fold it ahead of the CASE that guards it;
+    cast it to the type the CASE needs.
+    """
+    message = _pg_string_literal(f'dotted: {what}, at a ')
+    return f'(({message} || jsonb_typeof({j}))::int)'
+
+
+def _py_text_of_number(j):
+    """
+    SQL text of the jsonb number `j` as Python's str() writes it: an int
+    as written, a float as its shortest repr, a whole one with `.0`.
+    From 1e15 to 1e16 Postgres writes an exponent and Python doesn't:
+    that fails at run time.
+    """
+    text = f'({j} #>> {_WHOLE})'
+    shortest = f'(({j})::numeric::float8::text)'
+    return (f"(CASE WHEN {text} ~ '^-?[0-9]+$' THEN {text} "
+            f'WHEN abs(({j})::numeric) >= 1e15 AND abs(({j})::numeric) < 1e16 '
+            f"THEN {_failing('a float Python writes in full', j)}::text "
+            f"WHEN {shortest} ~ '[.e]' THEN {shortest} ELSE {shortest} || '.0' END)")
+
+
+def _are_regex(pattern):
+    """
+    A Python regex as a Postgres ARE that matches where Python's
+    fullmatch does: anchored at both ends, `\\b` and `\\B` as ARE's `\\y`
+    and `\\Y`, a leading `(?i)` / `(?x)` kept in front. Any other inline
+    flag raises.
+    """
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise TranslationError(f'invalid regex {pattern!r}: {e}')
+    prefix = ''
+    lead = re.match(r'\(\?([a-zA-Z]+)\)', pattern)
+    if lead:
+        if set(lead.group(1)) - set('ix'):
+            raise TranslationError(f'regex flags other than i and x not supported: {pattern!r}')
+        prefix = lead.group(0)
+        pattern = pattern[lead.end():]
+    out = []
+    i = 0
+    in_class = False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == '\\' and i + 1 < len(pattern):
+            nxt = pattern[i + 1]
+            if not in_class and nxt in 'bB':
+                out.append('\\y' if nxt == 'b' else '\\Y')
+            else:
+                out.append(c + nxt)
+            i += 2
+            continue
+        if c == '[' and not in_class:
+            in_class = True
+            out.append(c)
+            i += 1
+            # a ] first in a class, after an optional ^, is a literal
+            if pattern[i:i + 1] == '^':
+                out.append('^')
+                i += 1
+            if pattern[i:i + 1] == ']':
+                out.append(']')
+                i += 1
+            continue
+        if c == ']' and in_class:
+            in_class = False
+        out.append(c)
+        i += 1
+    return f'{prefix}^(?:{"".join(out)})$'
+
+
+def _regex_parser():
+    """
+    Python's own regex parser: `re._parser`, `sre_parse` before 3.11.
+    """
+    try:
+        from re import _parser
+        return _parser
+    except ImportError:
+        import sre_parse
+        return sre_parse
+
+
+def _may_start_with(pattern, c):
+    """
+    False where no match of the Python regex `pattern` can start with
+    the character `c`, as its parse shows; True where one may.
+    """
+    sre = _regex_parser()
+    return _items_may_start(list(sre.parse(pattern)), c, sre)
+
+
+def _items_may_start(items, c, sre):
+    """
+    `_may_start_with` for a parsed run of regex items.
+    """
+    for op, av in items:
+        may, empty = _item_may_start(op, av, c, sre)
+        if may:
+            return True
+        if not empty:
+            return False
+    return False
+
+
+def _items_may_be_empty(items, c, sre):
+    """
+    True if a parsed run of regex items may match the empty string.
+    """
+    return all(_item_may_start(op, av, c, sre)[1] for op, av in items)
+
+
+def _item_may_start(op, av, c, sre):
+    """
+    For one parsed regex item: whether a match of it may start with the
+    character `c`, and whether it may match the empty string. What it
+    can't tell, it says may.
+    """
+    if op is sre.LITERAL:
+        return chr(av) == c, False
+    if op is sre.NOT_LITERAL:
+        return chr(av) != c, False
+    if op is sre.ANY:
+        return c != '\n', False
+    if op is sre.AT:
+        return False, True
+    if op is sre.IN:
+        return _in_class(av, c, sre), False
+    if op is sre.SUBPATTERN:
+        body = list(av[-1])
+        return _items_may_start(body, c, sre), _items_may_be_empty(body, c, sre)
+    if op is sre.BRANCH:
+        alts = [list(alt) for alt in av[1]]
+        return (any(_items_may_start(alt, c, sre) for alt in alts),
+                any(_items_may_be_empty(alt, c, sre) for alt in alts))
+    if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, getattr(sre, 'POSSESSIVE_REPEAT', None)):
+        low, _, body = av
+        body = list(body)
+        return _items_may_start(body, c, sre), low == 0 or _items_may_be_empty(body, c, sre)
+    return True, False
+
+
+def _in_class(items, c, sre):
+    """
+    Whether a parsed character class may match the character `c`.
+    """
+    negate = bool(items) and items[0][0] is sre.NEGATE
+    found = False
+    for op, av in items:
+        if op is sre.NEGATE:
+            continue
+        if op is sre.LITERAL and chr(av) == c:
+            found = True
+        elif op is sre.RANGE and av[0] <= ord(c) <= av[1]:
+            found = True
+        elif op is sre.CATEGORY and _in_category(av, c, sre):
+            found = True
+        elif op not in (sre.LITERAL, sre.RANGE, sre.CATEGORY):
+            return True
+    return found != negate
+
+
+def _in_category(category, c, sre):
+    """
+    Whether the character `c` is in a regex category, `\\d`, `\\w`, `\\s`
+    or their negations.
+    """
+    tests = {
+        sre.CATEGORY_DIGIT: c.isdigit(),
+        sre.CATEGORY_NOT_DIGIT: not c.isdigit(),
+        sre.CATEGORY_WORD: c.isalnum() or c == '_',
+        sre.CATEGORY_NOT_WORD: not (c.isalnum() or c == '_'),
+        sre.CATEGORY_SPACE: c.isspace(),
+        sre.CATEGORY_NOT_SPACE: not c.isspace(),
+    }
+    return tests.get(category, True)
+
+
+def _int_of(j):
+    """
+    SQL jsonb of dotted's `int` transform on the jsonb `j`: a number
+    truncated, a boolean as 1 or 0, a string Python's int() takes as
+    that int; anything else as it was, as `int` leaves what int()
+    raises on.
+    """
+    text = f'({j} #>> {_WHOLE})'
+    return (f"(CASE jsonb_typeof({j}) WHEN 'number' THEN to_jsonb(trunc(({j})::numeric)) "
+            f"WHEN 'boolean' THEN to_jsonb(CASE WHEN {j} = 'true'::jsonb THEN 1 ELSE 0 END) "
+            f"WHEN 'string' THEN (CASE WHEN {text} ~ {_pg_string_literal(_INT_TEXT)} "
+            f"THEN to_jsonb(regexp_replace({text}, '\\s|_', '', 'g')::numeric) ELSE {j} END) "
+            f'ELSE {j} END)')
+
+
+def _as_float(numeric):
+    """
+    SQL jsonb of the SQL numeric `numeric` as a Python float writes:
+    its double's shortest digits, a whole one with `.0`.
+    """
+    return f'to_jsonb(({numeric})::float8::numeric + 0.0)'
+
+
+def _float_of(j):
+    """
+    SQL jsonb of dotted's `float` transform on the jsonb `j`: a number
+    as is, a boolean as 1.0 or 0.0, a string Python's float() takes as
+    that number; another string as it was. float() raises a TypeError
+    dotted doesn't catch on a null, an array or an object, and its inf
+    and nan have no JSON: those fail at run time.
+    """
+    text = f'({j} #>> {_WHOLE})'
+    number = _as_float(f'({j})::numeric')
+    parsed = _as_float(f"regexp_replace({text}, '\\s|_', '', 'g')::numeric")
+    return (f"(CASE jsonb_typeof({j}) WHEN 'number' THEN {number} "
+            f"WHEN 'boolean' THEN to_jsonb(CASE WHEN {j} = 'true'::jsonb THEN 1.0 ELSE 0.0 END) "
+            f"WHEN 'string' THEN (CASE WHEN {text} ~ {_pg_string_literal(_FLOAT_TEXT)} "
+            f"THEN {parsed} "
+            f"WHEN lower({text}) ~ {_pg_string_literal(_NONFINITE_TEXT)} "
+            f"THEN to_jsonb({_failing('float() of inf or nan', j)}) ELSE {j} END) "
+            f"ELSE to_jsonb({_failing('float() of a value that is not a number or string', j)}) END)")
+
+
+def _str_of(j):
+    """
+    SQL jsonb of dotted's `str` transform on the jsonb `j`: str() of it,
+    a number as Python writes it, a boolean as `True` / `False`, a null
+    as `None`. Python writes an array or object as its repr, which
+    fails at run time.
+    """
+    return (f"(CASE jsonb_typeof({j}) WHEN 'string' THEN {j} "
+            f"WHEN 'number' THEN to_jsonb({_py_text_of_number(j)}) "
+            f"WHEN 'boolean' THEN (CASE WHEN {j} = 'true'::jsonb THEN "
+            f"'\"True\"'::jsonb ELSE '\"False\"'::jsonb END) "
+            f"WHEN 'null' THEN '\"None\"'::jsonb "
+            f"ELSE to_jsonb({_failing('str() of an array or object', j)}) END)")
+
+
+# dotted's transforms a comparison can take, by name
+_TRANSFORMS = {'int': _int_of, 'float': _float_of, 'str': _str_of}
+
+
+def _json_spec(marker):
+    """
+    A `{name}` marker as `{name:json}`: the binding goes to the driver
+    as JSON text, cast to jsonb (`sql._render`), so a comparison reads
+    its type.
+    """
+    return '{' + marker[1:-1] + ':json}'
+
+
+# an expression simple enough to repeat: a column, or an alias's column
+_SIMPLE_SQL = re.compile(r'[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?')
+
+
+class _Writer:
+    """
+    What a write does at one node, as SQL: `write(node)` gives the
+    node's new jsonb from its SQL. `value` marks the writer that puts
+    the written value there whatever the node.
+    """
+
+    def __init__(self, write, value=False):
+        self.write = write
+        self.value = value
+
+    def __call__(self, node):
+        return self.write(node)
+
+
+def _holds_written(value):
+    """
+    True if `value`, a node dotted built, holds the written value as
+    the target's own expression, `core.WRITTEN`.
+    """
+    if value is core.WRITTEN:
+        return True
+    if isinstance(value, dict):
+        return any(_holds_written(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_holds_written(v) for v in value)
+    return False
+
 
 class _TableRows(collections.namedtuple('_TableRows', 'text alias')):
     """
@@ -127,46 +426,25 @@ class _TableRows(collections.namedtuple('_TableRows', 'text alias')):
 
 
 class _Fragment(collections.namedtuple(
-        '_Fragment', 'text jvars aligned filter steps', defaults=(None, ()))):
+        '_Fragment', 'steps test aligned', defaults=(None, False))):
     """
-    One op's JSONPath: its accessor `text` and the `filter` on what it
-    reaches. `steps` are the accessor as a path-tracking walk takes it
-    (see `_path_step`).
+    One op's reading: the `steps` it takes from a node (`_path_step`),
+    the `test` what it reaches must pass (a function of the reached
+    value's jsonb SQL; None for none), and whether it is aligned (+):
+    the path after it yields a null where it reaches nothing.
     """
     kind = None
     branches = ()
     softs = ()
 
-    @property
-    def path(self):
+    def filtered(self, test):
         """
-        The accessor, then its filter.
+        This fragment, as parts, its test and `test` both holding.
         """
-        if not self.filter:
-            return self.text
-        return f'{self.text} ? ({self.filter})'
-
-    @property
-    def split(self):
-        """
-        True where rows read in dotted's order take a lateral of their
-        own: after an aligned (+) op.
-        """
-        return self.aligned
-
-    def filtered(self, test, jvars):
-        """
-        This fragment, as parts, its filter and `test` both holding.
-        """
-        if self.filter:
-            test = f'{self.filter} && {test}'
-        return [self._replace(filter=test, jvars={**self.jvars, **jvars})]
-
-    def rows(self, t, src, before, rest, ordered):
-        """
-        The rows of a path split at this aligned fragment (`t._rows`).
-        """
-        return t._aligned_rows(src, before + [self], rest, ordered)
+        if self.test is None:
+            return [self._replace(test=test)]
+        first = self.test
+        return [self._replace(test=lambda e: f'({first(e)}) AND ({test(e)})')]
 
 
 class _Group(collections.namedtuple(
@@ -176,128 +454,12 @@ class _Group(collections.namedtuple(
     follows it and whether a soft cut does. A negation ('not') `reads`
     its node's children as its branch does: 'key' or 'slot'.
     """
-    split = True
 
-    def filtered(self, test, jvars):
+    def filtered(self, test):
         """
         This group, as parts, `test` a filter on each of its matches.
         """
-        return [self, _Fragment('', jvars, False, test)]
-
-    def rows(self, t, src, before, rest, ordered):
-        """
-        The rows of a path split at this group (`t._rows`).
-        """
-        return t._group_rows(src, before, self, rest, ordered)
-
-
-def _tails(parts):
-    """
-    The group-free runs of fragments that `parts` reach, one per way
-    through each group, a way being a branch then the parts after the
-    group. A `,` group's matches are its ways' together; a way after a
-    branch a cut follows filters the node it is at, keeping it only
-    where that branch's way reaches nothing. An `&` group filters the
-    node, keeping it only where every way reaches something from it.
-    """
-    for i, part in enumerate(parts):
-        if not part.branches:
-            continue
-        head = list(parts[:i])
-        ways = [list(branch) + list(parts[i + 1:]) for branch in part.branches]
-        if part.kind == 'and':
-            head.append(_held(ways, True))
-            return [head + tail for way in ways for tail in _tails(way)]
-        tails = []
-        for j, way in enumerate(ways):
-            cut = [ways[k] for k in range(j) if part.cuts[k]]
-            lead = head + [_held(cut, False)] if cut else head
-            tails.extend(lead + tail for tail in _tails(way))
-        return tails
-    return [list(parts)]
-
-
-def _held(ways, reach):
-    """
-    A filter fragment keeping a node only where every one of `ways`
-    reaches something from it, or, unless `reach`, where none does.
-    """
-    tests = [_reaches(way) for way in ways]
-    jvars = {}
-    for _, test_jvars in tests:
-        jvars.update(test_jvars)
-    form = '({})' if reach else '!({})'
-    text = ' && '.join(form.format(test) for test, _ in tests)
-    return _Fragment('', jvars, False, text)
-
-
-def _reaches(parts):
-    """
-    A JSONPath test, and its vars, that `parts` reach something from
-    `@`: some tail does, up to its first aligned (+) op, whose every
-    match yields at least one result.
-    """
-    tests = []
-    jvars = {}
-    for tail in _tails(parts):
-        text, tail_jvars = _segments(tail)[0]
-        tests.append(f'exists(@{text})')
-        jvars.update(tail_jvars)
-    return ' || '.join(tests), jvars
-
-
-def _segments(tail):
-    """
-    A tail's fragments joined into `(text, jvars)`, split after each
-    aligned (+) op. The first segment's matches are the rows; each later
-    one runs under a match of the one before, and a match it finds
-    nothing under keeps a NULL row.
-    """
-    segments = []
-    text, jvars = '', {}
-    for fragment in tail:
-        text += fragment.path
-        jvars = {**jvars, **fragment.jvars}
-        if not fragment.aligned:
-            continue
-        segments.append((text, jvars))
-        text, jvars = '', {}
-    if text or not segments:
-        segments.append((text, jvars))
-    return segments
-
-
-def _joined(fragments):
-    """
-    Fragments joined into one `(text, jvars)`.
-    """
-    text, jvars = '', {}
-    for fragment in fragments:
-        text += fragment.path
-        jvars = {**jvars, **fragment.jvars}
-    return text, jvars
-
-
-def _anywhere(parts, test):
-    """
-    True if `test` holds for a part of `parts`, one in a group's branch
-    included.
-    """
-    for part in parts:
-        if test(part):
-            return True
-        if any(_anywhere(b, test) for b in part.branches):
-            return True
-    return False
-
-
-def _unreadable(part):
-    """
-    True if `part` is a group whether JSONPath reaches anything through
-    can't say: a first-match group (JSONPath has no first) or a
-    negation (it has no complement).
-    """
-    return part.kind in ('first', 'not')
+        return [self, _Fragment((), test)]
 
 
 def _segment_sql(text_expr):
@@ -318,14 +480,38 @@ def _members(expr):
             f'WITH ORDINALITY')
 
 
-def _needs_laterals(part):
+def _existence(parts):
     """
-    True if `part` is a group JSONPath can't read: a first-match group
-    (JSONPath has no first), a negation (it has no complement), or a
-    group with a soft cut (it can't tell one match's path from
-    another's).
+    `parts` as whether they reach anything reads them: a group's cuts
+    and soft cuts change which matches it yields, not whether it yields
+    any, so its ways read without them. A negation's branch keeps its
+    own: its complement is of what that branch yields.
     """
-    return _unreadable(part) or any(part.softs)
+    out = []
+    for part in parts:
+        if not part.branches or part.kind == 'not':
+            out.append(part)
+            continue
+        plain = (False,) * len(part.branches)
+        out.append(part._replace(branches=[_existence(b) for b in part.branches],
+                                 cuts=plain, softs=plain))
+    return out
+
+
+def _items(expr):
+    """
+    SQL of the (key, value, n) rows of a wildcard of slots over the
+    jsonb `expr`, as dotted's `[*]` reads it: an array's elements (the
+    key the index), an object's members, a string's characters; none
+    for anything else.
+    """
+    s = f'({expr} #>> {_WHOLE})'
+    return (f'SELECT (i.n - 1)::text AS key, i.value, i.n FROM jsonb_array_elements('
+            f"CASE WHEN jsonb_typeof({expr}) = 'array' THEN {expr} END) WITH ORDINALITY AS i(value, n) "
+            f'UNION ALL SELECT m.key, m.value, m.n FROM {_members(expr)} AS m(key, value, n) '
+            f'UNION ALL SELECT (c.n - 1)::text, to_jsonb(substr({s}, c.n, 1)), c.n::bigint '
+            f"FROM generate_series(1, CASE WHEN jsonb_typeof({expr}) = 'string' "
+            f'THEN char_length({s}) END) AS c(n)')
 
 
 # ---- Cast inference for Postgres ------------------------------------
@@ -376,7 +562,7 @@ _register_dialect_cast('dollar-numeric', _dollar_cast)
 class PostgresMixin(Translator):
     """
     Postgres-flavored translation hooks and cast inference. Mix into
-    a `Resolver` subclass to get Postgres JSONB / JSONPath SQL
+    a `Resolver` subclass to get Postgres JSONB SQL
     generation. The walk itself is `Translator`'s; the hooks below
     return marker-form SQL text.
 
@@ -415,28 +601,48 @@ class PostgresMixin(Translator):
             state = self._state
             self._state = None
 
-        params = dict(state.params)
-        unbound = dict(state.unbound)
+        self._ops = ops
+        self._root = root
+        self._pool = state
+        self.select = self._pool_fragment(raw.get('select'))
+        self.where = self._pool_fragment(raw.get('where'))
+        self.from_ = self._pool_fragment(raw.get('from'))
+        self.lateral = self._pool_fragment(raw.get('lateral'))
+        self.unbound = dict(state.unbound)
 
-        def _mkfrag(text):
-            """
-            Narrow the shared params/unbound maps down to the markers
-            this specific fragment actually references, so downstream
-            composition of fragments doesn't pull in unrelated bindings.
-            """
-            if text is None:
-                return None
-            used = {name for _, name, _, _ in _FORMATTER.parse(text)
-                    if name is not None}
-            f_params = {k: v for k, v in params.items() if k in used}
-            f_unbound = {k: v for k, v in unbound.items() if k in used}
-            return SQLFragment(text, f_params, f_unbound)
+    def as_update(self, value):
+        """
+        The write of `value` at the path's matches, as dotted's `update`
+        does it, as the SQL fragment of its assignments: `col = expr`
+        per column the write touches, for an `UPDATE ... SET`. `value`
+        is a literal, hoisted as a bind parameter, or a `Raw` / `Col`
+        SQL expression.
+        """
+        self._state = self._pool
+        self._written_raw = value
+        try:
+            pairs = self._translate_write(
+                self._ops, self._root, value, not isinstance(value, Raw))
+        finally:
+            self._state = None
+        text = ', '.join(f'{_quote_ident(name)} = {expr}' for name, expr in pairs)
+        return self._pool_fragment(text)
 
-        self.select = _mkfrag(raw.get('select'))
-        self.where = _mkfrag(raw.get('where'))
-        self.from_ = _mkfrag(raw.get('from'))
-        self.lateral = _mkfrag(raw.get('lateral'))
-        self.unbound = unbound
+    def _pool_fragment(self, text):
+        """
+        The fragment of `text`, None for none: its params and unbound
+        substitutions narrowed from the translation's pool to the
+        markers it uses, so composing fragments doesn't pull in
+        bindings they don't need.
+        """
+        if text is None:
+            return None
+        params = dict(self._pool.params)
+        unbound = dict(self._pool.unbound)
+        used = {name for _, name, _, _ in _FORMATTER.parse(text) if name is not None}
+        return SQLFragment(text,
+                           {k: v for k, v in params.items() if k in used},
+                           {k: v for k, v in unbound.items() if k in used})
 
     @staticmethod
     def cast_fn(value):
@@ -502,9 +708,12 @@ class PostgresMixin(Translator):
 
     def _nested_predicate(self, guard_op, col_ident, prefix):
         """
-        Guards inside a column are JSONB guards.
+        A guard inside a JSONB column: on the value at `prefix`, where
+        there is one, as dotted compares (`_guard_test`).
         """
-        return self._jsonb_predicate(guard_op, col_ident, prefix)
+        j = self._path_expr(col_ident, prefix, text=False)
+        test = self._guard_test(guard_op)
+        return self._bound(j, lambda x: f'({x} IS NOT NULL AND {test(x)})')
 
     def _combine_and(self, preds):
         """
@@ -529,6 +738,278 @@ class PostgresMixin(Translator):
         The parenthesized predicate IS NOT TRUE: false or null.
         """
         return f'({pred}) IS NOT TRUE'
+
+    # ---- writes -----------------------------------------------------
+
+    def _w_keep(self):
+        """
+        The writer that leaves the node as it is: a `~` holds the write
+        back. The node must still be a container, as for any write.
+        """
+        def body(n):
+            return (f"CASE WHEN jsonb_typeof({n}) IN ('object', 'array') THEN {n} "
+                    f"ELSE {self._w_error('a scalar', n)} END")
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _w_value(self):
+        """
+        The writer that puts the written value at the node.
+        """
+        written = self._written
+        return _Writer(lambda node: self._jsonb_of(written, node), value=True)
+
+    def _w_test(self, op):
+        """
+        A filter's or guard's test on a child, as a read takes it: a
+        function of the child's jsonb SQL.
+        """
+        return op.translated(_WRITE_TEST, self)
+
+    def _w_column_test(self, op, col):
+        """
+        A filter's or guard's test on a column: a guard's as on the
+        column itself, a filter's on the column's jsonb.
+        """
+        return op.translated(_COLUMN_TEST, self, col)
+
+    def _w_column_value(self, col, test):
+        """
+        A column's new value, the written value, where `test` holds.
+        """
+        value = self._written_sql(self._written, col)
+        if test is None:
+            return value
+        return f'CASE WHEN {test} THEN {value} ELSE {col} END'
+
+    def _w_column(self, col, child, null, test):
+        """
+        A jsonb column's new value: `child` written in it, or the node
+        dotted builds for a null one, where `test` holds.
+        """
+        out = (f"CASE WHEN {col} IS NULL OR jsonb_typeof({col}) = 'null' "
+               f'THEN {self._jsonb_of(null, col)} ELSE {child(col)} END')
+        if test is None:
+            return out
+        return f'CASE WHEN {test} THEN {out} ELSE {col} END'
+
+    def _w_key(self, kind, value, child, absent, null):
+        """
+        The writer of a literal key ('key') or slot ('index'): the
+        child it names written, or, where it's missing, `absent`, the
+        node dotted builds (`core.UNBUILT`: the node stays). An object reads it as
+        a member's name; an array an int as an index, from the end where
+        negative, a slot past the end appending, a key there failing as
+        dotted's update fails.
+        """
+        def body(n):
+            obj = self._w_member(n, str(value), child, absent, null)
+            # dotted builds a list of pairs there: a key reads no element
+            arr = self._w_error('a key on an array', n)
+            if _is_int(value):
+                arr = self._w_index(n, value, child, absent, null, kind == 'index')
+            return (f"CASE jsonb_typeof({n}) WHEN 'object' THEN {obj} "
+                    f"WHEN 'array' THEN {arr} ELSE {self._w_error('a scalar', n)} END")
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _w_member(self, n, key, child, absent, null):
+        """
+        SQL: the object `n` with its member `key` written: `child` in
+        it, the node dotted builds for a null one, `absent`
+        (`core.UNBUILT`: none) where it's missing.
+        """
+        path = _pg_path_array([key])
+        get = f'({n} -> {_pg_string_literal(key)})'
+        if child.value and absent is null:
+            return f'jsonb_set({n}, {path}, {child(get)})'
+        missing = n if absent is core.UNBUILT else f'jsonb_set({n}, {path}, {self._jsonb_of(absent, n)})'
+        return (f'CASE WHEN {get} IS NULL THEN {missing} '
+                f'ELSE jsonb_set({n}, {path}, {self._w_put(get, child, null)}) END')
+
+    def _w_index(self, n, i, child, absent, null, appends):
+        """
+        SQL: the array `n` with its element `i` written, from the end
+        where negative. Past the end a slot (`appends`) appends
+        `absent`, dotted's built node; before the start, or a key past
+        either end, fails as dotted's update does. Nothing changes there
+        where `absent` is `core.UNBUILT`: a `~` holds the write back.
+        """
+        length = f'jsonb_array_length({n})'
+        path = _pg_path_array([str(i)])
+        get = f'({n} -> ({i}))'
+        inside = f'jsonb_set({n}, {path}, {self._w_put(get, child, null)})'
+        if absent is core.UNBUILT:
+            outside = n
+        elif appends and i >= 0:
+            outside = f'{n} || jsonb_build_array({self._jsonb_of(absent, n)})'
+        else:
+            outside = self._w_error('an index out of range', n)
+        return f'CASE WHEN {i} >= -{length} AND {i} < {length} THEN {inside} ELSE {outside} END'
+
+    def _w_put(self, e, child, null):
+        """
+        SQL: the child `e` written: `child` in it, or for a null child the
+        node dotted builds, `null`.
+        """
+        if child.value:
+            return child(e)
+        return (f"CASE WHEN jsonb_typeof({e}) = 'null' THEN {self._jsonb_of(null, e)} "
+                f'ELSE {child(e)} END')
+
+    def _w_each(self, kind, value, first, test, child, null):
+        """
+        The writer of the children an op picks: those of a wildcard of
+        keys ('keys': an object's members) or slots ('items': an array's
+        elements, an object's members), or a literal's one ('key',
+        'index'), that pass `test`; for `first`, the first child alone,
+        where it passes. None is built where they're missing.
+        """
+        def body(n):
+            if kind in ('key', 'index'):
+                return self._w_one(n, value, test, child, null)
+            obj = self._w_rebuilt(n, 'object', first, test, child, null)
+            arr = self._w_rebuilt(n, 'array', first, test, child, null)
+            if kind == 'keys' and test is not None:
+                # a key reaches no element: the filter or guard keeps none
+                arr = n
+            elif kind == 'keys':
+                # dotted builds garbage from a full array there
+                arr = (f'CASE WHEN jsonb_array_length({n}) = 0 THEN {n} '
+                       f"ELSE {self._w_error('a key wildcard on an array', n)} END")
+            return (f"CASE jsonb_typeof({n}) WHEN 'object' THEN {obj} "
+                    f"WHEN 'array' THEN {arr} ELSE {self._w_error('a scalar', n)} END")
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _w_one(self, n, value, test, child, null):
+        """
+        SQL: the node `n` with the one child a literal names written
+        where it's there and passes `test`, as an object's member or an
+        array's element.
+        """
+        key = str(value)
+        get = f'({n} -> {_pg_string_literal(key)})'
+        obj = (f'CASE WHEN {get} IS NOT NULL AND ({test(get)}) '
+               f'THEN jsonb_set({n}, {_pg_path_array([key])}, {self._w_put(get, child, null)}) '
+               f'ELSE {n} END')
+        arr = n
+        if _is_int(value):
+            get = f'({n} -> ({value}))'
+            arr = (f'CASE WHEN {get} IS NOT NULL AND ({test(get)}) '
+                   f'THEN jsonb_set({n}, {_pg_path_array([key])}, {self._w_put(get, child, null)}) '
+                   f'ELSE {n} END')
+        return (f"CASE jsonb_typeof({n}) WHEN 'object' THEN {obj} "
+                f"WHEN 'array' THEN {arr} ELSE {self._w_error('a scalar', n)} END")
+
+    def _w_rebuilt(self, n, typ, first, test, child, null):
+        """
+        SQL: the object or array (`typ`) `n` rebuilt, each child the
+        test picks written; for `first`, the first child alone, where
+        it passes.
+        """
+        a = self._state.alloc_pattern_alias()
+        b = self._state.alloc_pattern_alias()
+        picked = test(f'{a}.e') if test else 'TRUE'
+        if first:
+            # the wildcard's first child alone, then the test on it, as
+            # dotted's `[*?&…]` reads
+            picked = f'{a}.i = 1 AND ({picked})'
+        put = self._w_put(f'{b}.e', child, null)
+        each = f'CASE WHEN {b}.s THEN {put} ELSE {b}.e END'
+        if typ == 'array':
+            return (f'(SELECT COALESCE(jsonb_agg({each} ORDER BY {b}.i), \'[]\'::jsonb) '
+                    f'FROM (SELECT {a}.e, {a}.i, {picked} AS s FROM jsonb_array_elements({n}) '
+                    f'WITH ORDINALITY AS {a}(e, i)) AS {b})')
+        return (f'(SELECT COALESCE(jsonb_object_agg({b}.k, {each}), \'{{{{}}}}\'::jsonb) '
+                f'FROM (SELECT {a}.k, {a}.e, {a}.i, {picked} AS s FROM jsonb_each({n}) '
+                f'WITH ORDINALITY AS {a}(k, e, i)) AS {b})')
+
+    def _w_append(self, built, unique):
+        """
+        The writer of an append slot: `built` appended to the array, or
+        for `unique` only where the array doesn't hold it.
+        """
+        def body(n):
+            item = self._jsonb_of(built, n)
+            arr = f'{n} || jsonb_build_array({item})'
+            if unique:
+                # held already as Python's `in` tells: True is 1
+                a = self._state.alloc_pattern_alias()
+                arr = (f'CASE WHEN EXISTS (SELECT 1 FROM jsonb_array_elements({n}) AS {a}(e) '
+                       f'WHERE {_py_equal(f"{a}.e", item)}) THEN {n} ELSE {arr} END')
+            return (f"CASE jsonb_typeof({n}) WHEN 'array' THEN {arr} "
+                    f"ELSE {self._w_error('an append to a non-array', n)} END")
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _bound(self, node, body):
+        """
+        SQL `body(n)` with `n` the node, bound once where its SQL is
+        more than a name, so a writer that reads it often doesn't repeat
+        it.
+        """
+        if _SIMPLE_SQL.fullmatch(node):
+            return body(node)
+        a = self._state.alloc_pattern_alias()
+        return f'(SELECT {body(f"{a}.n")} FROM (SELECT {node} AS n) AS {a})'
+
+    def _w_error(self, what, n):
+        """
+        SQL jsonb that fails at run time, where dotted's update raises:
+        a cast of the message to an int, which Postgres reports with the
+        message whole. It reads the node, so the planner can't fold it
+        ahead of the CASE that guards it.
+        """
+        message = _pg_string_literal(f'dotted update: cannot write {what} at a ')
+        return f'to_jsonb(({message} || jsonb_typeof({n}))::int)'
+
+    def _jsonb_of(self, value, n):
+        """
+        SQL jsonb of a node dotted built, or of the written value: a
+        literal as a hoisted JSON parameter; the written value as the
+        target's expression where `core.WRITTEN` stands for it; a
+        `BuildError` failing at run time, `n` the node it is read at.
+        """
+        if isinstance(value, core.BuildError):
+            return self._w_error(f'what dotted can\'t build ({value.message})', n)
+        if value is core.WRITTEN:
+            return f'to_jsonb({self._raw_written()})'
+        if not _holds_written(value):
+            return self._jsonb_literal(value)
+        if isinstance(value, dict):
+            pairs = ', '.join(f'{_pg_string_literal(str(k))}, {self._jsonb_of(v, n)}'
+                              for k, v in value.items())
+            return f'jsonb_build_object({pairs})'
+        return f'jsonb_build_array({", ".join(self._jsonb_of(v, n) for v in value)})'
+
+    def _jsonb_literal(self, value):
+        """
+        A literal as a hoisted JSON text parameter cast to jsonb.
+        """
+        try:
+            text = json.dumps(value)
+        except (TypeError, ValueError) as e:
+            raise TranslationError(f'a value a write can\'t give as JSON: {value!r} ({e})')
+        return f'{self._hoist_value(text)}::jsonb'
+
+    def _written_sql(self, value, col):
+        """
+        SQL of the written value for a column itself: a literal as a
+        hoisted parameter (a dict or list as jsonb), or the target's own
+        expression.
+        """
+        if value is core.WRITTEN:
+            return self._raw_written()
+        if isinstance(value, core.BuildError):
+            raise TranslationError(f'dotted can\'t build it: {value.message}')
+        if value is None:
+            return 'NULL'
+        if isinstance(value, (dict, list, tuple)):
+            return self._jsonb_literal(value)
+        return self._hoist_value(value)
+
+    def _raw_written(self):
+        """
+        The written `Raw` / `Col`'s SQL.
+        """
+        return self._written_raw.sql
 
     # ---- rows of a table search -------------------------------------
 
@@ -600,114 +1081,21 @@ class PostgresMixin(Translator):
 
     def _pattern(self, col_ident, prefix, ops):
         """
-        Pattern paths produce three fragments: a WHERE predicate (via
-        jsonb_path_exists), a LATERAL clause (via jsonb_path_query),
-        and a select expression that references the lateral's alias.
-        The engine picks which to compose — filter-style from `where`
-        or extract-style from `lateral` + `select`.
-
-        An aligned (+) op splits the path: the rest runs under each of
-        its matches in a `LEFT JOIN LATERAL ... ON TRUE`, so a match the
-        rest finds nothing under yields one NULL.
-
-        A path through `,` and `&` groups runs as its tails (`_tails`):
-        `where` holds when any tail matches, and the lateral yields
-        every tail's matches, `UNION ALL`. JSONPath has no first, so a
-        path through a first-match group (?) runs a lateral at each node
-        a group or aligned op is at (`_rows`), and `where` holds when it
-        yields a row. Nor does it give a match's path, so a group with a
-        soft cut walks its branches with their paths (`_path_rows`).
+        A pattern path's fragments, read a step at a time as dotted's
+        walk reads it (`_path_rows`): `where` whether it reaches
+        anything (`_existence`), `lateral` its matches, a `value` each,
+        and `select` the lateral's value. The engine picks which to compose —
+        filter-style from `where` or extract-style from `lateral` +
+        `select`.
         """
-        parts = [self._jsonpath_head(prefix)] + self._jsonpath_parts(ops)
-        where = self._some(col_ident, parts)
-        if not _anywhere(parts, _needs_laterals):
-            tails = _tails(parts)
-            if len(tails) == 1:
-                lateral, alias = self._chain(col_ident, _segments(tails[0]))
-                return {'select': f'{alias}.value', 'where': where,
-                        'lateral': lateral}
-        alias = self._state.alloc_pattern_alias()
-        rows = self._rows(col_ident, parts)
-        return {'select': f'{alias}.value', 'where': where,
-                'lateral': f'LATERAL ({rows}) AS {alias}(value)'}
-
-    def _rows(self, src, parts, ordered=False):
-        """
-        SQL query of the rows `parts` reach from the jsonb `src`, a
-        `value` each. Without a first-match group or a soft cut, and
-        unless `ordered`, it runs as its tails, `UNION ALL`. Otherwise it
-        runs a lateral at each node a group or an aligned (+) op is at,
-        so its rows come in the order dotted reaches them. `ordered` is
-        for a first match: there an aligned op's default is a JSON null,
-        a match.
-        """
-        if not ordered and not _anywhere(parts, _needs_laterals):
-            return self._tail_rows(src, parts)
-        i = next((i for i, part in enumerate(parts) if part.split), None)
-        if i is None:
-            return self._tail_rows(src, parts)
-        return parts[i].rows(self, src, parts[:i], parts[i + 1:], ordered)
-
-    def _group_rows(self, src, before, group, rest, ordered):
-        """
-        `_rows` through a group: a lateral at each node the fragments
-        `before` it reach, the group's rows at each.
-        """
-        text, jvars = _joined(before)
-        if not text:
-            return self._rows_at(src, group, rest, ordered)
-        node = self._state.alloc_pattern_alias()
-        under = self._rows_at(f'{node}.value', group, rest, ordered)
-        found = self._state.alloc_pattern_alias()
-        nodes = self._path_call('jsonb_path_query', src, text, jvars)
-        return (f'SELECT {found}.value FROM {nodes} AS {node}(value) '
-                f'CROSS JOIN LATERAL ({under}) AS {found}(value)')
-
-    def _aligned_rows(self, src, through, rest, ordered):
-        """
-        `_rows` through an aligned (+) op, the last of the fragments
-        `through`: what follows runs under each of its matches, which
-        keeps a row where it finds nothing.
-        """
-        node = self._state.alloc_pattern_alias()
-        under = self._rows(f'{node}.value', rest, ordered)
-        found = self._state.alloc_pattern_alias()
-        nodes = self._path_call('jsonb_path_query', src, *_joined(through))
-        value = f'{found}.value'
-        if ordered:
-            value = f"COALESCE({value}, 'null'::jsonb)"
-        return (f'SELECT {value} FROM {nodes} AS {node}(value) '
-                f'LEFT JOIN LATERAL ({under}) AS {found}(value) ON TRUE')
-
-    def _rows_at(self, node, group, rest, ordered):
-        """
-        SQL query of the rows a group at the jsonb `node` reaches,
-        `rest` the parts after it: its ways' rows, `UNION ALL`, a way
-        after a branch a cut follows only where that branch's way
-        reaches nothing; for an `&`, only where every way reaches
-        something; for a first match, the rest's from it. A negation,
-        and a group with a soft cut, take their ways with their paths
-        (`_path_group_rows`).
-        """
-        if any(group.softs) or group.kind == 'not':
-            rows = self._path_group_rows(node, "''", 'ARRAY[]::bigint[]', group, rest)
-            alias = self._state.alloc_pattern_alias()
-            return f'SELECT {alias}.value FROM ({rows}) AS {alias}'
-        if group.kind == 'first':
-            return self._rows(self._first(node, group.branches), rest, ordered)
-        ways = [list(branch) + list(rest) for branch in group.branches]
-        if group.kind == 'and':
-            union = ' UNION ALL '.join(self._rows(node, way, ordered) for way in ways)
-            return self._rows_where(union, self._combine_and([self._some(node, way) for way in ways]))
-        queries = []
-        for j, way in enumerate(ways):
-            rows = self._rows(node, way, ordered)
-            cut = [ways[k] for k in range(j) if group.cuts[k]]
-            if cut:
-                rows = self._rows_where(rows, self._combine_and(
-                    [self._combine_not(self._some(node, w)) for w in cut]))
-            queries.append(rows)
-        return ' UNION ALL '.join(queries)
+        parts = [self._head(prefix)] + self._read_parts(ops)
+        start = (col_ident, "''", 'ARRAY[]::bigint[]')
+        a = self._state.alloc_pattern_alias()
+        b = self._state.alloc_pattern_alias()
+        where = f'EXISTS ({self._path_rows(*start, _existence(parts))})'
+        rows = self._path_rows(*start, parts)
+        return {'select': f'{a}.value', 'where': where,
+                'lateral': f'LATERAL (SELECT {b}.value FROM ({rows}) AS {b}) AS {a}(value)'}
 
     def _rows_where(self, rows, pred, columns=('value',)):
         """
@@ -719,14 +1107,13 @@ class PostgresMixin(Translator):
         return (f'SELECT {picked} FROM ({rows}) AS {alias}({", ".join(columns)}) '
                 f'WHERE {pred}')
 
-    # ---- Path-tracking rows, for a soft cut -------------------------
+    # ---- Path-tracking rows -----------------------------------------
     #
-    # A soft cut compares the paths of matches, which JSONPath doesn't
-    # give, so a group with one walks its ways a step at a time instead,
-    # each row a (path, ord, value): `path` the segments from the
-    # group's node as text, each a JSON string and a comma, so that one
-    # path starts another exactly when its text does; `ord` the bigint[]
-    # that orders the rows as dotted reaches them.
+    # A pattern path walks a step at a time, each row a (path, ord,
+    # value): `path` the segments from the column as text, each a JSON
+    # string and a comma, so that one path starts another exactly when
+    # its text does; `ord` the bigint[] that orders the rows as dotted
+    # reaches them.
 
     _PATH_COLUMNS = ('path', 'ord', 'value')
 
@@ -741,13 +1128,26 @@ class PostgresMixin(Translator):
                 return self._path_lateral(
                     query, lambda a, part=part, rest=parts[i + 1:]: self._path_group_rows(
                         f'{a}.value', f'{a}.path', f'{a}.ord', part, rest))
-            if part.aligned:
-                raise TranslationError('aligned (+) under a soft cut not supported yet')
             for step in part.steps:
                 query = self._path_step(query, step)
-            if part.filter:
-                query = self._path_filtered(query, part.filter, part.jvars)
+            if part.test is not None:
+                query = self._path_tested(query, part.test)
+            if part.aligned:
+                return self._path_aligned(query, parts[i + 1:])
         return query
+
+    def _path_row(self, a):
+        """
+        The row `a` as a (path, ord, value) query of its own.
+        """
+        return f'SELECT {a}.path AS path, {a}.ord AS ord, {a}.value AS value'
+
+    def _path_first(self, query):
+        """
+        The first of the rows of `query`, in dotted's order.
+        """
+        a = self._state.alloc_pattern_alias()
+        return f'SELECT {a}.path, {a}.ord, {a}.value FROM ({query}) AS {a} ORDER BY {a}.ord LIMIT 1'
 
     def _path_lateral(self, query, under):
         """
@@ -760,50 +1160,69 @@ class PostgresMixin(Translator):
         return (f'SELECT {b}.path, {b}.ord, {b}.value FROM ({query}) AS {a} '
                 f'CROSS JOIN LATERAL ({rows}) AS {b}')
 
-    def _path_filtered(self, query, test, jvars):
+    def _path_tested(self, query, test):
         """
-        The rows of `query` whose value passes the JSONPath filter `test`.
+        The rows of `query` whose value passes `test`, a function of the
+        value's jsonb SQL.
         """
         a = self._state.alloc_pattern_alias()
-        passes = self._path_call('jsonb_path_exists', f'{a}.value', f' ? ({test})', jvars)
-        return f'SELECT {a}.path, {a}.ord, {a}.value FROM ({query}) AS {a} WHERE {passes}'
+        return (f'SELECT {a}.path, {a}.ord, {a}.value FROM ({query}) AS {a} '
+                f'WHERE {test(f"{a}.value")}')
+
+    def _path_aligned(self, query, rest):
+        """
+        The rows `rest` reaches from each row of `query`, an aligned (+)
+        op's matches: where it reaches nothing, the match yields one
+        null, as dotted's aligned op does.
+        """
+        a = self._state.alloc_pattern_alias()
+        b = self._state.alloc_pattern_alias()
+        rows = self._path_rows(f'{a}.value', f'{a}.path', f'{a}.ord', rest)
+        return (f'SELECT COALESCE({b}.path, {a}.path) AS path, COALESCE({b}.ord, {a}.ord) AS ord, '
+                f"COALESCE({b}.value, 'null'::jsonb) AS value FROM ({query}) AS {a} "
+                f'LEFT JOIN LATERAL ({rows}) AS {b} ON TRUE')
 
     def _path_step(self, query, step):
         """
-        The rows one step reaches from each row of `query`, by `step`:
-        ('key', name), ('index', n), every member ('keys',), every
-        element ('items',), or every value under it at any depth,
-        reached by keys, as dotted's ** reads ('descend',).
+        The rows one step reaches from each row of `query`, each node
+        read by its own type: ('key', name) an object's member; ('at',
+        n) an array's element or a string's character, from the end
+        where negative; ('keys',) an object's members; ('items',) an
+        array's elements, an object's values or a string's characters;
+        ('descend',) every value under it at any depth by keys, as
+        dotted's ** reads; ('list', test) an array filtered by `test`,
+        as one value, as dotted's slice filter reads; ('map', fn) the
+        value through `fn`; ('none',) nothing.
         """
         a = self._state.alloc_pattern_alias()
         kind = step[0]
-        if kind == 'unread':
-            raise TranslationError(f'{step[1]} under a soft cut not supported yet')
+        if kind == 'none':
+            return f'SELECT {a}.path, {a}.ord, {a}.value FROM ({query}) AS {a} WHERE FALSE'
+        if kind == 'map':
+            # the value is tested, so a transform that fails, fails even
+            # where only an EXISTS reads the rows
+            x = self._state.alloc_pattern_alias()
+            return (f'SELECT {a}.path, {a}.ord, {x}.value FROM ({query}) AS {a} '
+                    f'CROSS JOIN LATERAL (SELECT {step[1](f"{a}.value")} AS value) AS {x} '
+                    f'WHERE {x}.value IS NOT NULL')
         if kind == 'key':
             key = _pg_string_literal(step[1])
             return (f'SELECT {a}.path || {_segment_sql(key)} AS path, {a}.ord, '
                     f'{a}.value -> {key} AS value FROM ({query}) AS {a} '
                     f'WHERE ({a}.value -> {key}) IS NOT NULL')
-        if kind == 'index':
-            n = int(step[1])
-            index = str(n) if n >= 0 else (
-                f"(CASE WHEN jsonb_typeof({a}.value) = 'array' "
-                f'THEN jsonb_array_length({a}.value) END + ({n}))')
-            return (f'SELECT {a}.path || {_segment_sql(f"({index})::text")} AS path, '
-                    f'{a}.ord, {a}.value -> ({n}) AS value FROM ({query}) AS {a} '
-                    f"WHERE jsonb_typeof({a}.value) = 'array' "
-                    f'AND ({a}.value -> ({n})) IS NOT NULL')
+        if kind == 'at':
+            return self._path_at(query, a, int(step[1]))
+        if kind == 'list':
+            return self._path_list(query, a, step)
         e = self._state.alloc_pattern_alias()
         if kind == 'keys':
             return (f'SELECT {a}.path || {_segment_sql(f"{e}.key")} AS path, '
                     f'{a}.ord || {e}.n AS ord, {e}.value AS value FROM ({query}) AS {a} '
                     f'CROSS JOIN LATERAL {_members(f"{a}.value")} AS {e}(key, value, n)')
         if kind == 'items':
-            return (f'SELECT {a}.path || {_segment_sql(f"({e}.n - 1)::text")} AS path, '
+            return (f'SELECT {a}.path || {_segment_sql(f"{e}.key")} AS path, '
                     f'{a}.ord || {e}.n AS ord, {e}.value AS value FROM ({query}) AS {a} '
-                    f"CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN "
-                    f"jsonb_typeof({a}.value) = 'array' THEN {a}.value END) "
-                    f'WITH ORDINALITY AS {e}(value, n)')
+                    f'CROSS JOIN LATERAL ({_items(f"{a}.value")}) AS {e}(key, value, n)')
         # descend: by keys only, the node itself not among them; the ord
         # orders the values in pre-order, as dotted's ** yields them
         d = self._state.alloc_pattern_alias()
@@ -816,6 +1235,50 @@ class PostgresMixin(Translator):
                 f'UNION ALL SELECT {d}.path || {_segment_sql(f"{f}.key")}, {d}.ord || {f}.n, '
                 f'{f}.value FROM {d} CROSS JOIN LATERAL {_members(f"{d}.value")} '
                 f'AS {f}(key, value, n)) SELECT {d}.path, {d}.ord, {d}.value FROM {d}) AS {g}')
+
+    def _path_at(self, query, a, n):
+        """
+        `_path_step`'s ('at', n): the element of an array, or character
+        of a string, at `n`, the path's segment its index from the
+        start.
+        """
+        x = self._state.alloc_pattern_alias()
+        value = f'{a}.value'
+        s = f'({value} #>> {_WHOLE})'
+        size = (f"(CASE jsonb_typeof({value}) WHEN 'array' THEN jsonb_array_length({value}) "
+                f"WHEN 'string' THEN char_length({s}) END)")
+        index = str(n) if n >= 0 else f'({size} + ({n}))'
+        inside = f'{index} < {size}' if n >= 0 else f'{index} >= 0 AND {index} < {size}'
+        found = (f"(CASE WHEN {inside} THEN "
+                 f"(CASE jsonb_typeof({value}) WHEN 'array' THEN {value} -> ({index}) "
+                 f'ELSE to_jsonb(substr({s}, {index} + 1, 1)) END) END)')
+        return (f'SELECT {a}.path || {_segment_sql(f"({index})::text")} AS path, {a}.ord, '
+                f'{x}.value FROM ({query}) AS {a} CROSS JOIN LATERAL (SELECT {found} AS value) AS {x} '
+                f'WHERE {x}.value IS NOT NULL')
+
+    def _path_list(self, query, a, step):
+        """
+        `_path_step`'s ('list', test, keeps_scalar): an array, its
+        elements filtered by `test`, as one value, as dotted's slice
+        filter reads; the path its node's. dotted filters an object's
+        keys as its items: where the filter keeps no scalar
+        (`keeps_scalar`), that's `{}`; otherwise dotted builds garbage
+        from the keys, and on anything else it raises: those fail at run
+        time, in the row's own test, so that an EXISTS over it fails too.
+        """
+        _, test, keeps_scalar = step
+        e = self._state.alloc_pattern_alias()
+        value = f'{a}.value'
+        kept = (f'(SELECT COALESCE(jsonb_agg({e}.value ORDER BY {e}.n) '
+                f"FILTER (WHERE {test(f'{e}.value')}), '[]'::jsonb) "
+                f'FROM jsonb_array_elements({value}) WITH ORDINALITY AS {e}(value, n))')
+        readable = f"jsonb_typeof({value}) = 'array'"
+        listed = f"(CASE jsonb_typeof({value}) WHEN 'array' THEN {kept} ELSE '{{{{}}}}'::jsonb END)"
+        if not keeps_scalar:
+            readable = f"jsonb_typeof({value}) IN ('array', 'object')"
+        fails = _failing('a slice filter on what it can\'t filter', value)
+        return (f'SELECT {a}.path, {a}.ord, {listed} AS value FROM ({query}) AS {a} '
+                f'WHERE (CASE WHEN {readable} THEN TRUE ELSE {fails}::boolean END)')
 
     def _path_group_rows(self, v, p, o, group, rest):
         """
@@ -932,87 +1395,13 @@ class PostgresMixin(Translator):
             f'AS stop) AS {s}) AS {c}) '
             f'SELECT {f}.path, {f}.ord, {f}.value FROM {f} WHERE {f}.take) AS {k}')
 
-    def _tail_rows(self, src, parts):
-        """
-        SQL query of the rows a path without a first-match group
-        reaches from the jsonb `src`: each tail's, `UNION ALL`.
-        """
-        queries = []
-        for tail in _tails(parts):
-            chain, alias = self._chain(src, _segments(tail))
-            queries.append(f'SELECT {alias}.value FROM {chain}')
-        return ' UNION ALL '.join(queries)
+    # ---- Reading a pattern path ---------------------------------------
 
-    def _some(self, src, parts):
+    def _head(self, prefix):
         """
-        SQL boolean: `parts` reach something from the jsonb `src`.
-        Without a first-match group or a negation some tail does, up to
-        its first aligned (+) op; with one, its rows have a row.
+        The literal prefix as a fragment of steps: a key's name, an
+        int's index.
         """
-        if _anywhere(parts, _unreadable):
-            return f'EXISTS ({self._rows(src, parts)})'
-        tests = [self._path_call('jsonb_path_exists', src, *_segments(tail)[0])
-                 for tail in _tails(parts)]
-        if len(tests) == 1:
-            return tests[0]
-        return self._combine_or(tests)
-
-    def _first(self, node, branches):
-        """
-        SQL jsonb of a first-match group's match at the jsonb `node`:
-        the first match of the first branch to have one, the branch
-        alone; NULL where none does.
-        """
-        firsts = [self._first_of(node, branch) for branch in branches]
-        if len(firsts) == 1:
-            return firsts[0]
-        return f'COALESCE({", ".join(firsts)})'
-
-    def _first_of(self, src, parts):
-        """
-        SQL jsonb of the first row `parts` reach from the jsonb `src`,
-        in the order dotted reaches them; NULL where there is none.
-        """
-        if not any(part.split for part in parts):
-            return self._path_call('jsonb_path_query_first', src, *_joined(parts))
-        alias = self._state.alloc_pattern_alias()
-        rows = self._rows(src, parts, ordered=True)
-        return f'(SELECT {alias}.value FROM ({rows}) AS {alias}(value) LIMIT 1)'
-
-    def _chain(self, src, segments):
-        """
-        The laterals a tail's `(text, jvars)` segments run through, and
-        the alias of the last: the first segment's matches in the jsonb
-        `src`, then each later segment under a match of the one before.
-        """
-        (text, jvars), *rest = segments
-        alias = self._state.alloc_pattern_alias()
-        query = self._path_call('jsonb_path_query', src, text, jvars)
-        lateral = f'LATERAL {query} AS {alias}(value)'
-        for text, jvars in rest:
-            source = f'{alias}.value'
-            alias = self._state.alloc_pattern_alias()
-            query = self._path_call('jsonb_path_query', source, text, jvars)
-            lateral += f' LEFT JOIN LATERAL {query} AS {alias}(value) ON TRUE'
-        return lateral, alias
-
-    def _path_call(self, fn, src, text, jvars):
-        """
-        `fn(src, '$text'[, vars])`: a JSONPath function on the jsonb
-        `src`, its JSONPath vars passed as a `jsonb_build_object`.
-        """
-        jsonpath_sql = _pg_string_literal('$' + text)
-        if not jvars:
-            return f'{fn}({src}, {jsonpath_sql})'
-        return f'{fn}({src}, {jsonpath_sql}, {self._build_jsonpath_vars(jvars)})'
-
-    # ---- Pattern paths via jsonb_path_exists ------------------------
-
-    def _jsonpath_head(self, prefix):
-        """
-        The literal prefix as a fragment of plain `.key` accessors.
-        """
-        text = ''
         steps = []
         for kind, value in prefix:
             if kind != 'lit':
@@ -1020,124 +1409,237 @@ class PostgresMixin(Translator):
                     'dynamic path segments (references) combined with '
                     'patterns are not supported yet'
                 )
-            text += '.' + _jsonpath_key(value)
-            steps.append(('key', value))
-        return _Fragment(text, {}, False, None, tuple(steps))
+            steps.append(('at', value) if _is_int(value) else ('key', value))
+        return _Fragment(tuple(steps))
 
-    def _jsonpath_parts(self, ops):
+    def _read_parts(self, ops):
         """
         A pattern path's ops as parts: a `_Fragment` per op, a `_Group`
         per group. Each op is translated once, so a value it hoists is
-        hoisted once, however many tails it is in.
+        hoisted once, however often its test is read.
         """
         return [part for op in ops for part in op.translated(_PARTS, self)]
 
-    def _build_jsonpath_vars(self, jvars):
-        """
-        Render the `jsonb_build_object('n1', $1::cast, ...)` argument
-        list used to pass SQL values into a jsonpath expression as
-        `$var` references. Each placeholder carries the `:cast` format
-        spec so it picks up an explicit SQL cast at build time (asyncpg
-        and similar server-bound drivers need it).
-        """
-        kv_pairs = ', '.join(
-            f"'{name}', {_with_cast_spec(placeholder)}"
-            for name, placeholder in jvars.items())
-        return f'jsonb_build_object({kv_pairs})'
+    # ---- Comparing, as dotted compares ------------------------------
 
-    def _guard_to_jsonpath(self, guard_op, jvars):
+    def _compared(self, j, pred, val):
         """
-        Translate a ValueGuard's predicate to a JSONPath filter
-        expression (without the surrounding `? (...)`).
+        SQL boolean: the jsonb `j`, a value that is there, compares to a
+        guard's or filter's value `val` by `pred` as dotted compares
+        (see `_WHOLE`'s section).
         """
-        if guard_op.guard_transforms:
-            raise TranslationError(
-                'guard transforms inside pattern paths not supported yet'
-            )
-        pred = guard_op.pred_op
-        value = guard_op.guard
-        op_str = _PRED_JSONPATH.get(pred)
-        if op_str is None:
-            raise TranslationError(f'unsupported predicate: {pred!r}')
-        rhs = value.translated(_JSONPATH_VALUE, self, jvars)
-        return f'@ {op_str} {rhs}'
+        return val.translated(_COMPARED, self, j, pred)
 
-    def _jsonpath_literal(self, value, jvars):
+    def _compared_value(self, j, pred, value):
         """
-        `value` in a JSONPath expression: inline when it safely can be
-        (numbers, booleans, null), else a `$var` (`_jsonpath_var`).
+        `_compared` for a literal `value`: its Python type picks the
+        values of `j` it can equal or order against.
         """
-        inlined = _jsonpath_value_literal(value)
-        if inlined is not None:
-            return inlined
-        return self._jsonpath_var(self._hoist_value(value), jvars)
+        if pred is predicates.NE:
+            return f'NOT {self._compared_value(j, predicates.EQ, value)}'
+        if value is None:
+            return f"(jsonb_typeof({j}) = 'null')" if pred is predicates.EQ else 'FALSE'
+        if isinstance(value, (bool, int, float, decimal.Decimal)):
+            return self._compared_number(j, pred, value)
+        if isinstance(value, bytes):
+            # JSON holds no bytes: nothing there equals or orders with them
+            return 'FALSE'
+        if not isinstance(value, str):
+            raise TranslationError(f'unsupported value in a comparison: {value!r}')
+        text = f'({j} #>> {_WHOLE})'
+        if pred is not predicates.EQ:
+            text += ' COLLATE "C"'
+        return (f"(CASE WHEN jsonb_typeof({j}) = 'string' "
+                f'THEN {text} {_SQL_OPS[pred]} {self._hoist_value(value)} ELSE FALSE END)')
 
-    def _jsonpath_var(self, placeholder, jvars):
+    def _compared_number(self, j, pred, value):
         """
-        The `$var` for a hoisted SQL `placeholder` in a JSONPath
-        expression, registered in `jvars`.
+        `_compared` for a number (a bool as 1 or 0): a number compares as
+        a number, and a boolean as 1 or 0, as Python's does.
         """
-        return '$' + self._jvar_for_placeholder(placeholder, jvars)
+        number = int(value) if isinstance(value, bool) else value
+        on_true = pred.pred(1, number)
+        on_false = pred.pred(0, number)
+        boolean = ''
+        if on_true and on_false:
+            boolean = "WHEN 'boolean' THEN TRUE "
+        elif on_true:
+            boolean = f"WHEN 'boolean' THEN {j} = 'true'::jsonb "
+        elif on_false:
+            boolean = f"WHEN 'boolean' THEN {j} = 'false'::jsonb "
+        return (f"(CASE jsonb_typeof({j}) WHEN 'number' THEN ({j})::numeric "
+                f"{_SQL_OPS[pred]} ({_numeric_sql(number)}) {boolean}ELSE FALSE END)")
 
-    def _jvar_for_placeholder(self, placeholder, jvars):
+    def _compared_jsonb(self, j, pred, b):
         """
-        Map a SQL placeholder marker (`{name}`) into a JSONPath
-        variable name, registering it in the vars dict. The JSONPath
-        var name mirrors the bind marker name — safe under any
-        paramstyle since marker names are always plain identifiers.
+        `_compared` for a value known only at build, the jsonb `b` (a
+        substitution's binding, as JSON): both read by their own types.
+        A number and a boolean compare as numbers, strings in code-point
+        order, other values of one type by jsonb equality; arrays don't
+        order as Python's lists do, so ordering them fails at run time.
         """
-        if not (placeholder.startswith('{') and placeholder.endswith('}')):
-            raise TranslationError(
-                f'unexpected placeholder form: {placeholder!r}'
-            )
-        name = placeholder[1:-1]
-        jvars[name] = placeholder
-        return name
+        if pred is predicates.NE:
+            return f'NOT {self._compared_jsonb(j, predicates.EQ, b)}'
+        numbers = (f"jsonb_typeof({j}) IN ('number', 'boolean') "
+                   f"AND jsonb_typeof({b}) IN ('number', 'boolean')")
+        # dotted raises on an array or object bound to a guard's value
+        container = (f"WHEN jsonb_typeof({b}) IN ('array', 'object') "
+                     f"THEN {_failing('an array or object bound to a value', b)}::boolean")
+        op = _SQL_OPS[pred]
+        if pred is predicates.EQ:
+            return f'(CASE {container} ELSE {_py_equal(j, b)} END)'
+        return (f'(CASE {container} WHEN {numbers} THEN {_number_of(j)} {op} {_number_of(b)} '
+                f"WHEN jsonb_typeof({j}) = 'string' AND jsonb_typeof({b}) = 'string' "
+                f'THEN ({j} #>> {_WHOLE}) COLLATE "C" {op} ({b} #>> {_WHOLE}) COLLATE "C" '
+                f'ELSE FALSE END)')
 
-    def _filters_to_jsonpath(self, filters, jvars):
+    def _fullmatches(self, j, pattern):
         """
-        Translate a sequence of FilterOp predicates to a JSONPath
-        filter expression (no surrounding `? (...)`).
+        SQL boolean: `pattern`, a Python regex, fullmatches str() of the
+        jsonb `j`, as dotted's regex matches: a string itself, a number
+        as Python writes it, `True` / `False`, `None`. str() of an array
+        or object is Python's repr, which starts with `[` or `{`: a regex
+        that can't start so matches none; one that may fails at run
+        time, as jsonb keeps no object's key order to write its repr by.
         """
-        return ' && '.join(f.translated(_JSONPATH_FILTER, self, jvars)
-                           for f in filters)
+        compiled = re.compile(pattern)
+        are = self._hoist_value(_are_regex(pattern))
 
-    def _filter_key_to_jsonpath(self, key):
+        def static(text):
+            return 'TRUE' if compiled.fullmatch(text) else 'FALSE'
+        boolean = static('True')
+        if static('True') != static('False'):
+            boolean = f"{j} = 'true'::jsonb" if static('True') == 'TRUE' else f"{j} = 'false'::jsonb"
+        containers = 'FALSE'
+        if _may_start_with(pattern, '[') or _may_start_with(pattern, '{'):
+            containers = f"{_failing('a regex on the repr of an array or object', j)}::boolean"
+        return (f"(CASE jsonb_typeof({j}) WHEN 'string' THEN ({j} #>> {_WHOLE}) ~ {are} "
+                f"WHEN 'number' THEN {_py_text_of_number(j)} ~ {are} "
+                f"WHEN 'boolean' THEN {boolean} WHEN 'null' THEN {static('None')} "
+                f'ELSE {containers} END)')
+
+    def _via_transforms(self, j, transforms):
         """
-        A filter's key as the LHS of a JSONPath filter predicate,
-        relative to `@` (the current node).
+        SQL jsonb of `j` through dotted's transforms: `int`, `float` and
+        `str`, each without arguments. Any other raises.
         """
-        return '@' + ''.join(part.translated(_FILTER_KEY_JSONPATH, self, True)
-                             for part in self._key_parts(key))
+        for transform in transforms:
+            fn = _TRANSFORMS.get(transform.name)
+            if fn is None or transform.params:
+                raise TranslationError(f'transform not supported in sqlize: {transform.operator()}')
+            j = fn(j)
+        return j
+
+    def _guard_test(self, guard_op):
+        """
+        A guard's test, a function of the jsonb SQL of a value that is
+        there: its transforms, then its comparison.
+        """
+        def test(e):
+            value = self._via_transforms(e, guard_op.guard_transforms)
+            return self._bound(value, lambda x: self._compared(x, guard_op.pred_op, guard_op.guard))
+        return test
+
+    def _filters_test(self, filters):
+        """
+        A run of filters' test, all of which must pass: a function of
+        the jsonb SQL of the node they filter.
+        """
+        def test(e):
+            return self._all_of([f.translated(_FILTER_TEST, self, e) for f in filters])
+        return test
+
+    def _filter_holds(self, f, e, pred):
+        """
+        SQL boolean: the key-value filter `f`'s comparison, by `pred`,
+        holds for a value its key reaches in the node `e`, an object.
+        """
+        if f.key.is_packed():
+            raise TranslationError('a packed filter key not supported')
+        values = self._filter_values(e, self._key_parts(f.key))
+        a = self._state.alloc_pattern_alias()
+        value = self._via_transforms(f'{a}.value', f.guard_transforms)
+        test = self._bound(value, lambda x: self._compared(x, pred, f.val))
+        return (f"(jsonb_typeof({e}) = 'object' "
+                f'AND EXISTS (SELECT 1 FROM ({values}) AS {a} WHERE {test}))')
+
+    def _filter_values(self, e, parts):
+        """
+        The rows of the values a filter key's `parts` reach from the
+        node `e`, as dotted's filter key reads them: a key on the way
+        reaches its first match alone, the last key every match, a slot
+        what it reaches.
+        """
+        query = f"SELECT ''::text AS path, ARRAY[]::bigint[] AS ord, {e} AS value"
+        for i, part in enumerate(parts):
+            step, keyed = part.translated(_FILTER_STEP, self)
+            if keyed and i < len(parts) - 1:
+                query = self._path_lateral(
+                    query, lambda a, step=step: self._path_first(
+                        self._path_step(self._path_row(a), step)))
+                continue
+            query = self._path_step(query, step)
+        return query
 
     # ---- scalar (non-pattern) path helpers --------------------------
 
+    def _segment_value(self, value, index):
+        """
+        A literal segment keeps an int: it reads an array's element or a
+        string's character, never an object's member.
+        """
+        return value if _is_int(value) else str(value)
+
     def _path_expr(self, col_ident, prefix, text):
         """
-        Build the Postgres extraction expression for a `prefix` tuple.
-        Pure literal prefixes use `#>>` / `#>` with a text[] array
-        literal; mixed literal + expression prefixes use a chain of
-        `->` / `->>` arrows so embedded reference expressions can be
-        inlined.
+        The Postgres expression for `prefix` inside the column, as
+        dotted reads it: keys alone as a `#>` / `#>>` path; an int as an
+        array's element or a string's character (`_at`); a reference's
+        value as a key. As text (`text`) it is `#>>`: a string itself,
+        anything else its JSON.
         """
         if not prefix:
             return col_ident
-        if all(kind == 'lit' for kind, _ in prefix):
-            seg_strs = [s for _, s in prefix]
+        if all(kind == 'lit' and isinstance(value, str) for kind, value in prefix):
             op = '#>>' if text else '#>'
-            return f"{col_ident} {op} {_pg_path_array(seg_strs)}"
+            return f'{col_ident} {op} {_pg_path_array([value for _, value in prefix])}'
         expr = col_ident
         last = len(prefix) - 1
-        for i, (kind, val) in enumerate(prefix):
-            arrow = '->>' if (text and i == last) else '->'
-            rhs = _pg_string_literal(val) if kind == 'lit' else f'({val})'
+        for i, (kind, value) in enumerate(prefix):
+            if kind == 'lit' and not isinstance(value, str):
+                expr = self._at(expr, value)
+                continue
+            # a key by name, or by a reference's value; text the last as `->>`
+            arrow = '->>' if text and i == last else '->'
+            rhs = _pg_string_literal(value) if kind == 'lit' else f'({value})'
             expr = f'{expr} {arrow} {rhs}'
+        if text and prefix[-1][0] == 'lit' and not isinstance(prefix[-1][1], str):
+            return f'({expr} #>> {_WHOLE})'
         return expr
+
+    def _at(self, expr, n):
+        """
+        SQL jsonb of the jsonb `expr` at the int `n`, as dotted reads it:
+        an array's element, a string's character (from the end where
+        negative), else NULL.
+        """
+        def body(x):
+            s = f'({x} #>> {_WHOLE})'
+            index = str(n) if n >= 0 else f'(char_length({s}) + ({n}))'
+            inside = f'{index} < char_length({s})'
+            if n < 0:
+                inside = f'{index} >= 0 AND {inside}'
+            char = (f'(CASE WHEN {inside} '
+                    f'THEN to_jsonb(substr({s}, {index} + 1, 1)) END)')
+            return (f"(CASE jsonb_typeof({x}) WHEN 'array' THEN {x} -> ({n}) "
+                    f"WHEN 'string' THEN {char} END)")
+        return self._bound(expr, body)
 
     def _scalar_predicate(self, guard_op, col_ident):
         """
         Build a WHERE predicate for a guard on a scalar (non-JSONB)
-        column.
+        column: SQL's own comparison of its type, but `!=` holding for a
+        NULL, as Python's `None != x` does, and a regex fullmatching.
         """
         if guard_op.guard_transforms:
             raise TranslationError(
@@ -1146,23 +1648,49 @@ class PostgresMixin(Translator):
         return guard_op.guard.translated(
             _SCALAR_PREDICATE, self, col_ident, guard_op.pred_op)
 
-    def _jsonb_predicate(self, guard_op, col_ident, full_prefix):
-        """
-        Build a WHERE predicate for a guard nested inside a JSONB
-        column. Computes both the text-extraction and the jsonb-form
-        of the path so each value type can be compared with its
-        matching operator (numeric cast, boolean equality, etc.).
-        """
-        text_expr = self._path_expr(col_ident, full_prefix, text=True)
-        jsonb_expr = self._path_expr(col_ident, full_prefix, text=False)
-        pred = guard_op.pred_op
-        val = guard_op.guard
-        if guard_op.guard_transforms:
-            cast = self._transforms_to_cast(guard_op.guard_transforms)
-            lhs = f'({text_expr})::{cast}'
-            return val.translated(_CAST_PREDICATE, self, lhs, pred)
-        return val.translated(
-            _JSONB_PREDICATE, self, f'({text_expr})', pred, jsonb_expr)
+def _is_int(value):
+    """
+    True for an int, not a bool.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+class _ColumnTest(Hooks):
+    """
+    A filter's or guard's test on a column a write's first op names: a
+    guard's as on the column itself, a filter's on its jsonb.
+    """
+
+    def other(self, op, t, col):
+        raise TranslationError(f'not supported in a write: {op}')
+
+    def value_guard(self, op, t, col):
+        return t._scalar_predicate(op, col)
+
+    def filter_wrap(self, op, t, col):
+        return t._w_test(op)(col)
+
+
+_COLUMN_TEST = _ColumnTest()
+
+
+class _WriteTest(Hooks):
+    """
+    A filter's or guard's own test on a child a write reaches, a
+    function of the child's jsonb SQL.
+    """
+
+    def other(self, op, t):
+        raise TranslationError(f'not supported in a write: {op}')
+
+    def filter_wrap(self, op, t):
+        return t._filters_test(op.filters)
+
+    def value_guard(self, op, t):
+        return t._guard_test(op)
+
+
+_WRITE_TEST = _WriteTest()
 
 
 # ---- Reading ops ----------------------------------------------------
@@ -1178,74 +1706,101 @@ class _Parts(Hooks):
         )
 
     def transform_wrap(self, op, t):
-        return op.inner.translated(self, t)
+        # what the op reaches goes through the transforms, and the path
+        # after it reads that, as dotted's get does
+        parts = op.inner.translated(self, t)
+        return parts + [_Fragment((('map', lambda v: t._via_transforms(v, op.transforms)),))]
 
     def key(self, op, t):
-        # an Attr has no JSONPath of its own: it reads as a key
-        text = op.op.translated(_JSONPATH_KEY, t, True)
-        step = op.op.translated(_PATH_STEP, t, True)
-        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
+        # an Attr reads as a key
+        return _accessed(op, t, True)
 
     def slot(self, op, t):
-        text = op.op.translated(_JSONPATH_KEY, t, False)
-        step = op.op.translated(_PATH_STEP, t, False)
-        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
+        return _accessed(op, t, False)
+
+    def slot_special(self, op, t):
+        # an append slot is past the end: there is never a value there
+        return [_Fragment((('none',),))]
 
     def recursive(self, op, t):
-        text = op.inner.translated(_RECURSIVE_JSONPATH, t)
-        plain = (op.accessors is None
+        plain = (op.accessors is None and op.inner.translated(_IS_WILDCARD)
                  and (op.depth_start, op.depth_stop, op.depth_step) == (None, None, None))
-        step = ('descend',) if plain else ('unread', 'a ** with depths or accessors')
-        return [_Fragment(text, {}, op.is_aligned(), None, (step,))]
+        if not plain:
+            raise TranslationError('a ** with depths or accessors, or of a key, not supported yet')
+        test = t._filters_test(op.filters) if op.filters else None
+        return [_Fragment((('descend',),), test, op.is_aligned())]
 
     def slice_filter(self, op, t):
-        # [pred] → [*] ? (pred)
-        jvars = {}
-        test = t._filters_to_jsonpath(op.filters, jvars)
-        return [_Fragment('[*]', jvars, op.is_aligned(), test, (('items',),))]
+        # the filtered list as one value, as dotted's slice filter reads;
+        # whether its filters keep a scalar, as they do an object's keys
+        keeps_scalar = all(f.is_filtered(0) for f in op.filters)
+        step = ('list', t._filters_test(op.filters), keeps_scalar)
+        return [_Fragment((step,), None, op.is_aligned())]
 
     def filter_wrap(self, op, t):
         parts = op.inner.translated(self, t)
-        jvars = {}
-        test = t._filters_to_jsonpath(op.filters, jvars)
-        return parts[:-1] + parts[-1].filtered(test, jvars)
+        return parts[:-1] + parts[-1].filtered(t._filters_test(op.filters))
 
     def value_guard(self, op, t):
         # a guard on a group, (a, b)?=1, tests each of its matches
         parts = op.inner.translated(self, t)
-        jvars = {}
-        test = t._guard_to_jsonpath(op, jvars)
-        return parts[:-1] + parts[-1].filtered(test, jvars)
+        return parts[:-1] + parts[-1].filtered(t._guard_test(op))
 
     def group(self, op, kind, branches, cuts, softs, t):
-        return [_Group(kind, [t._jsonpath_parts(b) for b in branches], cuts, softs)]
+        return [_Group(kind, [t._read_parts(b) for b in branches], cuts, softs)]
 
     def not_group(self, op, t):
         reads = t._access_kinds(op.inner)[0]
-        return [_Group('not', [t._jsonpath_parts(op.inner)], (False,), (False,), reads)]
+        return [_Group('not', [t._read_parts(op.inner)], (False,), (False,), reads)]
 
 
-class _JsonPathKey(Hooks):
+def _accessed(op, t, is_key):
     """
-    A Key's or Slot's matcher as a JSONPath accessor: `.name` / `.*`
-    for a key (`is_key`), `[N]` / `[*]` for a slot.
+    A Key's or Slot's parts: its step; for a first wildcard, `*?`, the
+    first-match group of the wildcard, its first match alone.
+    """
+    part = _Fragment((op.op.translated(_PATH_STEP, t, is_key),), None, op.is_aligned())
+    if not op.op.translated(core.IS_FIRST):
+        return [part]
+    return [_Group('first', [[part]], (False,), (False,))]
+
+
+class _IsWildcard(Hooks):
+    """
+    True for a wildcard matcher, `*`.
+    """
+
+    def other(self, m, *args):
+        return False
+
+    def wildcard(self, m, *args):
+        return True
+
+
+class _PathStep(Hooks):
+    """
+    A Key's or Slot's matcher as the step it takes (`_path_step`): a
+    string's ('key', name), an int's ('at', n), a wildcard's every
+    member ('keys',) for a key or ('items',) for a slot. A key of any
+    other type reaches nothing: no JSON member is named by one.
     """
 
     def other(self, m, t, is_key):
-        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
+        raise TranslationError(f'unsupported matcher in pattern path: {type(m).__name__}')
 
     def const(self, m, t, is_key):
-        if is_key:
-            return '.' + _jsonpath_key(str(m.value))
-        return f'[{m.value}]'
+        if _is_int(m.value):
+            return ('at', m.value)
+        if isinstance(m.value, str):
+            return ('key', m.value)
+        return ('none',)
 
     def wildcard(self, m, t, is_key):
-        return '.*' if is_key else '[*]'
+        return ('keys',) if is_key else ('items',)
 
-    def pattern(self, m, t, is_key):
-        raise TranslationError(
-            f'unsupported matcher in pattern path: {type(m).__name__}'
-        )
+    def wildcard_first(self, m, t, is_key):
+        # the first of the wildcard's: `_accessed` groups it
+        return self.wildcard(m, t, is_key)
 
     def subst(self, m, t, is_key):
         raise TranslationError(f'unresolved substitution in pattern path: {m}')
@@ -1254,224 +1809,146 @@ class _JsonPathKey(Hooks):
         raise TranslationError('references inside pattern paths not supported yet')
 
 
-class _PathStep(Hooks):
+class _FilterStep(Hooks):
     """
-    A Key's or Slot's matcher as the step a path-tracking walk takes
-    (`_path_step`): ('key', name) for a key (`is_key`), ('index', n) for
-    a slot, or for a wildcard every member ('keys',) or element
-    ('items',). `_JsonPathKey` has already raised for any other.
-    """
-
-    def other(self, m, t, is_key):
-        raise TranslationError(f'unsupported matcher: {type(m).__name__}')
-
-    def const(self, m, t, is_key):
-        if is_key:
-            return ('key', str(m.value))
-        return ('index', m.value)
-
-    def wildcard(self, m, t, is_key):
-        return ('keys',) if is_key else ('items',)
-
-
-class _FilterKeyJsonPath(_JsonPathKey):
-    """
-    A filter key's part as a JSONPath accessor: a key (a matcher), or
-    an index (a Slot, its matcher read as a slot's).
+    A filter key's part as the step it takes, and whether it reads by
+    key: a key's matcher an object's member (none for an int: no member
+    is named by one), a wildcard every member; a slot as `_PathStep`
+    reads it.
     """
 
-    def slot(self, part, t, is_key):
-        return part.op.translated(self, t, False)
+    def other(self, part, t):
+        raise TranslationError(f'unsupported filter key part: {type(part).__name__}')
 
-    def slice(self, part, t, is_key):
-        raise TranslationError('slice in filter key not supported yet')
-
-
-class _RecursiveJsonPath(Hooks):
-    """
-    A recursive op's matcher as a JSONPath accessor: `**` is `.**`.
-    """
-
-    def other(self, m, t):
-        raise TranslationError(
-            f'recursive op with {type(m).__name__} inner not supported yet'
-        )
+    def const(self, m, t):
+        if isinstance(m.value, str):
+            return ('key', m.value), True
+        return ('none',), True
 
     def wildcard(self, m, t):
-        return '.**'
+        return ('keys',), True
+
+    def slot(self, op, t):
+        return op.op.translated(_PATH_STEP, t, False), False
+
+    def slice(self, op, t):
+        raise TranslationError('a slice in a filter key not supported')
 
 
-class _JsonPathValue(Hooks):
+class _FilterTest(Hooks):
     """
-    A guard's or filter's value as a JSONPath expression: an inline
-    literal, or a `$var` for a SQL placeholder.
-    """
-
-    def other(self, val, t, jvars):
-        raise TranslationError(
-            f'unsupported value in pattern predicate: {type(val).__name__}'
-        )
-
-    def const(self, val, t, jvars):
-        return t._jsonpath_literal(val.value, jvars)
-
-    def subst(self, val, t, jvars):
-        return t._jsonpath_var(t._hoist_subst(val.value), jvars)
-
-    def regex(self, val, t, jvars):
-        # only valid inside a filter; the caller places it there
-        return f'like_regex {_jsonpath_string_literal(val.args[0])}'
-
-
-_FILTER_JSONPATH = {
-    '=':  '==',
-    '!=': '!=',
-    '<':  '<',
-    '>':  '>',
-    '<=': '<=',
-    '>=': '>=',
-}
-
-
-class _JsonPathFilter(Hooks):
-    """
-    A bracket filter as a JSONPath filter expression, without the
-    surrounding `? (...)`.
+    A filter's test on a node, `e` its jsonb SQL, as dotted's filter
+    passes it: a key-value filter holds where the node is an object and
+    a value its key reaches compares; `!=` is `=`'s negation, so it
+    passes a node that is no object, or lacks the key.
     """
 
-    def other(self, f, t, jvars):
+    def other(self, f, t, e):
         raise TranslationError(f'filter type not supported: {type(f).__name__}')
 
-    def key_value_filter(self, f, t, jvars):
-        if f.guard_transforms:
-            raise TranslationError(
-                'filter transforms inside pattern paths not supported yet'
-            )
-        op_str = _FILTER_JSONPATH.get(f._eq_str)
-        if op_str is None:
-            raise TranslationError(f'unsupported filter operator: {f._eq_str}')
-        key_expr = t._filter_key_to_jsonpath(f.key)
-        rhs = f.val.translated(_JSONPATH_VALUE, t, jvars)
-        return f'{key_expr} {op_str} {rhs}'
+    def key_value_filter(self, f, t, e):
+        pred = predicates.PRED_OPS[f._eq_str]
+        if pred is predicates.NE:
+            return f'NOT {t._filter_holds(f, e, predicates.EQ)}'
+        return t._filter_holds(f, e, pred)
 
-    def and_filter(self, f, t, jvars):
-        return ' && '.join(f'({sub.translated(self, t, jvars)})' for sub in f.filters)
+    def and_filter(self, f, t, e):
+        return t._combine_and([sub.translated(self, t, e) for sub in f.filters])
 
-    def or_filter(self, f, t, jvars):
-        return ' || '.join(f'({sub.translated(self, t, jvars)})' for sub in f.filters)
+    def or_filter(self, f, t, e):
+        return t._combine_or([sub.translated(self, t, e) for sub in f.filters])
 
-    def not_filter(self, f, t, jvars):
-        return f'!({f.inner.translated(self, t, jvars)})'
+    def not_filter(self, f, t, e):
+        return t._combine_not_true(f.inner.translated(self, t, e))
 
-    def group_filter(self, f, t, jvars):
-        return f'({f.inner.translated(self, t, jvars)})'
+    def group_filter(self, f, t, e):
+        return f.inner.translated(self, t, e)
+
+
+class _Compared(Hooks):
+    """
+    A guard's or filter's value as `_compared` reads it: a literal by
+    its Python type, a substitution as its binding's JSON, a regex
+    fullmatching; an ordering against a regex compares with its text,
+    as dotted's does.
+    """
+
+    def other(self, val, t, j, pred):
+        raise TranslationError(f'unsupported value in a comparison: {type(val).__name__}')
+
+    def const(self, val, t, j, pred):
+        return t._compared_value(j, pred, val.value)
+
+    def subst(self, val, t, j, pred):
+        # bound once, so a positional paramstyle sends it once
+        b = _json_spec(t._hoist_subst(val.value))
+        return t._bound(b, lambda x: t._compared_jsonb(j, pred, x))
+
+    def regex(self, val, t, j, pred):
+        if pred is predicates.EQ:
+            return t._fullmatches(j, val.args[0])
+        if pred is predicates.NE:
+            return f'NOT {t._fullmatches(j, val.args[0])}'
+        return t._compared_value(j, pred, val.value)
+
+    def pattern(self, val, t, j, pred):
+        raise TranslationError(f'pattern guard values not supported: {type(val).__name__}')
 
 
 class _ScalarPredicate(Hooks):
     """
-    A guard's value as a WHERE predicate on `lhs`, a column or an
-    expression of one: `lhs <pred> value`.
+    A guard's value as a WHERE predicate on a column of a SQL type,
+    `lhs`: SQL's own comparison of that type, but `!=` holding for a
+    NULL, as Python's `None != x` does, `<` against None matching
+    nothing, and a regex fullmatching, str(None) included.
     """
 
-    def other(self, val, t, lhs, pred, *_):
+    def other(self, val, t, lhs, pred):
         raise TranslationError(f'unsupported guard value: {type(val).__name__}')
 
-    def const(self, val, t, lhs, pred, *_):
-        return self._compared(t, lhs, pred, val.value)
+    def const(self, val, t, lhs, pred):
+        return self._compared(lhs, pred, t._hoist_value(val.value))
 
-    def subst(self, val, t, lhs, pred, *_):
-        return f'{lhs} {pred.op} {t._hoist_subst(val.value)}'
+    def subst(self, val, t, lhs, pred):
+        return self._compared(lhs, pred, t._hoist_subst(val.value))
 
-    def none_value(self, val, t, lhs, pred, *_):
+    def none_value(self, val, t, lhs, pred):
         if pred is predicates.EQ:
             return f'{lhs} IS NULL'
         if pred is predicates.NE:
             return f'{lhs} IS NOT NULL'
-        raise TranslationError('ordering comparison against None')
+        # an ordering against None raises in Python: no match
+        return 'FALSE'
 
-    def regex(self, val, t, lhs, pred, *_):
-        if pred is predicates.EQ:
-            return f'{lhs} ~ {t._hoist_value(val.args[0])}'
+    def regex(self, val, t, lhs, pred):
+        if pred not in (predicates.EQ, predicates.NE):
+            return self._compared(lhs, pred, t._hoist_value(val.value))
+        test = f'{lhs} ~ {t._hoist_value(_are_regex(val.args[0]))}'
+        if re.fullmatch(val.args[0], 'None'):
+            # a NULL reads as str(None), which the regex matches
+            test = f'({test} OR {lhs} IS NULL)'
         if pred is predicates.NE:
-            return f'{lhs} !~ {t._hoist_value(val.args[0])}'
-        raise TranslationError('ordering comparison against regex')
+            return f'({test}) IS NOT TRUE'
+        return test
 
-    def pattern(self, val, t, lhs, pred, *_):
+    def pattern(self, val, t, lhs, pred):
         raise TranslationError(
             f'pattern guard values not supported in v1: {type(val).__name__}'
         )
 
-    def _compared(self, t, lhs, pred, value):
-        return f'{lhs} {pred.op} {t._hoist_value(value)}'
-
-
-class _CastPredicate(_ScalarPredicate):
-    """
-    A guard's value as a predicate on `lhs`, a JSONB value cast by the
-    guard's transform (`(expr)::bigint`): no regex there.
-    """
-
-    def regex(self, val, *args):
-        return self.pattern(val, *args)
-
-
-class _JsonbPredicate(_ScalarPredicate):
-    """
-    A guard's value as a predicate on a value in a JSONB column, `lhs`
-    its text and `jsonb` itself: each kind of value compares with its
-    own operator, a number cast to numeric, a boolean or null on the
-    jsonb.
-    """
-
-    def numeric(self, val, t, lhs, pred, jsonb):
-        return self._number(t, lhs, pred, val.value)
-
-    def boolean(self, val, t, lhs, pred, jsonb):
-        return self._truth(jsonb, pred, val.value)
-
-    def none_value(self, val, t, lhs, pred, jsonb):
-        return self._null(jsonb, pred)
-
-    def resolved_value(self, val, t, lhs, pred, jsonb):
-        # bound from a substitution: read by the Python value's type
-        value = val.value
-        if value is None:
-            return self._null(jsonb, pred)
-        if isinstance(value, bool):
-            return self._truth(jsonb, pred, value)
-        if isinstance(value, (int, float, decimal.Decimal)):
-            return self._number(t, lhs, pred, value)
-        return self._compared(t, lhs, pred, value)
-
-    def _number(self, t, lhs, pred, value):
-        return self._compared(t, f'{lhs}::numeric', pred, value)
-
-    def _truth(self, jsonb, pred, value):
-        lit = 'true' if value else 'false'
-        if pred is predicates.EQ:
-            return f"{jsonb} = '{lit}'::jsonb"
+    def _compared(self, lhs, pred, rhs):
         if pred is predicates.NE:
-            return f"{jsonb} != '{lit}'::jsonb"
-        raise TranslationError('ordering comparison against boolean')
-
-    def _null(self, jsonb, pred):
-        if pred is predicates.EQ:
-            return f"{jsonb} IS NULL OR jsonb_typeof({jsonb}) = 'null'"
-        if pred is predicates.NE:
-            return f"{jsonb} IS NOT NULL AND jsonb_typeof({jsonb}) != 'null'"
-        raise TranslationError('ordering comparison against None')
+            return f'{lhs} IS DISTINCT FROM {rhs}'
+        return f'{lhs} {pred.op} {rhs}'
 
 
 _PARTS = _Parts()
-_JSONPATH_KEY = _JsonPathKey()
+_IS_WILDCARD = _IsWildcard()
 _PATH_STEP = _PathStep()
-_FILTER_KEY_JSONPATH = _FilterKeyJsonPath()
-_RECURSIVE_JSONPATH = _RecursiveJsonPath()
-_JSONPATH_VALUE = _JsonPathValue()
-_JSONPATH_FILTER = _JsonPathFilter()
+_FILTER_STEP = _FilterStep()
+_FILTER_TEST = _FilterTest()
+_COMPARED = _Compared()
 _SCALAR_PREDICATE = _ScalarPredicate()
-_CAST_PREDICATE = _CastPredicate()
-_JSONB_PREDICATE = _JsonbPredicate()
 
 
 # ---- Driver classes -------------------------------------------------

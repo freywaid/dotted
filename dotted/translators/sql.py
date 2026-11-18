@@ -23,6 +23,7 @@ corresponding driver class.
 import collections.abc
 import enum
 import hashlib
+import json
 import re
 import string as _string
 
@@ -83,6 +84,9 @@ _IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 _HASH_PREFIX = '_s_'
 _GEN_PREFIX = '_p'
 _RESERVED_PREFIXES = (_HASH_PREFIX, _GEN_PREFIX)
+
+# the suffix of a :json marker's own named parameter, its JSON text
+_JSON_SUFFIX = '__json'
 
 
 def _param_name_for_subst(name):
@@ -596,6 +600,21 @@ def _render(sql, paramstyle, cast_fn, bindings):
     """
     missing = []
 
+    def _as_json(value):
+        """
+        A `{name:json}` marker's value: its JSON text, which the
+        placeholder casts to jsonb, so SQL reads its type. dotted raises
+        on a list or dict bound where it compares, as it hashes the
+        value: so does this.
+        """
+        if isinstance(value, (list, dict, set)):
+            raise TranslationError(
+                f'a {type(value).__name__} bound to a compared value: dotted raises (unhashable)')
+        try:
+            return json.dumps(value)
+        except (TypeError, ValueError) as e:
+            raise TranslationError(f'a binding SQL reads as JSON must be JSON: {value!r} ({e})')
+
     def _apply_cast(ph, value, spec):
         """
         If the marker carried `:cast` and a cast_fn is provided, append
@@ -617,7 +636,11 @@ def _render(sql, paramstyle, cast_fn, bindings):
             if value is _MISSING:
                 return ''
             if isinstance(value, Raw):
-                return value.sql
+                return f'to_jsonb({value.sql})' if spec == 'json' else value.sql
+            if spec == 'json':
+                name = marker + _JSON_SUFFIX
+                out_params[name] = _as_json(value)
+                return fmt.format(name=name) + '::jsonb'
             out_params[marker] = value
             return _apply_cast(fmt.format(name=marker), value, spec)
 
@@ -628,18 +651,24 @@ def _render(sql, paramstyle, cast_fn, bindings):
         pos_by_marker = {}
 
         def replacer(marker, spec):
-            if marker in pos_by_marker:
-                return pos_by_marker[marker]
+            # a :json marker is its own argument: the value as JSON text
+            key = (marker, spec == 'json')
+            if key in pos_by_marker:
+                return pos_by_marker[key]
             value = _lookup_value(sql, marker, bindings, missing)
             if value is _MISSING:
                 return ''
             if isinstance(value, Raw):
                 # No arg appended, no back-ref slot reserved — each
                 # occurrence emits the raw SQL afresh.
-                return value.sql
-            out_args.append(value)
-            ph = _apply_cast(f'{prefix}{len(out_args)}', value, spec)
-            pos_by_marker[marker] = ph
+                return f'to_jsonb({value.sql})' if spec == 'json' else value.sql
+            if spec == 'json':
+                out_args.append(_as_json(value))
+                ph = f'{prefix}{len(out_args)}::jsonb'
+            else:
+                out_args.append(value)
+                ph = _apply_cast(f'{prefix}{len(out_args)}', value, spec)
+            pos_by_marker[key] = ph
             return ph
 
         out_values = out_args
@@ -652,7 +681,10 @@ def _render(sql, paramstyle, cast_fn, bindings):
             if value is _MISSING:
                 return ''
             if isinstance(value, Raw):
-                return value.sql
+                return f'to_jsonb({value.sql})' if spec == 'json' else value.sql
+            if spec == 'json':
+                out_args.append(_as_json(value))
+                return placeholder + '::jsonb'
             out_args.append(value)
             return _apply_cast(placeholder, value, spec)
 

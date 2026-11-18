@@ -91,8 +91,10 @@ def test_is_not_null(query):
 
 
 def test_regex_match(query):
-    # status matching /^a/ — only 'active' starts with 'a'
-    assert _run_where(query, 'status = /^a/') == [1, 2, 4, 5, 6]
+    # a regex fullmatches, as dotted's does: /a.*/ is 'active', and /^a/
+    # matches no whole status
+    assert _run_where(query, 'status = /a.*/') == [1, 2, 4, 5, 6]
+    assert _run_where(query, 'status = /^a/') == []
 
 
 # ---------------- jsonb nested access ----------------
@@ -112,8 +114,9 @@ def test_jsonb_boolean_guard(query):
 
 
 def test_jsonb_null_guard(query):
-    # data.user.age missing for id 7
-    assert _run_where(query, 'data.user.age = None') == [7]
+    # a guard tests a value that's there: id=7 has no user.age, so no
+    # row has a null one
+    assert _run_where(query, 'data.user.age = None') == []
 
 
 # ---------------- boolean grouping ----------------
@@ -374,8 +377,9 @@ def test_pattern_slot_wildcard_boolean(query):
 
 
 def test_pattern_slice_filter(query):
-    # Same as wildcard test, different syntax
-    assert _run_where(query, 'data.users[age>=30]') == [1, 2, 3, 5]
+    # a slice filter reads the filtered list as one value, there even
+    # when empty, so every row has one
+    assert _run_where(query, 'data.users[age>=30]') == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_pattern_filter_wrap(query):

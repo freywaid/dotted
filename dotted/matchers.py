@@ -375,6 +375,9 @@ class Wildcard(Pattern):
 
 
 class WildcardFirst(Wildcard):
+    def translated(self, translation, *args):
+        return translation.wildcard_first(self, *args)
+
     _match_from = ('Const', 'Special', 'WildcardFirst', 'RegexFirst')
 
     @property

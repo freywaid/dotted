@@ -475,12 +475,20 @@ class Key(AccessOp):
         return results
 
     def update(self, node, key, val):
+        """
+        node with key set to val: in place, or for an immutable mapping a
+        new one of its type. A node that is no mapping and can't take the
+        key raises, as a node that is no container does.
+        """
         val = self.default() if val is base.ANY else val
         try:
             node[key] = val
             return node
         except TypeError:
             pass
+        if not hasattr(node, 'keys'):
+            raise TypeError(
+                f"Cannot update {type(node).__name__} by key {key!r} - use a dict or other mapping")
         iterable = ((k, node[k]) for k in node if k != key)
         iterable = itertools.chain(iterable, ((key, val),))
         return type(node)(iterable)
@@ -489,6 +497,9 @@ class Key(AccessOp):
             return self.update(node, self.op.value, val)
 
         keys = tuple(self.keys(node))
+        if not keys:
+            # nothing matched: nothing to write, whatever the node
+            return node
         iterable = ((k, node[k]) for k in node if k not in keys)
         items = itertools.chain(iterable, ((k, val) for k in keys))
         try:
@@ -757,7 +768,9 @@ class Slot(Key):
         try:
             for k in update_keys:
                 node[k] = val
-            node += type(node)(val for _ in append_keys)
+            # an item of the node's own kind: a str appends the str
+            for _ in append_keys:
+                node += itemof(node, val)
             return node
         except TypeError:
             pass
