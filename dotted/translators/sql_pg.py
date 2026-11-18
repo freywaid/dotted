@@ -206,113 +206,6 @@ def _are_regex(pattern):
     return f'{prefix}^(?:{"".join(out)})$'
 
 
-def _regex_parser():
-    """
-    Python's own regex parser: `re._parser`, `sre_parse` before 3.11.
-    """
-    try:
-        from re import _parser
-        return _parser
-    except ImportError:
-        import sre_parse
-        return sre_parse
-
-
-def _may_start_with(pattern, c):
-    """
-    False where no match of the Python regex `pattern` can start with
-    the character `c`, as its parse shows; True where one may.
-    """
-    sre = _regex_parser()
-    return _items_may_start(list(sre.parse(pattern)), c, sre)
-
-
-def _items_may_start(items, c, sre):
-    """
-    `_may_start_with` for a parsed run of regex items.
-    """
-    for op, av in items:
-        may, empty = _item_may_start(op, av, c, sre)
-        if may:
-            return True
-        if not empty:
-            return False
-    return False
-
-
-def _items_may_be_empty(items, c, sre):
-    """
-    True if a parsed run of regex items may match the empty string.
-    """
-    return all(_item_may_start(op, av, c, sre)[1] for op, av in items)
-
-
-def _item_may_start(op, av, c, sre):
-    """
-    For one parsed regex item: whether a match of it may start with the
-    character `c`, and whether it may match the empty string. What it
-    can't tell, it says may.
-    """
-    if op is sre.LITERAL:
-        return chr(av) == c, False
-    if op is sre.NOT_LITERAL:
-        return chr(av) != c, False
-    if op is sre.ANY:
-        return c != '\n', False
-    if op is sre.AT:
-        return False, True
-    if op is sre.IN:
-        return _in_class(av, c, sre), False
-    if op is sre.SUBPATTERN:
-        body = list(av[-1])
-        return _items_may_start(body, c, sre), _items_may_be_empty(body, c, sre)
-    if op is sre.BRANCH:
-        alts = [list(alt) for alt in av[1]]
-        return (any(_items_may_start(alt, c, sre) for alt in alts),
-                any(_items_may_be_empty(alt, c, sre) for alt in alts))
-    if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, getattr(sre, 'POSSESSIVE_REPEAT', None)):
-        low, _, body = av
-        body = list(body)
-        return _items_may_start(body, c, sre), low == 0 or _items_may_be_empty(body, c, sre)
-    return True, False
-
-
-def _in_class(items, c, sre):
-    """
-    Whether a parsed character class may match the character `c`.
-    """
-    negate = bool(items) and items[0][0] is sre.NEGATE
-    found = False
-    for op, av in items:
-        if op is sre.NEGATE:
-            continue
-        if op is sre.LITERAL and chr(av) == c:
-            found = True
-        elif op is sre.RANGE and av[0] <= ord(c) <= av[1]:
-            found = True
-        elif op is sre.CATEGORY and _in_category(av, c, sre):
-            found = True
-        elif op not in (sre.LITERAL, sre.RANGE, sre.CATEGORY):
-            return True
-    return found != negate
-
-
-def _in_category(category, c, sre):
-    """
-    Whether the character `c` is in a regex category, `\\d`, `\\w`, `\\s`
-    or their negations.
-    """
-    tests = {
-        sre.CATEGORY_DIGIT: c.isdigit(),
-        sre.CATEGORY_NOT_DIGIT: not c.isdigit(),
-        sre.CATEGORY_WORD: c.isalnum() or c == '_',
-        sre.CATEGORY_NOT_WORD: not (c.isalnum() or c == '_'),
-        sre.CATEGORY_SPACE: c.isspace(),
-        sre.CATEGORY_NOT_SPACE: not c.isspace(),
-    }
-    return tests.get(category, True)
-
-
 def _int_of(j):
     """
     SQL jsonb of dotted's `int` transform on the jsonb `j`: a number
@@ -668,13 +561,6 @@ class PostgresMixin(Translator):
         return self._state.hoist_named(name)
 
     # ---- Translator hooks -------------------------------------------
-
-    _CAST_MAP = {
-        'int': 'int',
-        'float': 'float',
-        'str': 'text',
-        'bool': 'bool',
-    }
 
     def _column(self, name):
         """
@@ -1511,7 +1397,7 @@ class PostgresMixin(Translator):
         if static('True') != static('False'):
             boolean = f"{j} = 'true'::jsonb" if static('True') == 'TRUE' else f"{j} = 'false'::jsonb"
         containers = 'FALSE'
-        if _may_start_with(pattern, '[') or _may_start_with(pattern, '{'):
+        if core.may_start_with(pattern, '[') or core.may_start_with(pattern, '{'):
             containers = f"{_failing('a regex on the repr of an array or object', j)}::boolean"
         return (f"(CASE jsonb_typeof({j}) WHEN 'string' THEN ({j} #>> {_WHOLE}) ~ {are} "
                 f"WHEN 'number' THEN {_py_text_of_number(j)} ~ {are} "
@@ -1723,7 +1609,7 @@ class _Parts(Hooks):
         return [_Fragment((('none',),))]
 
     def recursive(self, op, t):
-        plain = (op.accessors is None and op.inner.translated(_IS_WILDCARD)
+        plain = (op.accessors is None and op.inner.translated(core.IS_WILDCARD)
                  and (op.depth_start, op.depth_stop, op.depth_step) == (None, None, None))
         if not plain:
             raise TranslationError('a ** with depths or accessors, or of a key, not supported yet')
@@ -1763,18 +1649,6 @@ def _accessed(op, t, is_key):
     if not op.op.translated(core.IS_FIRST):
         return [part]
     return [_Group('first', [[part]], (False,), (False,))]
-
-
-class _IsWildcard(Hooks):
-    """
-    True for a wildcard matcher, `*`.
-    """
-
-    def other(self, m, *args):
-        return False
-
-    def wildcard(self, m, *args):
-        return True
 
 
 class _PathStep(Hooks):
@@ -1943,7 +1817,6 @@ class _ScalarPredicate(Hooks):
 
 
 _PARTS = _Parts()
-_IS_WILDCARD = _IsWildcard()
 _PATH_STEP = _PathStep()
 _FILTER_STEP = _FilterStep()
 _FILTER_TEST = _FilterTest()

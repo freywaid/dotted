@@ -4134,57 +4134,102 @@ Unsupported features and pattern paths raise `dotted.TranslationError`.
 <a id="spark-translation-sparkize"></a>
 ## Spark Translation (`sparkize`)
 
-> **Under development.** The API shape and supported subset of dotted
-> features may still change. PySpark only (classic and Spark Connect).
-> Needs `pip install dotted-notation[spark]` (`pyspark>=3.4`).
+> **Under development.** The API shape may still change. PySpark only
+> (classic and Spark Connect). Needs `pip install dotted-notation[spark]`
+> (`pyspark>=3.4`). A translation reads as dotted does; where Spark
+> can't give what dotted would, it raises: `TranslationError` while
+> translating or building, or a `dotted: …` error when the job meets a
+> value it can't read as dotted does.
 
 `dotted.sparkize(path, flavor='pyspark')` translates a dotted path into
 PySpark `Column` expressions for `df.where(...)` / `df.select(...)`. It
 is the Spark counterpart of `sqlize`, on the same translation walk:
 `r.select` and `r.where` are fragments, and `r.build(fragment,
-**bindings)` makes the `Column`.
+schema=df.schema, **bindings)` makes the `Column`.
 
 Columns are native Spark types. The first path segment is the column;
-further segments reach into structs, maps and arrays. A JSON string
-column isn't parsed for you: give the DataFrame real struct columns
-(read them that way, or `from_json` with your own schema) first.
+further segments read into structs, maps and arrays, each node read by
+its type as dotted reads a Python value by its own: a struct and a map
+as a dict, an array as a list, as `row.asDict(recursive=True)` hands
+them to Python. The DataFrame's schema says what each node is, so
+`build` takes it. A JSON string column isn't parsed for you: give the
+DataFrame real struct columns (read them that way, or `from_json` with
+your own schema) first.
 
     import dotted
 
     r = dotted.sparkize('data.user.age >= 30', flavor='pyspark')
-    df.where(r.build(r.where))
+    df.where(r.build(r.where, schema=df.schema))
 
     r = dotted.sparkize('data.user.name', flavor='pyspark')
-    df.select(r.build(r.select))
+    df.select(r.build(r.select, schema=df.schema))
 
 `flavor=` is required, as `driver=` is for `sqlize`; the examples
-below leave it out for brevity.
+below leave it out, and `schema=df.schema`, for brevity.
 
-| dotted | Spark |
-|--------|-------|
-| `col.a.b` | struct field / map key extraction |
-| `col[0]`, `col[-1]` | array index (0-based, negative from the end; out of range is null) |
-| `= != < <= > >=` | the Column comparison against `lit(value)` |
-| `= None`, `!= None` | `isNull()`, `isNotNull()` |
-| `= /re/`, `!= /re/` | `rlike(re)`, `~rlike(re)` |
-| `\|int \|float \|str \|bool` | `cast('int' \| 'double' \| 'string' \| 'boolean')` |
-| `(a & b)`, `(a, b)` | `&`, `\|` in `where`; `concat` of the branches' matches in `select` |
-| `tags.$$(pick)` | map lookup by another column's value |
-| `arr[*].x = v`, `arr[x = v]` | `exists(arr, ...)` in `where`; `transform` / `filter` in `select` |
-| `map.*` | every value of a map (`map_values`) |
+| dotted | at a node that is |
+|--------|-------------------|
+| `.k`, `['k']` | a struct: its field `k`; a map: its value at a key equal to `'k'` |
+| `.0`, `[0]`, `[-1]` | an array: its element; a string: its character; a map with int keys: its value at `0` |
+| `.*` | a struct's fields' values, a map's values |
+| `[*]` | those, and an array's elements, a string's characters |
+| `**` | every value under it by keys, through structs and maps, each before what is under it |
+| `[1:3]`, `[::-1]` | an array's or string's slice, one value |
+| `[a = 1]` | an array's elements the filter keeps, one value |
+| `= != < <= > >=` | Python's comparison |
+| `= /re/` | the regex fullmatches `str()` of the value |
+| `\|int \|float \|str` | dotted's transform |
+
+### Reading as dotted reads
+
+A key reads a struct's field or a map's value; an int, an array's
+element or a string's character, never a struct's field, whose names
+are strings, though a map with int keys has one at it. A node that is
+there may be None: a struct's null field is there, as `asDict` gives it
+with its None, and a map's missing key isn't.
+
+A comparison goes as Python's does, by the values' types: a number and
+a bool as numbers (`True == 1`), exactly (`1 == 1.0`, but an int is
+never equal to `0.1`, and a `DECIMAL` `0.1` isn't the float `0.1`), a
+string with a string in code-point order, any other pairing unequal and
+unordered: `'30' = 30` is false where Spark would cast. `!=` is `=`'s
+negation, so it holds for a null; `<` and its kind are false for one; a
+NaN orders nowhere. A guard tests a value that is there: a missing key
+matches neither `= None` nor `!= 1`.
+
+A regex fullmatches `str()` of the value, as dotted's does, written in
+Java's syntax as Python reads it: a number as Python writes it,
+`True` / `False`, `None` for a null. `int`, `float` and `str` run as
+dotted's: `int` truncates a number and reads a string `int()` reads,
+and keeps what `int()` raises on; `float` raises on a None and a
+container, which fails the job.
+
+Where dotted raises, as `float` on a None or a slice filter on a
+scalar, the job fails with a `dotted: …` message, and so where dotted's
+answer is a Python repr, `str()` of a struct, map or array, which Spark
+can't write. A float's `str()` is built from Java's digits: before
+Java 19, Java writes a few floats with digits that aren't Python's
+shortest.
 
 ### Pattern paths
 
-`[*]`, a map's `*` and bracket filters work on both sides. `where` is
-whether any element matches; `select` is the array of the matches, in
-order:
+`where` is whether the path reaches anything; `select` is the array of
+its matches, in dotted's order:
 
     r = dotted.sparkize('data.users[*].age >= 30')
     df.where(r.build(r.where))      # rows with some user aged 30+
     df.select(r.build(r.select))    # per row, the ages that are 30+
 
-    r = dotted.sparkize('data.users[active = True].age')
+    r = dotted.sparkize('data.users[*&active = True].age')
     df.select(r.build(r.select))    # per row, the active users' ages
+
+A Spark array holds values of one type, so a `select` whose matches
+can be of more than one type raises at `build`, ints as a long and
+floats as a double aside: `data.*` over a struct of an int and a
+string. Its `where` reads as any.
+
+A path with no pattern in it selects its one value, as `get` gives it:
+`data.users[active = False]` is the filtered list.
 
 A group in a path matches as `get` does: `select` is each branch's
 matches in turn, the path after the group run on from each, and an `&`
@@ -4197,26 +4242,18 @@ group matches only where every branch does, at each node it is at:
     df.where(r.build(r.where))      # rows with one user both 30+ and active
 
 A first-match group, `(a, b)?`, is the first match of the first branch
-to have one, the path after it run on from that match. A null is no
-match, as for `where`:
+to have one, the path after it run on from that match:
 
     r = dotted.sparkize('data.(users[*], user)?.age')
     df.select(r.build(r.select))    # per row, the first user's age, else user.age
 
-`concat` needs one element type, so a group whose branches reach
-different types fails when Spark analyzes the Column; after a
-first-match group, only what the rest of the path reaches needs to
-share one. After a cut, `(a#, b)`, `b` runs only where `a` found
-nothing, at each node; a null is no match, as for `where`. After a soft
-cut, `(a##, b)`, `b` skips what overlaps `a`'s matches: the group's
-branches are read with their paths and folded in order (`aggregate`).
-A negation, `!`, is the complement of what its path matches, not `~`:
-`tags(!.color)` is every value of `tags` but `color`'s, split level by
-level to the depth its path reads. It reads a map's entries and an
-array's elements; a struct's fields can't be listed without the
-schema, nor can a row's columns at the top of a path, so a negation
-there raises, as does one reaching any depth, as `**` does. An aligned
-op under a soft cut raises `TranslationError` for now.
+After a cut, `(a#, b)`, `b` runs only where `a` found nothing, at each
+node. After a soft cut, `(a##, b)`, `b` skips what overlaps `a`'s
+matches: the group's branches are read with their paths and folded in
+order (`aggregate`). A negation, `!`, is the complement of what its
+path matches, not `~`: `tags(!.color)` is every value of `tags` but
+`color`'s, split level by level to the depth its path reads, over a
+struct's fields, a map's entries and an array's elements.
 
 A group at the top of a path, or after a [table
 search](#sparkize-table-search)'s row step, reads the row's columns as
@@ -4226,8 +4263,8 @@ cut and soft cut works there as at any node:
     r = dotted.sparkize('(age >= 30#, data.user.age)')
     df.select(r.build(r.select))    # per row, age where it's 30+, else user.age
 
-`**`, and `*` over a struct's fields, need the schema — Spark can't
-iterate struct fields at run time — and raise `TranslationError`.
+A negation there, in a search of a named table, is the complement among
+all the row's columns.
 
 ### Substitutions (late binding)
 
@@ -4236,14 +4273,15 @@ up front with `bindings=`:
 
     r = dotted.sparkize('age >= $(min_age)')
     r.unbound                        # {'min_age': 'min_age'}
-    df.where(r.build(r.where, min_age=30))
+    df.where(r.build(r.where, schema=df.schema, min_age=30))
 
     r = dotted.sparkize('age >= $(min_age)', bindings={'min_age': 30})
-    df.where(r.build(r.where))
+    df.where(r.build(r.where, schema=df.schema))
 
-A binding may be any value `lit` accepts, a `Column` included, which is
-used as is: `r.build(r.where, min_age=F.col('floor'))`. A binding of
-`None` is a null test, as a literal `None` is.
+A binding is compared as Python compares it: `min_age=30.5` is no int.
+A `Column` binding is compared by its type, which `build` reads in the
+active session: `r.build(r.where, schema=df.schema,
+min_age=F.col('floor'))`.
 
 ### Composing fragments
 
@@ -4253,7 +4291,7 @@ A `Column` can't hold a placeholder, so `r.where` is a
 
     a = dotted.sparkize('age >= $(min_age)')
     b = dotted.sparkize('status = "active"')
-    df.where(a.build(a.where & b.where, min_age=30))
+    df.where(a.build(a.where & b.where, schema=df.schema, min_age=30))
 
 <a id="sparkize-table-search"></a>
 ### `sparkize` table search
@@ -4265,10 +4303,10 @@ same as for `sqlize`: the leading keys name a DataFrame or table, and
 3.4+):
 
     r = dotted.sparkize('books[author="kafka"][10:20][*].title', root='table')
-    (spark.table(r.table)
-          .where(r.build(r.where))
+    books = spark.table(r.table)
+    (books.where(r.build(r.where, schema=books.schema))
           .offset(r.offset).limit(r.limit)
-          .select(r.build(r.select)))
+          .select(r.build(r.select, schema=books.schema)))
 
 With nothing after the row step, `select` is every column
 (`col('*')`). A path that starts with a row step, `[*&author="kafka"]`,
@@ -4282,12 +4320,24 @@ DataFrame, then chain as above. For any other search `r.rows(df)` is
 
     r = dotted.sparkize('books[(*&author="kafka", *&year<1920)].title', root='table')
     rows = r.rows(spark.table(r.table))     # each branch's rows, unionByName
-    rows.select(r.build(r.select))
+    rows.select(r.build(r.select, schema=rows.schema))
 
 `rows` takes `bindings` as `build` does. A cut, a first match or an
 `&` over the table is a cross join with a one-row count of the rows it
 tests. An unnamed table's group works too, from whichever DataFrame is
 handed in; otherwise the same groups raise as in `sqlize`.
+
+Not yet supported (`TranslationError`):
+- A `**` with depths or accessors, `**:2`; a negation reaching any
+  depth, `!**.x`
+- Regex keys, `data./prefix_\d+/.field`; references inside pattern
+  paths; first filters, `[*&a=1?]`; packed filter keys
+- A transform on the column itself, `age|int`; transforms other than
+  `int`, `float` and `str`, or with arguments
+- Comparing a `DECIMAL` with a float `Column`; `str()` or a regex of a
+  timestamp, whose Python value depends on the session's time zone;
+  reading into a binary value
+- Writes
 
 ### API reference
 
@@ -4303,10 +4353,12 @@ handed in; otherwise the same groups raise as in `sqlize`.
 - `root` — `'column'` (default): the first segment is a column.
   `'table'`: a [table search](#sparkize-table-search).
 
-`r.build(fragment, **bindings)`
+`r.build(fragment, schema=None, **bindings)`
 
 - `fragment` — a `ColumnFragment` (`r.where`, `r.select`, or a
   composition of fragments).
+- `schema` — **required**. The schema of the DataFrame the Column
+  reads, `df.schema`: a path reads each node by its type.
 - `**bindings` — values for substitutions, keyed by original
   substitution name. An unknown or missing binding raises
   `TranslationError`.

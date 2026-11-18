@@ -142,24 +142,34 @@ def test_row_group_has_select_and_where(path):
     ('!(status="banned")', 'column'),
     ('(!(status="banned"), title)', 'column'),
     ('[*](!.title)', 'table'),
-    ('hello[*](!.title)', 'table'),
-    ('hello[*].(!(status="banned"), title)', 'table'),
 ])
 def test_row_negation_raises(path, root):
     """
     A negation at the top of a path is the complement of the row's
-    columns: the row is a struct, whose fields need the schema, and a
-    column path or an unnamed table has no row to read them from.
+    columns, which a column path or an unnamed table has no row to read
+    from, as in sqlize.
     """
     with pytest.raises(TranslationError, match="row's columns"):
         sparkize(path, root=root)
 
 
+@pytest.mark.parametrize('path', [
+    'hello[*](!.title)',
+    'hello[*].(!(status="banned"), title)',
+])
+def test_row_negation_of_a_table(path):
+    """
+    A named table's search reads its whole row, every column the schema
+    has, for a negation to take the complement of.
+    """
+    assert 'select' in sparkize(path, root='table')
+
+
 def test_negation_reaching_any_depth_raises():
     """
-    A negation reaching any depth needs the schema, as ** does.
+    A negation reaching any depth isn't built yet.
     """
-    with pytest.raises(TranslationError, match='needs a schema'):
+    with pytest.raises(TranslationError, match='any depth'):
         sparkize('data.(!**.x)')
 
 
@@ -245,18 +255,26 @@ def test_build_rejects_missing_binding():
         r.build(r.where)
 
 
+def test_build_needs_the_schema():
+    """
+    A path reads each node by its type, which the DataFrame's schema
+    says: `build` without it raises.
+    """
+    r = sparkize('age >= 30')
+    with pytest.raises(TranslationError, match='schema'):
+        r.build(r.where)
+
+
 @pytest.mark.parametrize('path', [
-    'data.**',
-    'data.** = 1',
     '*.age = 1',
     '$(col).age = 1',
     'data.$(key) = 1',
     'data.users[*].$(key) = 1',
-    'age < None',
-    'data.user.age < None',
-    'name < /^a/',
-    'data.users[*].name < /^a/',
     'data.user.age|upper = 1',
+    'data.users[*].age|int:16 = 1',
+    'data.users[*]|upper',
+    'data.**:2.role',
+    'data.name = /(?L)x/',
     'data.$$(^x) = 1',
 ])
 def test_unsupported_paths_raise(path):

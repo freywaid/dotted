@@ -89,6 +89,115 @@ ROOTS = ('column', 'table')
 _NO_TABLE = (None, None, None)
 
 
+# ---- Python regexes, as their parse shows them ----------------------
+
+def regex_parser():
+    """
+    Python's own regex parser: `re._parser`, `sre_parse` before 3.11.
+    """
+    try:
+        from re import _parser
+        return _parser
+    except ImportError:
+        import sre_parse
+        return sre_parse
+
+
+def may_start_with(pattern, c):
+    """
+    False where no match of the Python regex `pattern` can start with
+    the character `c`, as its parse shows; True where one may.
+    """
+    sre = regex_parser()
+    return _items_may_start(list(sre.parse(pattern)), c, sre)
+
+
+def _items_may_start(items, c, sre):
+    """
+    `may_start_with` for a parsed run of regex items.
+    """
+    for op, av in items:
+        may, empty = _item_may_start(op, av, c, sre)
+        if may:
+            return True
+        if not empty:
+            return False
+    return False
+
+
+def _items_may_be_empty(items, c, sre):
+    """
+    True if a parsed run of regex items may match the empty string.
+    """
+    return all(_item_may_start(op, av, c, sre)[1] for op, av in items)
+
+
+def _item_may_start(op, av, c, sre):
+    """
+    For one parsed regex item: whether a match of it may start with the
+    character `c`, and whether it may match the empty string. What it
+    can't tell, it says may.
+    """
+    if op is sre.LITERAL:
+        return chr(av) == c, False
+    if op is sre.NOT_LITERAL:
+        return chr(av) != c, False
+    if op is sre.ANY:
+        return c != '\n', False
+    if op is sre.AT:
+        return False, True
+    if op is sre.IN:
+        return _in_class(av, c, sre), False
+    if op is sre.SUBPATTERN:
+        body = list(av[-1])
+        return _items_may_start(body, c, sre), _items_may_be_empty(body, c, sre)
+    if op is sre.BRANCH:
+        alts = [list(alt) for alt in av[1]]
+        return (any(_items_may_start(alt, c, sre) for alt in alts),
+                any(_items_may_be_empty(alt, c, sre) for alt in alts))
+    if op in (sre.MAX_REPEAT, sre.MIN_REPEAT, getattr(sre, 'POSSESSIVE_REPEAT', None)):
+        low, _, body = av
+        body = list(body)
+        return _items_may_start(body, c, sre), low == 0 or _items_may_be_empty(body, c, sre)
+    return True, False
+
+
+def _in_class(items, c, sre):
+    """
+    Whether a parsed character class may match the character `c`.
+    """
+    negate = bool(items) and items[0][0] is sre.NEGATE
+    found = False
+    for op, av in items:
+        if op is sre.NEGATE:
+            continue
+        if op is sre.LITERAL and chr(av) == c:
+            found = True
+        elif op is sre.RANGE and av[0] <= ord(c) <= av[1]:
+            found = True
+        elif op is sre.CATEGORY and _in_category(av, c, sre):
+            found = True
+        elif op not in (sre.LITERAL, sre.RANGE, sre.CATEGORY):
+            return True
+    return found != negate
+
+
+def _in_category(category, c, sre):
+    """
+    Whether the character `c` is in a regex category, `\\d`, `\\w`, `\\s`
+    or their negations.
+    """
+    tests = {
+        sre.CATEGORY_DIGIT: c.isdigit(),
+        sre.CATEGORY_NOT_DIGIT: not c.isdigit(),
+        sre.CATEGORY_WORD: c.isalnum() or c == '_',
+        sre.CATEGORY_NOT_WORD: not (c.isalnum() or c == '_'),
+        sre.CATEGORY_SPACE: c.isspace(),
+        sre.CATEGORY_NOT_SPACE: not c.isspace(),
+    }
+    return tests.get(category, True)
+
+
 class TranslationError(Exception):
     """
     Raised when a dotted path cannot be translated or when a
@@ -102,10 +211,11 @@ def _op_is_pattern_like(op):
     True if the op introduces a set-returning or recursive element
     that can't be expressed as a literal path of segments.
     """
-    if isinstance(op, (access.SliceFilter, access.SlotSpecial, wrappers.FilterWrap,
-                       wrappers.TransformWrap)):
-        # a filter or an append slot may reach nothing, and a transform
-        # changes what the path after it reads: a pattern path reads them
+    if isinstance(op, (access.SliceFilter, access.Slice, access.SlotSpecial,
+                       wrappers.FilterWrap, wrappers.TransformWrap)):
+        # a filter or an append slot may reach nothing, a slice reads a
+        # list as one value, and a transform changes what the path after
+        # it reads: a pattern path reads them
         return True
     if hasattr(op, 'is_pattern') and op.is_pattern():
         return True
@@ -815,6 +925,21 @@ class _IsFirst(Hooks):
 IS_FIRST = _IsFirst()
 
 
+class _IsWildcard(Hooks):
+    """
+    True for a wildcard matcher, `*`.
+    """
+
+    def other(self, m, *args):
+        return False
+
+    def wildcard(self, m, *args):
+        return True
+
+
+IS_WILDCARD = _IsWildcard()
+
+
 class _IsNop(Hooks):
     """
     True for a `~` op: a write doesn't build the node it holds back.
@@ -987,9 +1112,6 @@ class Translator:
     Target-neutral walk over parsed path ops. Mixed into a flavor
     class that implements the hooks listed in the module docstring.
     """
-
-    # transform name (`|int`) → target cast name; set by each flavor
-    _CAST_MAP = {}
 
     # ---- core walk --------------------------------------------------
 
@@ -1364,23 +1486,6 @@ class Translator:
         that tells list indexes (`[0]`) from keys overrides this.
         """
         return str(value)
-
-    def _transforms_to_cast(self, transforms):
-        """
-        Map a path-level transform (like `|int`) to the flavor's cast
-        name via `_CAST_MAP`. Only a narrow set is supported today.
-        """
-        if len(transforms) != 1:
-            raise TranslationError(
-                'only single-transform casts supported in v1'
-            )
-        name = transforms[0].name
-        cast = self._CAST_MAP.get(name)
-        if cast is None:
-            raise TranslationError(
-                f'transform not supported as SQL cast: {name}'
-            )
-        return cast
 
     # ---- groups -----------------------------------------------------
 

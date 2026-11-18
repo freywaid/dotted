@@ -34,11 +34,39 @@ def _merged(*unbounds):
     return out
 
 
+class _Env(dict):
+    """
+    What a fragment is made with: the bindings, by original name, and
+    `schema`, the DataFrame's, which says what each node a path reads
+    is.
+    """
+
+    __slots__ = ('schema',)
+
+    def __init__(self, bindings, schema):
+        super().__init__(bindings)
+        self.schema = schema
+
+
+def _env(bindings, schema):
+    """
+    The `_Env` a fragment is made with. A path reads each node by its
+    type, so the schema is needed.
+    """
+    if schema is None:
+        raise TranslationError(
+            "sparkize reads each node by its type: pass the DataFrame's "
+            'schema, r.build(fragment, schema=df.schema)'
+        )
+    return _Env(bindings, schema)
+
+
 class ColumnFragment:
     """
     A Spark `Column` not made yet. A Column can't carry a placeholder,
-    so translation builds a fragment instead: `make(bindings)` makes
-    the Column once the substitution values are known.
+    and a path reads a node by its type, which the DataFrame's schema
+    gives, so translation builds a fragment instead: `make(env)` makes
+    the Column once the substitution values and the schema are known.
 
     `unbound` maps each substitution the fragment still needs to its
     original name (`$(min_age)` → `{'min_age': 'min_age'}`), keyed the
@@ -50,7 +78,7 @@ class ColumnFragment:
         r1 = sparkize('age >= $(min_age)', flavor='pyspark')
         r2 = sparkize('status = "active"', flavor='pyspark')
         both = r1.where & r2.where
-        df.where(r1.build(both, min_age=30))
+        df.where(r1.build(both, schema=df.schema, min_age=30))
     """
 
     __slots__ = ('_make', 'unbound')
@@ -149,7 +177,7 @@ class SparkResolver(collections.abc.Mapping):
     Rendering:
 
         r = sparkize('data.user.age >= $(min_age)', flavor='pyspark')
-        df.where(r.build(r.where, min_age=30))
+        df.where(r.build(r.where, schema=df.schema, min_age=30))
     """
 
     flavor = None     # set by @flavor
@@ -227,30 +255,37 @@ class SparkResolver(collections.abc.Mapping):
             _check_bindings({}, bindings)
             return df
         _check_bindings(self._from.unbound, bindings)
-        return self._from.make(df, bindings)
+        return self._from.make(df, _env(bindings, df.schema))
 
     @staticmethod
-    def build(fragment, **bindings):
+    def build(fragment, schema=None, **bindings):
         """
         Make the Spark `Column` for a `ColumnFragment` (usually
-        `r.where`, `r.select`, or a composition of fragments), with
-        `bindings` supplying its substitutions by original name.
+        `r.where`, `r.select`, or a composition of fragments) over a
+        DataFrame of `schema`, its `df.schema`, with `bindings`
+        supplying its substitutions by original name.
 
-        A binding may be any value `lit` accepts — a Spark Column too,
-        which is used as is.
+        A path reads each node by its type, as dotted reads a Python
+        value by its own, and the schema says what each is: a struct
+        field or a map's key, an int or a string.
+
+        A binding is a Python value, compared as Python compares it, or
+        a Spark Column, read by its type in the active session.
 
         Raises `TranslationError` on:
           - a non-fragment argument
+          - no schema
           - unknown binding (kwarg not corresponding to any unbound
             substitution in the fragment)
           - missing binding for one of the fragment's substitutions
+          - what Spark can't read as dotted does, for this schema
         """
         if not isinstance(fragment, ColumnFragment):
             raise TranslationError(
                 f'build requires a ColumnFragment, got {type(fragment).__name__}'
             )
         _check_bindings(fragment.unbound, bindings)
-        return fragment._make(bindings)
+        return fragment._make(_env(bindings, schema))
 
 
 def _check_bindings(unbound, bindings):
@@ -298,12 +333,14 @@ def sparkize(path, *, flavor, bindings=None, root='column'):
     column, further segments reach into structs, maps and arrays.
 
         r = sparkize('data.user.age >= 30', flavor='pyspark')
-        df.where(r.build(r.where))
+        df.where(r.build(r.where, schema=df.schema))
 
         r = sparkize('hello[book_id="b1"][0:10][*].title',
                      flavor='pyspark', root='table')
-        (spark.table(r.table).where(r.build(r.where))
-              .offset(r.offset).limit(r.limit).select(r.build(r.select)))
+        df = spark.table(r.table)
+        (df.where(r.build(r.where, schema=df.schema))
+           .offset(r.offset).limit(r.limit)
+           .select(r.build(r.select, schema=df.schema)))
     """
     cls = _FLAVORS.get(flavor)
     if cls is None:

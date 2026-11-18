@@ -39,7 +39,7 @@ def where_ids(df, path, **bindings):
     Sorted ids of the rows a path's `where` keeps.
     """
     r = sparkize(path)
-    return ids(df, r.build(r.where, **bindings))
+    return ids(df, r.build(r.where, schema=df.schema, **bindings))
 
 
 # ---- column-level guards --------------------------------------------
@@ -51,12 +51,15 @@ def where_ids(df, path, **bindings):
     ('age < 18', [4]),
     ('deleted_at = None', [1, 2, 3, 4, 5, 7]),
     ('deleted_at != None', [6]),
-    ('status = /^act/', [1, 2, 4, 5, 6]),
-    ('status != /^act/', [3, 7]),
+    ('status = /act.*/', [1, 2, 4, 5, 6]),
+    ('status != /act.*/', [3, 7]),
+    ('status = /^act/', []),
+    ('status != /^act/', [1, 2, 3, 4, 5, 6, 7]),
 ])
 def test_column_guard(df, path, expected):
     """
-    A guard on the column itself.
+    A guard on the column itself. A regex fullmatches, as dotted's does:
+    `/^act/` matches no whole status.
     """
     assert where_ids(df, path) == expected
 
@@ -77,7 +80,7 @@ def test_top_level_group(df, path, expected):
 # ---- groups in a path -----------------------------------------------
 
 @pytest.mark.parametrize('path, expected', [
-    ('data.(user.age, users[*].age)', [1, 2, 3, 4, 5, 6]),
+    ('data.(user.age, users[*].age)', [1, 2, 3, 4, 5, 6, 7]),
     ('data.users[*].(age >= 30 & active = True)', [2, 5]),
     ('data.user.(age >= 30, age < 18)', [2, 3, 4, 5, 6]),
     ('data.(users[*], user)?.age >= 30', [2, 3, 5, 6]),
@@ -89,7 +92,8 @@ def test_group_where(df, path, expected):
     A group's `where` keeps rows where it matches. An `&` after `[*]`
     holds per element: one user both 30+ and active. A first match is
     the first user, or `user` where there are none: id=1's first user
-    is 25, so its 32 doesn't count.
+    is 25, so its 32 doesn't count. id=7's user.age is null, a None
+    that is there, as a struct's field always is.
     """
     assert where_ids(df, path) == expected
 
@@ -134,7 +138,7 @@ def test_group_select(df, path, expected):
     isn't read again as 18+.
     """
     r = sparkize(path)
-    assert selected(df, r.build(r.select)) == expected
+    assert selected(df, r.build(r.select, schema=df.schema)) == expected
 
 
 # ---- groups over the row's columns ----------------------------------
@@ -168,7 +172,7 @@ def test_row_group_where(spark, df, root, path, expected):
     a table search as in a column path.
     """
     r, rows = _rooted(spark, df, path, root)
-    assert ids(rows, r.build(r.where)) == expected
+    assert ids(rows, r.build(r.where, schema=rows.schema)) == expected
 
 
 @pytest.mark.parametrize('root', ROOTS)
@@ -194,7 +198,7 @@ def test_row_group_select(spark, df, root, path, expected):
     for a cut, as for `where`.
     """
     r, rows = _rooted(spark, df, path, root)
-    assert selected(rows, r.build(r.select)) == expected
+    assert selected(rows, r.build(r.select, schema=rows.schema)) == expected
 
 
 # ---- struct traversal -----------------------------------------------
@@ -219,7 +223,7 @@ def test_struct_select(df):
     A plain traversal selects the nested value.
     """
     r = sparkize('data.user.role')
-    assert selected(df, r.build(r.select)) == {
+    assert selected(df, r.build(r.select, schema=df.schema)) == {
         1: 'admin', 2: 'user', 3: 'user', 4: 'user',
         5: 'admin', 6: 'user', 7: 'guest',
     }
@@ -261,7 +265,7 @@ def test_map_wildcard_select(df):
     `*` over a map selects its values.
     """
     r = sparkize('tags.*')
-    got = {k: sorted(v) for k, v in selected(df, r.build(r.select)).items()}
+    got = {k: sorted(v) for k, v in selected(df, r.build(r.select, schema=df.schema)).items()}
     assert got == {
         1: ['L', 'red'], 2: ['blue', 'red'], 3: ['red'], 4: [],
         5: ['green'], 6: ['red'], 7: [],
@@ -273,16 +277,20 @@ def test_map_wildcard_select(df):
 @pytest.mark.parametrize('path, expected', [
     ('data.users[*].age >= 40', [3, 5]),
     ('data.users[*].active = False', [1, 3]),
-    ('data.users[active = False]', [1, 3]),
-    ('data.users[active = True].age >= 50', [5]),
-    ('data.users[age >= 30, active = False]', [1, 2, 3, 5]),
+    ('data.users[*&active = False]', [1, 3]),
+    ('data.users[*&active = True].age >= 50', [5]),
+    ('data.users[*&age >= 30, active = False]', [1, 2, 3, 5]),
+    ('data.users[active = False]', [1, 2, 3, 4, 5, 6, 7]),
+    ('data.users[active = False].age', []),
     ('data.users[*]', [1, 2, 3, 4, 5]),
     ('data.users[*+].age >= 40', [1, 2, 3, 4, 5]),
     ('data.users[*+&active=True].age', [1, 2, 4, 5]),
 ])
 def test_pattern_where(df, path, expected):
     """
-    A pattern path's `where` keeps rows where some element matches.
+    A pattern path's `where` keeps rows where some element matches. A
+    slice filter, `users[active = False]`, is the filtered list as one
+    value, there even when empty, and a list has no `age`.
     """
     assert where_ids(df, path) == expected
 
@@ -290,7 +298,7 @@ def test_pattern_where(df, path, expected):
 @pytest.mark.parametrize('path, expected', [
     ('data.users[*].age',
      {1: [25, 32], 2: [35], 3: [40], 4: [17], 5: [50, 18], 6: [], 7: []}),
-    ('data.users[active = True].age',
+    ('data.users[*&active = True].age',
      {1: [25], 2: [35], 3: [], 4: [17], 5: [50, 18], 6: [], 7: []}),
     ('data.users[*].age >= 30',
      {1: [32], 2: [35], 3: [40], 4: [], 5: [50], 6: [], 7: []}),
@@ -304,7 +312,7 @@ def test_pattern_select(df, path, expected):
     A pattern path's `select` is the array of matches, in order.
     """
     r = sparkize(path)
-    assert selected(df, r.build(r.select)) == expected
+    assert selected(df, r.build(r.select, schema=df.schema)) == expected
 
 
 # ---- substitutions --------------------------------------------------
@@ -321,14 +329,14 @@ def test_substitution_bound_at_sparkize(df):
     `bindings=` binds up front.
     """
     r = sparkize('age >= $(min_age)', bindings={'min_age': 30})
-    assert ids(df, r.build(r.where)) == [2, 3, 5, 6]
+    assert ids(df, r.build(r.where, schema=df.schema)) == [2, 3, 5, 6]
 
 
 def test_substitution_in_pattern_filter(df):
     """
     Substitutions inside a bracket filter.
     """
-    assert where_ids(df, 'data.users[age >= $(min)].active = True',
+    assert where_ids(df, 'data.users[*&age >= $(min)].active = True',
                      min=50) == [5]
 
 
@@ -355,8 +363,8 @@ def test_fragments_compose(df):
     """
     a = sparkize('age >= $(min_age)')
     b = sparkize('status = "active"')
-    assert ids(df, a.build(a.where & b.where, min_age=30)) == [2, 5, 6]
-    assert ids(df, a.build(~b.where)) == [3, 7]
+    assert ids(df, a.build(a.where & b.where, schema=df.schema, min_age=30)) == [2, 5, 6]
+    assert ids(df, a.build(~b.where, schema=df.schema)) == [3, 7]
 
 
 # ---- table search ---------------------------------------------------
@@ -370,8 +378,9 @@ def test_table_search(spark, df):
     df.createOrReplaceTempView('items')
     r = _sparkize('items[status="active"][1:3][*].id',
                   flavor='pyspark', root='table')
-    rows = (spark.table(r.table).where(r.build(r.where)).orderBy('id')
-            .offset(r.offset).limit(r.limit).select(r.build(r.select))
+    table = spark.table(r.table)
+    rows = (table.where(r.build(r.where, schema=table.schema)).orderBy('id')
+            .offset(r.offset).limit(r.limit).select(r.build(r.select, schema=table.schema))
             .collect())
     assert [row.id for row in rows] == [2, 4]
 
@@ -400,7 +409,7 @@ def test_row_step_group(spark, df, path, expected):
     r = _sparkize(f'items{path}', flavor='pyspark', root='table')
     rows = r.rows(spark.table(r.table))
     if r.where is not None:
-        rows = rows.where(r.build(r.where))
+        rows = rows.where(r.build(r.where, schema=rows.schema))
     assert sorted(row.id for row in rows.select('id').collect()) == expected
 
 
@@ -411,6 +420,8 @@ def test_table_search_whole_rows(spark, df):
     df.createOrReplaceTempView('items')
     r = _sparkize('items[*&data.user.role="admin"]',
                   flavor='pyspark', root='table')
-    out = spark.table(r.table).where(r.build(r.where)).select(r.build(r.select))
+    table = spark.table(r.table)
+    out = table.where(r.build(r.where, schema=table.schema)).select(
+        r.build(r.select, schema=table.schema))
     assert out.columns == df.columns
     assert sorted(row.id for row in out.collect()) == [1, 5]

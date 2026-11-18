@@ -20,12 +20,12 @@ the ones listed are omitted — browse git history for earlier entries.
   path after it run on from that match, at each node the group is at.
   A guard after the group tests that match: `data.(users[*], user)?.age
   >= 30` is the first user's age, or `user`'s where there are none.
-  `sqlize` takes the first in dotted's order at each node; `sparkize`
-  takes the first non-null match.
+  Both take the first in dotted's order at each node.
 - `sqlize` and `sparkize` translate a cut, `#`, at each node the group
   is at: after `(a#, b)`'s `a` reaches something, `b` isn't tried
   there. `sqlize` reads `b` only at the nodes where `a` reaches
-  nothing; `sparkize` adds `b`'s matches only where `a` found none. A cut in a conjunction leaves the branches after it unneeded.
+  nothing; `sparkize` adds `b`'s matches only where `a` found none.
+  A cut in a conjunction leaves the branches after it unneeded.
 - `sqlize` and `sparkize` translate a soft cut, `##`: in `(a##, *)`,
   `*` skips what overlaps `a`'s matches, at each node, folded in order
   as dotted does, so `((a.b, a, a.d)##, *)` keeps `a.d`, the `a` it
@@ -46,7 +46,8 @@ the ones listed are omitted — browse git history for earlier entries.
   columns, `books[*](!.title)`, as the complement among all of them,
   from the table's whole row, `to_jsonb(books)`. It raises in a column
   path and in a search of an unnamed table, which have no row to read
-  whole, and in `sparkize`, whose row is a struct.
+  whole. `sparkize` reads it from the struct of all the columns the
+  schema has.
 - A group as a table search's row step, `books[(*&a=1, *&b=2)]` or
   `books([*&a=1], [*&b=2])`, in `sqlize` and `sparkize`: each branch's
   rows in turn, a row both reach twice, as dotted yields them, the path
@@ -63,6 +64,9 @@ the ones listed are omitted — browse git history for earlier entries.
   where it needs it, or a group of row steps' rows. Select from it
   rather than `r.table`. `sparkize`'s `r.rows(df)` is `df` for a
   search without such a group.
+- `sparkize` reads `**`, `**+`, `.*` and `[*]` over a struct's fields,
+  and slices, `[1:3]`, `[::-1]`, which need the schema `build` now
+  takes. A `**` with depths or accessors still raises.
 - `sqlize`'s `r.as_update(value)`: the write of `value` at a column
   path's matches, as `update` does it, for an `UPDATE ... SET`:
   `'UPDATE items SET ' + r.as_update('admin')`. `value` goes at each
@@ -82,6 +86,37 @@ the ones listed are omitted — browse git history for earlier entries.
   cut covers whole adding nothing but still matching.
 
 ### Changed
+- `sparkize` reads as dotted reads, each node by its Spark type, a
+  struct and a map as a dict and an array as a list, as
+  `row.asDict(recursive=True)` hands them to Python; it read every node
+  as Spark's own extraction and comparisons do. `build` takes the
+  DataFrame's schema, which says what each node is, and raises without
+  it: `r.build(r.where, schema=df.schema)`.
+  - a key reads a struct's field or a map's value, `.0` an array's
+    element, a string's character or a map's value at the int key 0;
+    a key on an array of structs no longer reads every element's
+    field. A struct's null field is there, a None, and a map's missing
+    key isn't: `= None` matches the one, not the other.
+  - a comparison goes as Python's does, by the values' types, exactly:
+    `True == 1`, an int never equal to `0.1`, a `DECIMAL` `0.1` not the
+    float `0.1`, a string and a number unequal and unordered where
+    Spark cast, a NaN ordered nowhere; `!=` holds for a null, and
+    `< None` is false where it raised.
+  - a regex fullmatches `str()` of the value, written in Java's syntax
+    as Python reads it; `rlike` searched, so `/^act/` no longer finds
+    `'active'`. `|int`, `|float` and `|str` run as dotted's, where they
+    were casts; `|bool` and the rest raise.
+  - `[*]` reads a map's values, a struct's fields and a string's
+    characters; `.*` a struct's fields; a slice filter,
+    `users[active = False]`, the filtered list as one value; `*?` its
+    first match, None included.
+  - a `Column` binding compares by its type, read in the active
+    session; a Python one as Python compares it.
+  - a path with no pattern in it, `data.a|int`, selects its one value,
+    not an array.
+  - where dotted raises, or its answer is a Python repr, the job fails
+    with a `dotted: …` message. A `select` whose matches can be of
+    more than one type raises at `build`: a Spark array holds one.
 - `sqlize` reads a JSONB column a step at a time, as dotted's walk
   does, and compares as dotted compares; it read it with JSONPath,
   whose lax mode and casts gave other answers:
@@ -143,8 +178,8 @@ the ones listed are omitted — browse git history for earlier entries.
   largest subtrees that hold no match, as dotted does: `sqlize` with a
   recursive query over the children the matches run through, and
   `sparkize` level by level to the depth the negated path reads, over
-  map entries and array elements. A negation reaching any depth
-  raises in `sparkize`.
+  a struct's fields, a map's entries and an array's elements. A
+  negation reaching any depth raises in `sparkize`.
 - `sqlize` reads a bare wildcard filter key, `[*=1]`, as any member;
   it read a key named `*`.
 - `sqlize` and `sparkize` raise `TranslationError` on inputs they
