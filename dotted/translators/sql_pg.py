@@ -823,6 +823,90 @@ class PostgresMixin(Translator):
                     f"ELSE {self._w_error('an append to a non-array', n)} END")
         return _Writer(lambda node: self._bound(node, body))
 
+    def _w_matches(self, ops):
+        """
+        A write's test that `ops` reach something from a node, as dotted's
+        walk reads them: a function of the node's jsonb SQL.
+        """
+        parts = _existence(self._read_parts(ops))
+
+        def test(n):
+            rows = self._path_rows(n, "''", 'ARRAY[]::bigint[]', parts)
+            return f'EXISTS ({rows})'
+        return test
+
+    def _w_or(self, parts, fallback):
+        """
+        The writer of a disjunction: each of `parts`, (test, cut,
+        writer), writes where its test holds on the node as the parts
+        before it left it, a test of True always; after a part a cut
+        follows that wrote, no other does. Where none wrote, `fallback`
+        writes the node as it was (None: it stays).
+        """
+        def body(n):
+            a = self._state.alloc_pattern_alias()
+            cur = f'(SELECT {n} AS o, {n} AS n, FALSE AS s, FALSE AS m) AS {a}'
+            prev = a
+            for test, cut, writer in parts:
+                q = self._state.alloc_pattern_alias()
+                r = self._state.alloc_pattern_alias()
+                held = 'TRUE' if test is True else test(f'{prev}.n')
+                inner = (f'(SELECT {prev}.o, {prev}.n, {prev}.s, {prev}.m, '
+                         f'(NOT {prev}.s AND {held}) AS t FROM {cur}) AS {q}')
+                cut_sql = 'TRUE' if cut else 'FALSE'
+                cur = (f'(SELECT {q}.o, CASE WHEN {q}.t THEN {writer(f"{q}.n")} ELSE {q}.n END AS n, '
+                       f'{q}.s OR ({cut_sql} AND {q}.t) AS s, {q}.m OR {q}.t AS m FROM {inner}) AS {r}')
+                prev = r
+            stays = f'{prev}.o' if fallback is None else fallback(f'{prev}.o')
+            return f'(SELECT CASE WHEN {prev}.m THEN {prev}.n ELSE {stays} END FROM {cur})'
+        return _Writer(lambda node: self._bound(node, lambda n: self._w_container(n, body(n))))
+
+    def _w_and(self, parts):
+        """
+        The writer of a conjunction: each of `parts`, (test, creatable,
+        cut, writer), writes in turn, up to the first a cut follows whose
+        test held, where every part tried either holds its test on the
+        node as it was or is `creatable`; else the node stays.
+        """
+        def body(n):
+            stopped = 'FALSE'
+            held = []
+            cur = n
+            for test, creatable, cut, writer in parts:
+                t = 'TRUE' if test is True else test(n)
+                held.append(f'(({stopped}) OR ({t}) OR {"TRUE" if creatable else "FALSE"})')
+                step_stopped = stopped
+                cur = self._bound(cur, lambda x, w=writer, st=step_stopped: (
+                    f'CASE WHEN NOT ({st}) THEN {w(x)} ELSE {x} END'))
+                if cut:
+                    stopped = f'({stopped}) OR ({t})'
+            ok = ' AND '.join(held) or 'TRUE'
+            return self._w_container(n, f'CASE WHEN {ok} THEN {cur} ELSE {n} END')
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _w_first(self, cands, fallback):
+        """
+        The writer of a first-match group: the first of `cands`, (test,
+        writer), whose test holds on the node writes; where none does,
+        `fallback` (None: the node stays).
+        """
+        def body(n):
+            out = n if fallback is None else fallback(n)
+            for test, writer in reversed(cands):
+                held = 'TRUE' if test is True else test(n)
+                out = f'CASE WHEN {held} THEN {writer(n)} ELSE {out} END'
+            return self._w_container(n, out)
+        return _Writer(lambda node: self._bound(node, body))
+
+    def _w_container(self, n, written):
+        """
+        SQL: `written` where the node `n` is a container dotted's update
+        writes in, an object, an array or a string; else failing, as
+        dotted's update fails at a scalar.
+        """
+        return (f"CASE WHEN jsonb_typeof({n}) IN ('object', 'array', 'string') THEN {written} "
+                f"ELSE {self._w_error('a scalar', n)} END")
+
     def _bound(self, node, body):
         """
         SQL `body(n)` with `n` the node, bound once where its SQL is

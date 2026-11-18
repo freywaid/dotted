@@ -28,6 +28,9 @@ _WRITES = [
     'mm.p.role', 'mm.*.role', 'mm.*&role="admin"', 'mm.new.role',
     'nest.a.role', 'nest.b.z.k', 'nest.b.*.role', 'nest.b.new.role',
     's', 'i', 'st', 'st = 1', 'st.x = 5', 's.k', 'i[0]', 'sarr[+?]',
+    'st.(x, y)', 'st.(x#, y)', 'st.(x&w)', 'st.(w, x)?', 'm.(k#, z)', 'm.(z, k)?', 'm.(k#&z)',
+    'ast[(*&x=1#, +)]', 'ast[*].(x, y)', 'mm.(p#, q)', 'nest.b.(z#, y)', 'st.(~x#, x)',
+    'st.z[(0#, +)]',
 ]
 
 _VALUES = ['V', 7, None, True, 1.5, {'x': 9, 'y': 'q'}, [1, 2]]
@@ -95,11 +98,11 @@ def test_build_of_a_write_is_a_dict(kinds):
 
 
 @pytest.mark.parametrize('path', [
-    'st.(x, y)', 'st.(!x)', 'nest.**.role', 'arr[1:2]',
+    'st.(x##, y)', 'st.(!x)', 'nest.**.role', 'arr[1:2]',
 ])
 def test_unsupported_writes_raise(path):
     """
-    Groups, negations, `**` and slices in a write raise, as in sqlize.
+    Soft cuts, negations, `**` and slices in a write raise, as in sqlize.
     """
     with pytest.raises(TranslationError):
         dotted.sparkize(path, flavor='pyspark').as_update(1)

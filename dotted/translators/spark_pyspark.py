@@ -2712,6 +2712,97 @@ def _equals(node, value, written, env):
     return _compared(node, '=', value, env)
 
 
+def _bound(node, fn):
+    """
+    The node `fn` gives of `node`, read once: `fn` gets a node of a
+    lambda's variable that stands for it (see `_let`).
+    """
+    seen = []
+
+    def inner(v):
+        out = fn(_Node(v, node.dtype, node.path, node.there))
+        seen.append(out)
+        return out.col
+    col = _let(node.col, inner)
+    out = seen[0]
+    return out.like(col, out.dtype)
+
+
+def _container(node, write):
+    """
+    `write()` where the node is a container dotted's update writes in, a
+    struct, map, list or str; else failing, as dotted's update fails at
+    a scalar.
+    """
+    if node.kind in ('struct', 'map', 'array', 'string'):
+        return write()
+    return _wfail('a scalar', node)
+
+
+def _or_writer(parts, fallback):
+    """
+    The writer of a disjunction: each of `parts`, (test, cut, writer),
+    writes where its test holds on the node as the parts before it left
+    it, a test of True always; after a part a cut follows that wrote, no
+    other does. Where none wrote, `fallback` writes the node as it was
+    (None: it stays).
+    """
+    def write(n0, env):
+        def step(i, n, stopped, matched):
+            if i == len(parts):
+                stays = n0 if fallback is None else fallback(n0, env)
+                return _chosen(matched, n, stays)
+            test, cut, writer = parts[i]
+            held = _and(_not(stopped), True if test is True else test(n, env))
+            if held is False:
+                return step(i + 1, n, stopped, matched)
+            out = _chosen(held, writer(n, env), n)
+            following = _or(stopped, held) if cut else stopped
+            return _bound(out, lambda m: step(i + 1, m, following, _or(matched, held)))
+        return _container(n0, lambda: step(0, n0, False, False))
+    return _Writer(write)
+
+
+def _and_writer(parts):
+    """
+    The writer of a conjunction: each of `parts`, (test, creatable, cut,
+    writer), writes in turn, up to the first a cut follows whose test
+    held, where every part tried either holds its test on the node as it
+    was or is `creatable`; else the node stays.
+    """
+    def write(n0, env):
+        tests = [True if test is True else test(n0, env) for test, _, _, _ in parts]
+
+        def step(i, n, stopped, ok):
+            if i == len(parts):
+                return _chosen(ok, n, n0)
+            _, creatable, cut, writer = parts[i]
+            held = tests[i]
+            ok = _and(ok, _or(stopped, held, creatable))
+            out = _chosen(_not(stopped), writer(n, env), n)
+            following = _or(stopped, held) if cut else stopped
+            return _bound(out, lambda m: step(i + 1, m, following, ok))
+        return _container(n0, lambda: step(0, n0, False, True))
+    return _Writer(write)
+
+
+def _first_writer(cands, fallback):
+    """
+    The writer of a first-match group: the first of `cands`, (test,
+    writer), whose test holds on the node writes; where none does,
+    `fallback` (None: the node stays).
+    """
+    def write(n, env):
+        def body(m):
+            out = m if fallback is None else fallback(m, env)
+            for test, writer in reversed(cands):
+                held = True if test is True else test(m, env)
+                out = _chosen(held, writer(m, env), out)
+            return out
+        return _container(n, lambda: _bound(n, body))
+    return _Writer(write)
+
+
 class _Update(ColumnFragment):
     """
     A write, not made yet: `build` makes a dict of each column it
@@ -3181,6 +3272,33 @@ class PySparkMixin(Translator):
         The writer of an append slot (`_append_writer`).
         """
         return _append_writer(built, unique, self._wwritten)
+
+    def _w_matches(self, ops):
+        """
+        A write's test that `ops` reach something from a node, as a read
+        walks them.
+        """
+        steps, unbound = self._ops_steps(ops)
+        self._wunbound = _merged(self._wunbound, unbound)
+        return lambda n, env: _exists(n, steps, env)
+
+    def _w_or(self, parts, fallback):
+        """
+        The writer of a disjunction (`_or_writer`).
+        """
+        return _or_writer(parts, fallback)
+
+    def _w_and(self, parts):
+        """
+        The writer of a conjunction (`_and_writer`).
+        """
+        return _and_writer(parts)
+
+    def _w_first(self, cands, fallback):
+        """
+        The writer of a first-match group (`_first_writer`).
+        """
+        return _first_writer(cands, fallback)
 
 
 # ---- Reading ops ----------------------------------------------------

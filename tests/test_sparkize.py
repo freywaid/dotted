@@ -277,14 +277,14 @@ def test_as_update_is_a_fragment():
 
 
 @pytest.mark.parametrize('path', [
-    'data.(a, b)',
+    'data.(a##, b)',
     'data.(!a)',
     'data.**.a',
     'data.a[1:2]',
 ])
 def test_unsupported_writes_raise(path):
     """
-    Groups, negations, `**` and slices in a write raise, as in sqlize.
+    Soft cuts, negations, `**` and slices in a write raise, as in sqlize.
     """
     with pytest.raises(TranslationError):
         sparkize(path).as_update(1)

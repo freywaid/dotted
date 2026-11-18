@@ -3,6 +3,19 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `sqlize` and `sparkize` write through groups, as dotted's `update`
+  does: `(a, b)` writes each branch where it matches, on the node the
+  branches before it wrote, and builds the last concrete one where none
+  does; `(a&b)` writes every branch, where each matches or can be built;
+  `(a, b)?` writes the first that matches; a cut ends the branches after
+  one that matched. So `emails[(*&email="x"#, +)]` writes the email
+  that's there, else appends one, and `(name.~first#, name.first)` sets
+  `first` only where it's missing. A soft cut in a write, and a group at
+  the top of a path, still raise (#75).
+
 ## [0.56.1]
 
 ### Added

@@ -3852,6 +3852,13 @@ Python's `in` tells. For a column path it is the assignments, for an
     >>> args[-1]
     '"admin"'
 
+A group writes as `update` does: `(a, b)` each branch where it
+matches, on the node the branches before it wrote, the last concrete
+one built where none does; `(a&b)` every branch, where each matches or
+can be built; `(a, b)?` the first that matches; and a cut ends the
+branches after one that matched, so `emails[(*&email="x"#, +)]` writes
+the email that's there, else appends one.
+
 A value is a literal, sent as a parameter, or a `Raw` / `Col` SQL
 expression. A transform at the end of the path, `data.user.age|int`,
 applies to a literal value, as dotted's does; on a SQL expression it
@@ -3863,7 +3870,8 @@ Not yet supported (`TranslationError`):
 - Regex keys, `data./prefix_\d+/.field`; references inside pattern
   paths; a `**` with depths or accessors; first filters, `[*&a=1?]`
 - Transforms other than `int`, `float` and `str`, or with arguments
-- In a write: groups, `!`, `**` and slices; a table search
+- In a write: a soft cut, `!`, `**` and slices; a group at the top of
+  a path; a table search
 
 <a id="sqlize-table-search"></a>
 ### `sqlize` table search
@@ -4133,8 +4141,8 @@ A `SQLFragment` carries:
 - Returns a `SQLFragment`: for a column path, the assignments for an
   `UPDATE ... SET`, each column's new value as dotted's `update` writes
   `value` at the path's matches (see *Writes* above). Build it with
-  `r.build`. A table search, and groups, `!`, `**` and slices in the
-  path, raise `TranslationError`.
+  `r.build`. A table search, and a soft cut, `!`, `**` and slices in
+  the path, raise `TranslationError`.
 
 The `Resolver.build(sql, paramstyle='...', **bindings)` classmethod is
 retained as a low-level escape hatch that takes an explicit paramstyle
@@ -4342,6 +4350,13 @@ one. Where Spark can't hold what dotted writes, the job fails, with a
 - a field added to some of a list's structs and not to others;
 - a str written among a map's ints.
 
+A group writes as dotted's `update` does, as in `sqlize`: `(a, b)` each branch where it
+matches, on the node the branches before it wrote, the last concrete
+one built where none does; `(a&b)` every branch, where each matches or
+can be built; `(a, b)?` the first that matches; and a cut ends the
+branches after one that matched, so `emails[(*&email="x"#, +)]` writes
+the email that's there, else appends one.
+
 So does a write where dotted's update raises: a key on a list, an
 index before its start. A slot on a str, which dotted writes, fails
 too for now, as in `sqlize` (#75).
@@ -4390,8 +4405,8 @@ Not yet supported (`TranslationError`):
 - Comparing a `DECIMAL` with a float `Column`; `str()` or a regex of a
   timestamp, whose Python value depends on the session's time zone;
   reading into a binary value
-- In a write: groups, `!`, `**` and slices; a table search; a column
-  the schema lacks
+- In a write: a soft cut, `!`, `**` and slices; a group at the top of
+  a path; a table search; a column the schema lacks
 
 ### API reference
 

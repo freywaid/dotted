@@ -465,13 +465,15 @@ class Hooks:
         return self.other(m, *args)
 
 
-def _branches(group_op, kind):
+def _branches(group_op, kind, whole=False):
     """
     A group of `kind`'s branches, and per branch whether a cut follows
     it and whether a soft cut does. Neither changes anything in a
     first-match group, whose first match ends it anyway. In a
-    conjunction a cut ends the branches: the conjunction holds only
-    where the cut branch matched, and there the cut stops it.
+    conjunction a read ends the branches at a cut: the conjunction holds
+    only where the cut branch matched, and there the cut stops it. A
+    write, `whole`, keeps them and their cuts: it builds a cut branch
+    that doesn't match and goes on.
     """
     branches = []
     cuts = []
@@ -488,10 +490,10 @@ def _branches(group_op, kind):
         softs.append(False)
     if kind == 'first':
         return tuple(branches), (False,) * len(branches), (False,) * len(branches)
-    if kind == 'and' and True in cuts:
+    if kind == 'and' and not whole and True in cuts:
         n = cuts.index(True) + 1
         branches, softs = branches[:n], softs[:n]
-    if kind == 'and':
+    if kind == 'and' and not whole:
         cuts = [False] * len(branches)
     return tuple(branches), tuple(cuts), tuple(softs)
 
@@ -1054,8 +1056,11 @@ class _Write(Hooks):
     def recursive(self, op, t, rest, nop, unwrapped):
         raise TranslationError('** in a write not supported yet')
 
+    def and_group(self, op, *args):
+        return self.group(op, 'and', *_branches(op, 'and', whole=True), *args)
+
     def group(self, op, kind, branches, cuts, softs, t, rest, nop, unwrapped):
-        raise TranslationError('a group in a write not supported yet')
+        return t._write_group(kind, branches, cuts, softs, rest, nop, unwrapped)
 
     def not_group(self, op, t, rest, nop, unwrapped):
         raise TranslationError('a negation in a write not supported yet')
@@ -1631,6 +1636,50 @@ class Translator:
         if kind in ('keys', 'items') or first or test is not None:
             return self._w_each(kind, value, first, test, child, null)
         return self._w_key(kind, value, child, absent, null)
+
+    def _write_group(self, kind, branches, cuts, softs, rest, nop, unwrapped):
+        """
+        The writer of a group at a node, `rest` the ops after it, as
+        dotted's update writes one. A disjunction writes each branch
+        where it matches, the rest after it, on the node as the branches
+        before it left it, a branch with an append slot always, and ends
+        after a branch a cut follows that matched; where none matched,
+        the last concrete branch is written, built as it lacks. A
+        conjunction writes every branch, in turn, where each matches on
+        the node as it was or is a plain path it can build, up to the
+        first a cut follows that matched; else nothing. A first match
+        writes the first branch that appends or, alone, matches; else
+        the last concrete branch.
+        """
+        if any(softs):
+            raise TranslationError('a soft cut in a write not supported yet')
+        pass_nop = nop and not unwrapped
+        parts = []
+        for branch, cut in zip(branches, cuts):
+            way = tuple(branch) + tuple(rest)
+            if not way:
+                continue
+            parts.append((tuple(branch), way, cut))
+        if kind == 'first':
+            cands = [(True if _groups.appends(branch) else self._w_matches(branch),
+                      self._write(way, pass_nop)) for branch, way, _ in parts]
+            return self._w_first(cands, self._w_fallback(parts, pass_nop))
+        if kind == 'and':
+            return self._w_and([(self._w_matches(way), _groups._creatable(list(way)), cut,
+                                 self._write(way, nop)) for _, way, cut in parts])
+        ors = [(True if _groups.appends(branch) else self._w_matches(way), cut,
+                self._write(way, nop)) for branch, way, cut in parts]
+        return self._w_or(ors, self._w_fallback(parts, nop))
+
+    def _w_fallback(self, parts, nop):
+        """
+        The writer of the last concrete branch, as a disjunction writes
+        where none of its branches matched; None where none is concrete.
+        """
+        for _, way, _ in reversed(parts):
+            if _groups._is_concrete_path(list(way)):
+                return self._write(way, nop)
+        return None
 
     def _write_append(self, op, rest, nop, unwrapped):
         """
