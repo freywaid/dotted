@@ -4063,7 +4063,7 @@ registered drivers (built-ins + anything third-party code has added).
 |-----------------|------------------------------|---------------------------------------------------------------------|
 | `.driver`       | `str`                        | Name the resolver was registered under                              |
 | `.paramstyle`   | `str`                        | PEP 249 paramstyle emitted by `.build()`                            |
-| `.cast`         | `bool`                       | Whether `.build()` emits explicit SQL casts in polymorphic contexts |
+| `.cast`         | `bool`                       | Whether `.build()` casts a marker that asks for one; none sqlize makes does |
 | `.select`       | `SQLFragment` \| `None`      | Extraction expression (for pattern paths: ref into `.lateral`)      |
 | `.where`        | `SQLFragment` \| `None`      | Predicate (None for pure traversals)                                |
 | `.from_`        | `SQLFragment` \| `None`      | a table search's FROM: the table, or a group of row steps' rows     |
@@ -4117,10 +4117,20 @@ A `SQLFragment` carries:
 - `**bindings` — values for substitutions, keyed by original
   substitution name.
 
+`r.as_update(value)`
+
+- `value` — a literal, sent as a parameter, or a `Raw` / `Col` SQL
+  expression.
+- Returns a `SQLFragment`: for a column path, the assignments for an
+  `UPDATE ... SET`, each column's new value as dotted's `update` writes
+  `value` at the path's matches (see *Writes* above). Build it with
+  `r.build`. A table search, and groups, `!`, `**` and slices in the
+  path, raise `TranslationError`.
+
 The `Resolver.build(sql, paramstyle='...', **bindings)` classmethod is
 retained as a low-level escape hatch that takes an explicit paramstyle
-and bypasses the driver's cast setting. Normal application code uses
-the instance form above.
+in place of the driver's. Normal application code uses the instance
+form above.
 
 A `ParamStyle` enum is available for the low-level classmethod and
 for introspection. Members are accepted alongside their `.value`
@@ -4129,7 +4139,7 @@ strings at `Resolver.build` — enum members normalize internally:
     >>> dotted.ParamStyle.named, dotted.ParamStyle.dollar_numeric
     (<ParamStyle.named: 'named'>, <ParamStyle.dollar_numeric: 'dollar-numeric'>)
 
-Unsupported features and pattern paths raise `dotted.TranslationError`.
+Unsupported features raise `dotted.TranslationError`.
 
 <a id="spark-translation-sparkize"></a>
 ## Spark Translation (`sparkize`)
