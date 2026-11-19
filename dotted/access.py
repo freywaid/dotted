@@ -102,9 +102,17 @@ class SimpleOp(BaseOp):
         keys since they match at most one item.  Benchmarked as neutral —
         the is_pattern() check costs roughly what the single-item reversal
         saves.  Keeping the simple uniform path for clarity.
+
+        A streaming read's pattern pushes a FrameSource instead: each
+        child is found only as the traversal reaches it.
         """
-        children = list(self.items(frame.node, settings=frame.settings))
-        below = frame.settings.below(frame.node)
+        settings = frame.settings
+        below = settings.below(frame.node)
+        if settings.stream and self.is_pattern():
+            items = self.items(frame.node, settings=settings)
+            stack.push(base.FrameSource(base.child_frames(items, self.concrete, frame.ops, frame.prefix, paths, below)))
+            return ()
+        children = list(self.items(frame.node, settings=settings))
         for k, v in reversed(children):
             cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
             stack.push(base.Frame(frame.ops, v, cp, settings=below))
@@ -389,6 +397,29 @@ class Key(AccessOp):
 
         return _items()
 
+    def _entry_items(self, entries, node, settings):
+        """
+        items() of a streaming read: the (key, value) entries of node
+        whose key the match op takes, through the filters, each drawn
+        only as it is asked for. The match op sees the keys as one
+        stream, as it does in _items, so a first-match op stops drawing
+        at its match; a value waits beside its key until the op answers.
+        """
+        waiting = {}
+
+        def _keys():
+            for k, v in entries:
+                waiting[k] = v
+                yield k
+
+        def _matched():
+            for k in self.op.matches(_keys()):
+                yield (k, waiting.pop(k))
+
+        if not self.filters:
+            return _matched()
+        return base.passing(self.filters, _matched(), settings.below(node))
+
     def _reference_items(self, node, filtered, settings):
         """
         The items of each op this reference resolves to, chained.
@@ -418,6 +449,9 @@ class Key(AccessOp):
         if hasattr(node, 'keys'):
             if filtered and not self.filters and isinstance(self.op, matchers.Const):
                 return self._const_items(node)
+            # a streaming read: one pass over the mapping's own entries
+            if settings.stream and filtered and self.op.is_pattern():
+                return self._entry_items(utils.mapping_entries(node), node, settings)
             keys = self.op.match_keys(node) if filtered else node.keys()
             return self._items(node, keys, filtered, settings)
         # In strict mode, numeric keys never coerce to list indices
@@ -721,6 +755,12 @@ class Slot(Key):
             # explicit super: the compiler gives a cpdef method no __class__ cell
             return super(Slot, self).items(node, filtered=filtered, settings=settings)
 
+        # a streaming read: iterate what can be iterated, an iterator too
+        if settings.stream and filtered and self.is_pattern():
+            entries = utils.entries(node)
+            if entries is not None:
+                return self._entry_items(entries, node, settings)
+
         if not hasattr(node, '__getitem__'):
             return ()
 
@@ -973,6 +1013,25 @@ class SliceFilter(BaseOp):
             if any(True for _ in self.filtered((v,), below)):
                 yield (idx, v)
 
+    def _narrowed(self, node, settings):
+        """
+        node narrowed to the items that pass the filters: a container of
+        its own type or, for a streaming read of a one-shot iterator, a
+        generator that draws from it, as a slice of one is an islice.
+        """
+        below = settings.below(node)
+        if settings.stream and utils.is_stream(node):
+            return self._passing_values(node, below)
+        return type(node)(self.filtered(node, below))
+
+    def _passing_values(self, node, settings):
+        """
+        The items of node that pass the filters, each judged as it is
+        drawn, in node's order.
+        """
+        for _, v in base.passing(self.filters, enumerate(node), settings):
+            yield v
+
     def upsert(self, node, val):
         return self.update(node, None, val)
 
@@ -1015,7 +1074,7 @@ class SliceFilter(BaseOp):
         Push filtered container onto the stack.
         Path segment is [] (Slice) since the filter narrows the whole collection.
         """
-        filtered = type(frame.node)(self.filtered(frame.node, frame.settings.below(frame.node)))
+        filtered = self._narrowed(frame.node, frame.settings)
         cp = frame.prefix + (Slice.concrete(slice(None)),) if paths else frame.prefix
         stack.push(base.Frame(frame.ops, filtered, cp, settings=frame.settings))
         return ()
@@ -1131,7 +1190,23 @@ class Slice(SimpleOp):
             return ()
         return r.keys(node, settings=settings)
     def items(self, node, settings=base.SETTINGS, filtered=True):
+        if settings.stream and utils.is_stream(node):
+            return self._islice_items(node, settings)
         return self._slice_items(node, settings)
+    def _islice_items(self, node, settings):
+        """
+        A streaming read's slice of a one-shot iterator: one value, an
+        islice that draws from it. Nothing, and node untouched, for
+        bounds an iterator cannot be sliced by (utils.islice).
+        """
+        op = self._resolved(node=node, settings=settings) if self.is_reference() else self
+        if op is None:
+            return
+        k = op.slice()
+        sliced = utils.islice(node, k.start, k.stop, k.step)
+        if sliced is None:
+            return
+        yield (k, sliced)
     def _slice_items(self, node, settings):
         for k in self.keys(node, settings=settings):
             try:

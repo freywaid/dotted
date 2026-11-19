@@ -147,8 +147,8 @@ def test_pluck_multi_nested():
 
 def test_pluck_multi_with_patterns():
     d = {'a': 1, 'b': 2, 'c': 3}
-    r = tuple(dotted.pluck_multi(d, ('a', '*')))
-    # pluck_multi deduplicates, so 'a' only appears once
+    r = tuple(dotted.pluck_multi(d, ('a', '*'), unique=True))
+    # unique=True: 'a' only appears once
     assert len(r) == 3
     assert set(k for k, v in r) == {'a', 'b', 'c'}
 

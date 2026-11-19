@@ -48,6 +48,33 @@ add('pluck', 'users.*.score',
     lambda d: dotted.pluck(d, 'users.*.score'))
 add('expand', 'users.*.score',
     lambda d: dotted.expand(d, 'users.*.score'))
+# -- streaming reads, drawn to the end. A one-shot iterator is spent by one
+# read, so a case that reads one makes it anew from the document's list
+
+add('iget', 'users.*.score',
+    lambda d: list(dotted.iget(d, 'users.*.score')))
+add('iget', 'users.*.score',
+    lambda d: list(dotted.iget(d, 'users.*.score')), sizes=CHAINED)
+add('iget', 'users./u1.*/.score',
+    lambda d: list(dotted.iget(d, 'users./u1.*/.score')))
+add('iget', 'rows[*].address.city',
+    lambda d: list(dotted.iget(d, 'rows[*].address.city')))
+add('iget', 'rows[*&active=True].id',
+    lambda d: list(dotted.iget(d, 'rows[*&active=True].id')))
+add('iget', 'rows[*].address.city, rows an iterator',
+    lambda d: list(dotted.iget({'rows': iter(d['rows'])}, 'rows[*].address.city')))
+add('iget', 'rows[*&active=True].id, rows an iterator',
+    lambda d: list(dotted.iget({'rows': iter(d['rows'])}, 'rows[*&active=True].id')))
+add('iget', 'rows[:5][*].id, rows an iterator',
+    lambda d: list(dotted.iget({'rows': iter(d['rows'])}, 'rows[:5][*].id')))
+add('ipluck', 'users.*.score',
+    lambda d: list(dotted.ipluck(d, 'users.*.score')))
+add('ipluck', 'rows[*].address.city, rows an iterator',
+    lambda d: list(dotted.ipluck({'rows': iter(d['rows'])}, 'rows[*].address.city')))
+add('iexpand', 'users.*.score',
+    lambda d: list(dotted.iexpand(d, 'users.*.score')))
+add('iexpand', 'rows[*].address.city, rows an iterator',
+    lambda d: list(dotted.iexpand({'rows': iter(d['rows'])}, 'rows[*].address.city')))
 add('unpack', 'whole document',
     lambda d: dotted.unpack(d))
 add('unpack', 'project=users.*.address',

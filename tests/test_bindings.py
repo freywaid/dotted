@@ -176,23 +176,23 @@ def test_replace_full_resolution():
     assert dotted.replace('$0.$1', ['a', 'b']) == 'a.b'
 
 
-# --- walk ---
+# --- ipluck ---
 
-def test_walk_with_bindings():
+def test_ipluck_with_bindings():
     """
-    walk() resolves template path via bindings.
+    ipluck() resolves template path via bindings.
     """
     data = {'a': {'b': 1, 'c': 2}}
-    result = list(dotted.walk(data, '$(key).*', bindings={'key': 'a'}))
+    result = list(dotted.ipluck(data, '$(key).*', bindings={'key': 'a'}))
     assert result == [('a.b', 1), ('a.c', 2)]
 
 
-def test_walk_template_without_bindings_raises():
+def test_ipluck_template_without_bindings_raises():
     """
-    walk() raises on unresolved template path.
+    ipluck() raises on unresolved template path.
     """
     with pytest.raises(TypeError, match='unresolved template'):
-        list(dotted.walk({}, '$(name).*'))
+        list(dotted.ipluck({}, '$(name).*'))
 
 
 # --- setdefault ---

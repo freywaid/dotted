@@ -101,11 +101,7 @@ class Dotted:
         if utils.is_set_like(obj):
             return frozenset(Dotted._hashable(x) for x in obj)
         if utils.is_dict_like(obj):
-            if hasattr(obj, 'items') and callable(obj.items):
-                iterable = obj.items()
-            else:
-                iterable = ((k, obj[k]) for k in obj)
-            return tuple(sorted((k, Dotted._hashable(v)) for k, v in iterable))
+            return tuple(sorted((k, Dotted._hashable(v)) for k, v in utils.mapping_entries(obj)))
         return obj
     def __hash__(self):
         if self._hash is None:

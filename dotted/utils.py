@@ -1,6 +1,7 @@
 """
 Shared type-checking helpers (duck-typing).
 """
+import itertools
 import re
 
 try:
@@ -136,14 +137,83 @@ def is_list_like(node):
     )
 
 
+def unique_by(iterable, key=None):
+    """
+    The items of iterable, lazily, each once: the first with a given key,
+    the item itself when key is None.
+    """
+    seen = set()
+    for item in iterable:
+        k = item if key is None else key(item)
+        if k in seen:
+            continue
+        seen.add(k)
+        yield item
+
+
+def is_iterator(node):
+    """
+    True if node is a one-shot iterator (a generator, map, cursor): it
+    has __next__.
+    """
+    return hasattr(node, '__next__')
+
+
+def is_stream(node):
+    """
+    True if node can only be read by drawing from it: an iterator with
+    no __getitem__.
+    """
+    return is_iterator(node) and not hasattr(node, '__getitem__')
+
+
 def is_set_like(node):
     """
-    True if node is set-like: iterable, no __getitem__.
+    True if node is set-like: iterable, no __getitem__, and not an
+    iterator, which reading would consume.
     """
     return (
         hasattr(node, '__iter__')
         and not hasattr(node, '__getitem__')
+        and not is_iterator(node)
     )
+
+
+def mapping_entries(node):
+    """
+    The (key, value) pairs of a dict-like, lazily: its own items() when
+    it has one, else each key it iterates with the value looked up.
+    """
+    if hasattr(node, 'items') and callable(node.items):
+        return node.items()
+    return ((k, node[k]) for k in node)
+
+
+def entries(node):
+    """
+    node as a lazy stream of (key, value) entries, by its interface, or
+    None when it has none to iterate: a dict-like's mapping_entries, and
+    for a sequence or an iterator each item under its position. A set
+    has no positions, and str and bytes are read by index.
+    """
+    if is_dict_like(node):
+        return mapping_entries(node)
+    if isinstance(node, (str, bytes)) or not hasattr(node, '__iter__'):
+        return None
+    if is_set_like(node):
+        return None
+    return enumerate(node)
+
+
+def islice(node, start, stop, step):
+    """
+    itertools.islice that fails safely: None, with node untouched, for
+    bounds an iterator cannot be sliced by (a negative bound or step).
+    """
+    try:
+        return itertools.islice(node, start, stop, step)
+    except (ValueError, TypeError):
+        return None
 
 
 def is_terminal(node):

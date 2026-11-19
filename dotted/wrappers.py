@@ -577,10 +577,15 @@ class ValueGuard(Wrap):
         FrameSource, so each is found only as the traversal reaches it.
         """
         if not self.inner.is_recursive():
-            children = list(self.items(frame.node, settings=frame.settings))
-            for k, v in reversed(children):
+            settings = frame.settings
+            items = self.items(frame.node, settings=settings)
+            # a streaming read's pattern: each child as the traversal reaches it
+            if settings.stream and self.is_pattern():
+                stack.push(base.FrameSource(base.child_frames(items, self.concrete, frame.ops, frame.prefix, paths, settings)))
+                return ()
+            for k, v in reversed(list(items)):
                 cp = frame.prefix + (self.concrete(k),) if paths else frame.prefix
-                stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
+                stack.push(base.Frame(frame.ops, v, cp, settings=settings))
             return ()
         matches = self._guarded(frame.node, paths, frame.prefix, frame.settings)
         stack.push(base.FrameSource(base.frames_of(matches, frame.ops, frame.settings)))
@@ -828,33 +833,17 @@ class FilterWrap(Wrap):
 
     def items(self, node, settings=base.SETTINGS):
         """
-        Apply filters to the inner items stream, preserving stream
-        semantics (e.g. first-match filters only yield the first hit).
+        The inner items whose values pass the filters, each judged as
+        it is drawn (base.passing): a generator chain, so a first-match
+        filter yields its first hit and draws no further.
         """
-        pairs = list(self.inner.items(node, settings=settings))
-        return iter(self._passing(pairs, settings.below(node)))
+        return base.passing(self.filters, self.inner.items(node, settings=settings), settings.below(node))
 
     def _passing(self, pairs, settings):
         """
         The (x, value) pairs whose values pass the filters, in order.
         """
-        for f in self.filters:
-            vals = [v for _, v in pairs]
-            filtered_vals = list(f.filtered(iter(vals), settings))
-            # Build a set of object ids that survived filtering.
-            # Use a counter to handle duplicate objects correctly.
-            surviving = {}
-            for v in filtered_vals:
-                vid = id(v)
-                surviving[vid] = surviving.get(vid, 0) + 1
-            new_pairs = []
-            for k, v in pairs:
-                vid = id(v)
-                if surviving.get(vid, 0) > 0:
-                    new_pairs.append((k, v))
-                    surviving[vid] -= 1
-            pairs = new_pairs
-        return pairs
+        return list(base.passing(self.filters, pairs, settings))
 
     def values(self, node, settings=base.SETTINGS):
         return (v for _, v in self.items(node, settings=settings))
@@ -912,10 +901,15 @@ class FilterWrap(Wrap):
             for cp, v, terminal in reversed(matches):
                 stack.push(base.Frame(() if terminal else frame.ops, v, cp, settings=frame.settings))
             return ()
-        children = list(self.items(frame.node, settings=frame.settings))
-        for k, v in reversed(children):
+        settings = frame.settings
+        items = self.items(frame.node, settings=settings)
+        # a streaming read's pattern: each child as the traversal reaches it
+        if settings.stream and self.is_pattern():
+            stack.push(base.FrameSource(base.child_frames(items, self.inner.concrete, frame.ops, frame.prefix, paths, settings)))
+            return ()
+        for k, v in reversed(list(items)):
             cp = frame.prefix + (self.inner.concrete(k),) if paths else frame.prefix
-            stack.push(base.Frame(frame.ops, v, cp, settings=frame.settings))
+            stack.push(base.Frame(frame.ops, v, cp, settings=settings))
         return ()
 
     def resolve(self, bindings, partial=False):

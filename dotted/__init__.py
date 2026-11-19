@@ -33,7 +33,6 @@ build(obj, path)        Build default structure for path
 pack(pathvalues)        Build object from path-value pairs
 pluck(obj, pattern)     Extract (path, value) pairs
 ipluck(obj, pattern)    Yield (path, value) pairs (lazy)
-walk(obj, pattern)      Alias of ipluck
 unpack(obj)             Extract to dotted normal form
 keys(obj)               Dotted paths of obj
 values(obj)             Leaf values of obj
@@ -71,14 +70,14 @@ from .api import \
     register, transform, set_resolver, get_resolver, \
     assemble, assemble_multi, \
     build, build_multi, \
-    expand, expand_multi, iexpand, \
+    expand, expand_multi, iexpand, iexpand_multi, \
     match, match_multi, replace, overlaps, translate, translate_multi, \
     apply, apply_multi, \
-    get, get_multi, getter, iget, \
+    get, get_multi, getter, iget, iget_multi, \
     has, setdefault, setdefault_multi, \
     update, update_multi, pack, update_if, update_if_multi, \
     remove, remove_multi, remove_if, remove_if_multi, \
-    pluck, pluck_multi, ipluck, walk, walk_multi, unpack, keys, values, items
+    pluck, pluck_multi, ipluck, ipluck_multi, unpack, keys, values, items
 from .translators import sqlize, sparkize, TranslationError, SQLFragment, Resolver, ParamStyle, ParamPool
 # the run-time reference resolver; sqlize's Resolver, above, has the plain name
 from .base import Resolver as ReferenceResolver, UnresolvedReference
@@ -88,11 +87,11 @@ __all__ = [
     'get', 'getter', 'iget', 'update', 'remove', 'has', 'setdefault',
     'ReferenceResolver', 'UnresolvedReference', 'set_resolver', 'get_resolver',
     # Multi
-    'get_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
+    'get_multi', 'iget_multi', 'update_multi', 'pack', 'update_if', 'update_if_multi', 'remove_multi', 'remove_if', 'remove_if_multi', 'setdefault_multi',
     # Pattern
-    'match', 'match_multi', 'replace', 'overlaps', 'translate', 'translate_multi', 'expand', 'expand_multi', 'iexpand',
+    'match', 'match_multi', 'replace', 'overlaps', 'translate', 'translate_multi', 'expand', 'expand_multi', 'iexpand', 'iexpand_multi',
     # Build/Pluck
-    'build', 'build_multi', 'pluck', 'pluck_multi', 'ipluck', 'walk', 'walk_multi', 'unpack', 'keys', 'values', 'items',
+    'build', 'build_multi', 'pluck', 'pluck_multi', 'ipluck', 'ipluck_multi', 'unpack', 'keys', 'values', 'items',
     # Transform
     'apply', 'apply_multi', 'register', 'transform',
     # Utility

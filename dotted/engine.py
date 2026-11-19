@@ -162,13 +162,14 @@ def simple_get(chain, node, strict=False):
     return node
 
 
-def values(ops, node, strict=False, settings=None, transforms=True, resolver=None, default=None):
+def values(ops, node, strict=False, settings=None, transforms=True, resolver=None, default=None, stream=False):
     """
     Yield the value of every match. transforms=False skips the ops'
     transforms (apply_transforms=False); default is what an aligned (+)
-    match yields when the rest of the path finds nothing.
+    match yields when the rest of the path finds nothing; stream is
+    walk's.
     """
-    for path, val in walk(ops, node, False, strict, settings, transforms, resolver, default):
+    for path, val in walk(ops, node, False, strict, settings, transforms, resolver, default, stream):
         yield val
 
 
@@ -235,25 +236,27 @@ def aligned(op, stack, frame, paths):
     return found
 
 
-def settings_for(ops, node, strict, settings, transforms=True, resolver=None, default=None):
+def settings_for(ops, node, strict, settings, transforms=True, resolver=None, default=None, stream=False):
     """
     The Settings a traversal of `ops` from `node` runs under: the ones
     passed in when this is a traversal within another, else new ones.
     """
     if settings is not None:
         return settings
-    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms, resolver, default)
+    return base.Settings(node, strict, () if _needs_parents(ops) else None, transforms, resolver, default, stream)
 
 
-def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, resolver=None, default=None):
+def walk(ops, node, paths=True, strict=False, settings=None, transforms=True, resolver=None, default=None, stream=False):
     """
     Yield (path_tuple, value) for all matches.
     path_tuple is a tuple of concrete ops when paths=True, None when paths=False.
     transforms=False skips the ops' transforms (apply_transforms=False);
     resolver is the traversal's, else the process default; default is
     what an aligned (+) match yields when the rest of the path finds nothing.
+    stream=True is a streaming read (see base.Settings): a pattern
+    iterates the node it reads, so a one-shot iterator is read too.
     """
-    settings = settings_for(ops, node, strict, settings, transforms, resolver, default)
+    settings = settings_for(ops, node, strict, settings, transforms, resolver, default, stream)
     stack = base.DepthStack()
     stack.push(base.Frame(tuple(ops), node, (), settings=settings))
     yield from process(stack, paths)
@@ -314,9 +317,9 @@ def removes(ops, node, val=base.ANY, nop=False, strict=False, settings=None, res
     return cur.do_remove(ops, node, val, nop, settings=settings)
 
 
-def expands(ops, node, strict=False, settings=None, resolver=None):
+def expands(ops, node, strict=False, settings=None, resolver=None, stream=False):
     """
     Yield Dotted objects for all matched paths. Thin wrapper around walk().
     """
-    for path, val in walk(ops, node, True, strict, settings, False, resolver):
+    for path, val in walk(ops, node, True, strict, settings, False, resolver, None, stream):
         yield Dotted({'ops': path})

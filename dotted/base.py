@@ -352,18 +352,23 @@ class Settings:
     """
     What holds for the whole of one traversal: the root node, the chain of
     parents when a reference needs it, strict, whether transforms apply,
-    and the resolver references go to. Made once by the engine and passed
-    down every call; see SETTINGS for calls made without one.
+    the resolver references go to, and whether it is a streaming read.
+    Made once by the engine and passed down every call; see SETTINGS for
+    calls made without one.
     """
-    __slots__ = ('root', 'parents', 'strict', 'transforms', 'resolver', 'default')
+    __slots__ = ('root', 'parents', 'strict', 'transforms', 'resolver', 'default', 'stream')
 
-    def __init__(self, root, strict=False, parents=None, transforms=True, resolver=None, default=None):
+    def __init__(self, root, strict=False, parents=None, transforms=True, resolver=None, default=None, stream=False):
         self.root = root
         self.parents = parents
         self.strict = strict
         self.transforms = transforms  # False: apply_transforms=False, ops' transforms are skipped
         self.resolver = resolver  # None: the process default, RESOLVER, read when used
         self.default = default  # what an aligned (+) match yields when the rest of the path finds nothing
+        # True: a streaming read (iget, ipluck, iexpand). A pattern reads a
+        # node by iterating it, one match at a time, so a one-shot iterator
+        # is read as it is drawn and never held
+        self.stream = stream
 
     def below(self, node):
         """
@@ -372,7 +377,7 @@ class Settings:
         """
         if self.parents is None:
             return self
-        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver, self.default)
+        return Settings(self.root, self.strict, (node,) + self.parents, self.transforms, self.resolver, self.default, self.stream)
 
     def resolving(self):
         """
@@ -466,6 +471,26 @@ def frames_of(matches, ops, settings):
     """
     for cp, v, terminal in matches:
         yield Frame(() if terminal else ops, v, cp, settings=settings)
+
+
+def passing(filters, pairs, settings):
+    """
+    The (key, value) pairs whose value passes every one of filters, as a
+    generator chain: each pair is judged as it is drawn (FilterOp.passing).
+    """
+    for f in filters:
+        pairs = f.passing(pairs, settings)
+    return pairs
+
+
+def child_frames(items, concrete, ops, prefix, paths, settings):
+    """
+    A Frame for each (key, value) item of an op, as a FrameSource draws
+    them: a streaming read's children, found one at a time. concrete
+    makes the path segment of a key.
+    """
+    for k, v in items:
+        yield Frame(ops, v, prefix + (concrete(k),) if paths else prefix, settings=settings)
 
 
 class DepthStack:

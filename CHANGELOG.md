@@ -3,6 +3,42 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- Streaming reads: `iget`, `ipluck` and `iexpand` read through a one-shot
+  iterator (a generator, a `map`, a cursor). A pattern iterates what it
+  reads and yields one match at a time, drawing from the iterator only as
+  far as it is asked: `iget({'rows': gen}, 'rows[*&x=1].y')`. A dict-like
+  is read through its own `items()`, a sequence or iterator through its
+  `__iter__`. A slice of an iterator is an `islice` of it and a slice
+  filter of one a generator, read with a following `[*]`. An index, or a
+  slice from the end, does not match an iterator and does not draw from
+  it. An iterator is read once: a path that reaches it twice finds it
+  empty the second time.
+- `iget_multi`, `ipluck_multi` and `iexpand_multi`, the streaming forms of
+  `get_multi`, `pluck_multi` and `expand_multi`. `iget_multi` is flat:
+  every match of every path in one stream.
+- `iter` as a type restriction name, a one-shot iterator: `*:!iter`.
+
+### Changed (breaking)
+- `unique=False` replaces `duplicates=False` on `pluck`, `expand`, their
+  `i` and `_multi` forms: every match is yielded, and
+  `unique=True` gives each path once. `pluck` and `expand` no longer
+  dedup by default. `duplicates=` is removed.
+- `iget`, `ipluck` and `iexpand` read through an iterator, which yielded
+  nothing before. `get`, `has`, `pluck`, `expand` and the writes are
+  unchanged, and never draw from one.
+- `walk` and `walk_multi` are removed: call `ipluck` and `ipluck_multi`.
+
+### Fixed
+- An iterator is no longer taken for a set: a set pattern in a value
+  guard no longer matches, and so consumes, a generator.
+- An OR filter keeps an object that sits at several positions of a
+  list at each of them. It tracked matches by identity, so
+  `get([d, d], '[*&x=1,x=2]')` gave `d` once, the slice filter
+  `[x=1,x=2]` likewise, and `remove` left the repeats behind.
+
 ## [0.56.2]
 
 ### Added

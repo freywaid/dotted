@@ -35,6 +35,7 @@ cdef class Settings:
     cdef public object transforms
     cdef public object resolver
     cdef public object default
+    cdef public object stream
 
     cpdef below(self, node)
 

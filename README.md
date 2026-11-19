@@ -51,6 +51,7 @@ For faster `mutable=False` updates and removes, install the
 - [Breaking Changes](#breaking-changes)
 - [API](#api)
   - [Get](#get)
+  - [Streaming reads](#streaming-reads)
   - [Update](#update)
   - [Remove](#remove)
   - [Match](#match)
@@ -62,7 +63,7 @@ For faster `mutable=False` updates and removes, install the
   - [Mutable](#mutable)
   - [Setdefault](#setdefault)
   - [Pluck](#pluck)
-  - [Walk](#walk)
+  - [Ipluck](#ipluck)
   - [Unpack](#unpack)
   - [Pack](#pack)
   - [Keys, Values, Items](#keys-values-items)
@@ -229,6 +230,19 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
+### Unreleased
+- **`pluck` and `expand` no longer dedup by default.** `unique=False`
+  replaces `duplicates=False` on `pluck`, `expand` and their `i` and `_multi`
+  forms: a path a pattern reaches twice is yielded twice.
+  Pass `unique=True` for each path once; `duplicates=` is gone and raises
+  `TypeError`. See [Pluck](#pluck).
+- **`iget`, `ipluck` and `iexpand` are streaming reads.** A pattern
+  iterates what it reads, so they read through a one-shot iterator, which
+  yielded nothing before. See [Streaming reads](#streaming-reads).
+- **`walk` and `walk_multi` are removed.** They were other names for
+  `ipluck` and `pluck_multi`; call `ipluck` and `ipluck_multi`. See
+  [Ipluck](#ipluck).
+
 ### v0.56.0
 - **`sparkize`'s `build` takes the DataFrame's schema.** A path reads
   each node by its type, so `r.build(fragment, schema=df.schema)`;
@@ -242,7 +256,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - **`walk` dedups.** It is now `ipluck`, and `walk_multi` is `pluck_multi`,
   so a path a pattern reaches twice is yielded once, as `pluck` does:
   `walk({'a': 1, 'b': 2}, '(a,*)')` yields `('a', 1)`, `('b', 2)`. Pass
-  `duplicates=True` for the old behavior. See [Walk](#walk).
+  `duplicates=True` for the old behavior. See [Ipluck](#ipluck).
 
 ### v0.53.0
 - **`!` negates the whole path.** `!(metadata.*)` yields everything
@@ -445,6 +459,70 @@ so the caller never has to ask which kind of path it holds.
     [1]
     >>> list(dotted.iget({'a': 1}, 'b', default=0))
     [0]
+
+<a id="streaming-reads"></a>
+### Streaming reads
+
+`iget`, `ipluck` and `iexpand`, and their `_multi` forms, are **streaming
+reads**. Where `get` looks items up (`__getitem__`), a streaming read's
+pattern iterates what it reads and yields one match at a time. So it reads
+through a one-shot iterator too (a generator, a `map`, a cursor), drawing
+from it only as far as it is asked:
+
+    >>> rows = iter([{'x': 1, 'y': 'a'}, {'x': 2, 'y': 'b'}, {'x': 1, 'y': 'c'}])
+    >>> list(dotted.iget({'rows': rows}, 'rows[*&x=1].y'))
+    ['a', 'c']
+
+`get`, `has`, `pluck`, `expand` and the writes never read an iterator: to
+them it is a value like any other, and it is left untouched.
+
+    >>> rows = iter([{'y': 1}, {'y': 2}])
+    >>> dotted.get({'rows': rows}, 'rows[*].y')
+    ()
+    >>> list(rows)
+    [{'y': 1}, {'y': 2}]
+
+A slice of an iterator is an `islice` of it, one value, as a slice of a list
+is a list; `[*]` then reads it, no further than the slice's bound. A slice
+filter of one is likewise a generator of the items that pass.
+
+    >>> list(dotted.iget({'rows': iter([1, 2, 3, 4])}, 'rows[:2][*]'))
+    [1, 2]
+    >>> list(dotted.iget({'rows': iter([{'x': 1}, {'x': 2}])}, 'rows[x=2][*].x'))
+    [2]
+
+What an iterator cannot answer does not match: an index (`rows[0]`), or a
+slice from its end (`rows[-2:]`, `rows[::-1]`). It is not drawn from.
+
+    >>> list(dotted.iget({'rows': iter([1, 2])}, 'rows[0]', default='none'))
+    ['none']
+
+`ipluck` and `iexpand` number an iterator's items by position, the paths a
+list of the same items would have, so `pack` rebuilds from the pairs:
+
+    >>> rows = iter([{'y': 1}, {'y': 2}])
+    >>> list(dotted.ipluck({'rows': rows}, 'rows[*].y'))
+    [('rows[0].y', 1), ('rows[1].y', 2)]
+
+An iterator is read once. A path that reaches the same one twice finds it
+empty the second time, so group below it, not across it:
+
+    >>> rows = lambda: iter([{'a': 1, 'b': 2}, {'a': 3, 'b': 4}])
+    >>> list(dotted.iget({'rows': rows()}, 'rows[*](.a, .b)'))
+    [1, 2, 3, 4]
+    >>> list(dotted.iget({'rows': rows()}, '(rows[*].a, rows[*].b)'))
+    [1, 3]
+
+A dict-like is read through its own `items()`, in one pass, when it has
+one, else through each key it iterates; a sequence or iterator through its
+`__iter__`; anything else by index, as `get` reads it. For a lazy mapping
+of your own, a lazy `items()` is the interface to implement.
+
+`iget_multi` reads several paths as one flat stream of values:
+
+    >>> d = {'name': 'orders', 'rows': iter([{'y': 1}, {'y': 2}])}
+    >>> list(dotted.iget_multi(d, ['name', 'rows[*].y']))
+    ['orders', 1, 2]
 
 <a id="update"></a>
 ### Update
@@ -774,13 +852,14 @@ Expand a pattern into all matching paths in an object.
     >>> dotted.expand(d, '*.*[1:]')
     ('hello.there[1:]',)
 
-A path the pattern reaches more than once is given once; pass
-`duplicates=True` to keep each. `iexpand` is `expand` as a generator.
+A path the pattern reaches more than once is given each time; pass
+`unique=True` for each path once. `iexpand` is `expand` as a generator, and
+a [streaming read](#streaming-reads).
 
     >>> dotted.expand(d, '(bye,*)')
-    ('bye', 'hello')
-    >>> dotted.expand(d, '(bye,*)', duplicates=True)
     ('bye', 'hello', 'bye')
+    >>> dotted.expand(d, '(bye,*)', unique=True)
+    ('bye', 'hello')
     >>> list(dotted.iexpand(d, '*'))
     ['hello', 'bye']
 
@@ -868,20 +947,20 @@ Extract (path, value) pairs from an object matching a pattern.
     >>> dotted.pluck(d, 'nested.*')
     (('nested.x', 10),)
 
-A path the pattern reaches more than once is given once; pass
-`duplicates=True` to keep each.
+A path the pattern reaches more than once is given each time; pass
+`unique=True` for each path once.
 
     >>> dotted.pluck(d, '(a,*)')
-    (('a', 1), ('b', 2), ('nested', {'x': 10}))
-    >>> dotted.pluck(d, '(a,*)', duplicates=True)
     (('a', 1), ('a', 1), ('b', 2), ('nested', {'x': 10}))
+    >>> dotted.pluck(d, '(a,*)', unique=True)
+    (('a', 1), ('b', 2), ('nested', {'x': 10}))
 
-<a id="walk"></a>
-### Walk
+<a id="ipluck"></a>
+### Ipluck
 
 `ipluck` is `pluck` as a generator — it yields `(path, value)` pairs without
 materializing the full result, for a concrete path as for a pattern. Useful
-for streaming or large structures. `walk` is another name for it.
+for streaming or large structures: it is a [streaming read](#streaming-reads).
 
     >>> import dotted
     >>> d = {'a': {'b': 1, 'c': 2}, 'x': 3}
@@ -889,7 +968,7 @@ for streaming or large structures. `walk` is another name for it.
     [('a.b', 1), ('a.c', 2)]
     >>> list(dotted.ipluck(d, 'a.b'))
     [('a.b', 1)]
-    >>> for path, val in dotted.walk(d, '*'):
+    >>> for path, val in dotted.ipluck(d, '*'):
     ...     print(f'{path} = {val}')
     a = {'b': 1, 'c': 2}
     x = 3
@@ -1089,8 +1168,9 @@ produce `[]`.
 
 Most operations have `*_multi` variants for batch processing:
 
-**Note:** The read-side `_multi` APIs — `get_multi`, `match_multi`, `expand_multi`,
-`pluck_multi`, `walk_multi`, `translate_multi`, `assemble_multi`, and
+**Note:** The read-side `_multi` APIs — `get_multi`, `iget_multi`, `match_multi`,
+`expand_multi`, `iexpand_multi`, `pluck_multi`, `ipluck_multi`,
+`translate_multi`, `assemble_multi`, and
 `setdefault_multi` — return a **generator**, not a list or tuple. Consume with
 `list()` / `tuple()` / `for`. The write-side `_multi` APIs (`update_multi`,
 `remove_multi`, `build_multi`, `apply_multi`, etc.) return the mutated object.
@@ -1117,7 +1197,8 @@ before a full traversal completes.
 
 Available multi operations: `get_multi`, `update_multi`, `update_if_multi`, `remove_multi`,
 `remove_if_multi`, `setdefault_multi`, `match_multi`, `expand_multi`, `apply_multi`,
-`build_multi`, `pluck_multi`, `walk_multi`, `assemble_multi`.
+`build_multi`, `pluck_multi`, `assemble_multi`, and the streaming `iget_multi`,
+`iexpand_multi`, `ipluck_multi`.
 
 <a id="strict-mode"></a>
 ### Strict Mode
@@ -1617,7 +1698,7 @@ See [Replace](#replace) and [Translate](#translate) for full API details.
 <a id="template-bindings"></a>
 ### Template bindings
 
-All traversal APIs — `get`, `update`, `remove`, `has`, `walk`, `expand`, `pluck`,
+All traversal APIs — `get`, `update`, `remove`, `has`, `ipluck`, `expand`, `pluck`,
 `apply`, `build`, `mutable`, `setdefault`, and their multi variants — accept a
 `bindings=` keyword argument to resolve template paths inline:
 
@@ -1982,7 +2063,8 @@ Here `*:dict` keeps the values that are dicts, and `.*` continues into them.
 The list and string are dropped.
 
 Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
-`set`, `frozenset`, `bool`.
+`set`, `frozenset`, `bool`, and `iter`, a one-shot iterator (a generator, a
+`map`, a cursor).
 
 <a id="positive-restrictions"></a>
 ### Positive restrictions
@@ -2454,7 +2536,7 @@ aggregate over the item:
     >>> dotted.get(d, 'items[*&(p[*];)|len=0]')
     ({'p': []},)
 
-A pack is its own path segment: `walk` and `expand` give it back as
+A pack is its own path segment: `ipluck` and `expand` give it back as
 written, `(a.*;)|sum`. There is nothing under a tuple of matches to write
 to, so `update` and `remove` through a pack raise `ValueError`, and a pack
 cannot be negated. `;` is a reserved character; quote a key that contains

@@ -4,6 +4,7 @@ Main api
 import enum
 import functools
 import itertools
+import operator
 import threading
 import pyparsing as pp
 from . import grammar
@@ -527,9 +528,10 @@ def _get_setup(path, bindings, resolver):
     return ops, chain
 
 
-def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, strict, resolver):
+def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, strict, resolver, stream=False):
     """
-    A read of obj through ops, set up by _get_setup.
+    A read of obj through ops, set up by _get_setup. stream=True is a
+    streaming read (see engine.walk).
     """
     if chain is not None:
         val = engine.simple_get(chain, obj, strict=strict)
@@ -542,7 +544,7 @@ def _get_read(obj, ops, chain, default, pattern_default, apply_transforms, stric
                 return ops.apply(val, base.Settings(obj, strict, resolver=resolver))
             except base.UnresolvedReference:
                 return default
-    found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default))
+    found = tuple(engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default, stream=stream))
     if not is_pattern(ops):
         return found[0] if found else default
     return found if found else pattern_default
@@ -554,18 +556,45 @@ def iget(obj, path, default=None, apply_transforms=True, strict=False, bindings=
     pattern yields each match; a concrete path yields its one value, or
     default when it is missing. Nothing is read until the first next().
 
+    A streaming read: a pattern iterates what it reads, one match at a
+    time, so it reads through a one-shot iterator (a generator, a map, a
+    cursor) too, drawing from it only as far as it is asked. A slice of
+    one is an islice of it. What an iterator cannot answer, an index or
+    a slice from its end, does not match.
+
     >>> list(iget([{'a': 1}, {'a': 2}], '[*].a'))
     [1, 2]
     >>> list(iget({'a': 1}, 'a'))
     [1]
     >>> list(iget({'a': 1}, 'b', default=0))
     [0]
+    >>> list(iget({'rows': iter([{'x': 1, 'y': 5}, {'x': 2, 'y': 6}])}, 'rows[*&x=2].y'))
+    [6]
+    >>> list(iget({'rows': iter([1, 2, 3])}, 'rows[:2][*]'))
+    [1, 2]
     """
     ops, chain = _get_setup(path, bindings, resolver)
     if not is_pattern(ops):
-        yield _get_read(obj, ops, chain, default, (), apply_transforms, strict, resolver)
+        yield _get_read(obj, ops, chain, default, (), apply_transforms, strict, resolver, True)
         return
-    yield from engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default)
+    yield from engine.values(ops, obj, strict=strict, resolver=resolver, transforms=apply_transforms, default=default, stream=True)
+
+
+def iget_multi(obj, iterable, apply_transforms=True, strict=False, bindings=None, resolver=None):
+    """
+    Like get_multi, but as streaming reads (see iget), flat: every match
+    of every path in iterable, in one stream. A concrete path that is
+    missing yields nothing.
+
+    >>> d = {'name': 'orders', 'rows': iter([{'y': 1}, {'y': 2}])}
+    >>> list(iget_multi(d, ['name', 'rows[*].y', 'nope']))
+    ['orders', 1, 2]
+    """
+    dummy = object()
+    for path in iterable:
+        for val in iget(obj, path, dummy, apply_transforms=apply_transforms, strict=strict, resolver=resolver, bindings=bindings):
+            if val is not dummy:
+                yield val
 
 
 def getter(path, default=None, pattern_default=(), apply_transforms=True, strict=False, bindings=None, resolver=None):
@@ -1157,45 +1186,66 @@ def assemble(segments):
     return next(assemble_multi((segments,)))
 
 
-def expand_multi(obj, patterns, duplicates=False, strict=False, bindings=None, resolver=None):
+def expand_multi(obj, patterns, unique=False, strict=False, bindings=None, resolver=None):
     """
-    Yield the paths that match any of `patterns` in `obj`, each once
-    unless duplicates=True.
+    Yield the paths that match any of `patterns` in `obj`: every match,
+    or each path once with unique=True.
 
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
     >>> list(expand_multi(d, ('hello', '*')))
-    ['hello', 'bye', '9', "'9'"]
-    >>> list(expand_multi(d, ('hello', '*'), duplicates=True))
     ['hello', 'hello', 'bye', '9', "'9'"]
+    >>> list(expand_multi(d, ('hello', '*'), unique=True))
+    ['hello', 'bye', '9', "'9'"]
     """
-    seen = {}
+    return _expanded(obj, patterns, unique, strict, bindings, resolver, False)
+
+
+def iexpand_multi(obj, patterns, unique=False, strict=False, bindings=None, resolver=None):
+    """
+    Like expand_multi, but as streaming reads (see iget): an item drawn
+    from a one-shot iterator is numbered by its position.
+
+    >>> list(iexpand_multi({'rows': iter([{'y': 1}, {'y': 2}])}, ('rows[*].y',)))
+    ['rows[0].y', 'rows[1].y']
+    """
+    return _expanded(obj, patterns, unique, strict, bindings, resolver, True)
+
+
+def _expanded(obj, patterns, unique, strict, bindings, resolver, stream):
+    """
+    What expand_multi and iexpand_multi yield: stream=True as streaming
+    reads (see engine.walk).
+    """
+    found = _expansions(obj, patterns, strict, bindings, resolver, stream)
+    if not unique:
+        return found
+    return utils.unique_by(found)
+
+
+def _expansions(obj, patterns, strict, bindings, resolver, stream):
+    """
+    Every path each of `patterns` matches in `obj`, a repeat included.
+    """
     for pat in patterns:
         ops = _prepare(parse(pat, bindings=bindings, partial=False, resolver=resolver), resolver)
-        paths = (o.assemble() for o in engine.expands(ops, obj, strict=strict, resolver=resolver))
-        if duplicates:
-            yield from paths
-            continue
-        for found in paths:
-            if found in seen:
-                continue
-            seen[found] = None
-            yield found
+        for found in engine.expands(ops, obj, strict=strict, resolver=resolver, stream=stream):
+            yield found.assemble()
 
 
-def iexpand(obj, pattern, duplicates=False, strict=False, bindings=None, resolver=None):
+def iexpand(obj, pattern, unique=False, strict=False, bindings=None, resolver=None):
     """
-    Like expand, but as a generator.
+    Like expand, but as a generator, and a streaming read (see iget).
 
     >>> list(iexpand({'a': 1, 'b': 2}, '*'))
     ['a', 'b']
     """
-    return expand_multi(obj, (pattern,), duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings)
+    return iexpand_multi(obj, (pattern,), unique=unique, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def expand(obj, pattern, duplicates=False, strict=False, bindings=None, resolver=None):
+def expand(obj, pattern, unique=False, strict=False, bindings=None, resolver=None):
     """
-    Return all paths that match `pattern` in `obj`, each once unless
-    duplicates=True.
+    Return all paths that match `pattern` in `obj`: every match, or each
+    path once with unique=True.
     >>> d = {'hello': {'there': [1, 2, 3]}, 'bye': 7, 9: 'nine', '9': 'not nine'}
     >>> expand(d, '*')
     ('hello', 'bye', '9', "'9'")
@@ -1206,7 +1256,7 @@ def expand(obj, pattern, duplicates=False, strict=False, bindings=None, resolver
     >>> expand(d, '*.*[1:]')
     ('hello.there[1:]',)
     """
-    return tuple(iexpand(obj, pattern, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
+    return tuple(expand_multi(obj, (pattern,), unique=unique, strict=strict, resolver=resolver, bindings=bindings))
 
 
 def apply_multi(obj, patterns, strict=False, bindings=None, resolver=None):
@@ -1241,45 +1291,64 @@ def apply(obj, pattern, strict=False, bindings=None, resolver=None):
     return apply_multi(obj, (pattern,), strict=strict, resolver=resolver, bindings=bindings)
 
 
-def pluck_multi(obj, patterns, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
+def pluck_multi(obj, patterns, default=None, unique=False, strict=False, bindings=None, resolver=None):
     """
-    Yield (field, value) pairs from obj matching any of `patterns`, each
-    field once unless duplicates=True.
+    Yield (field, value) pairs from obj matching any of `patterns`: every
+    match, or each field once with unique=True.
 
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven'}}
     >>> list(pluck_multi(d, ('hello', 'a.b')))
     [('hello', 7), ('a.b', 'seven')]
-    >>> list(pluck_multi(d, ('hello', 'hello'), duplicates=True))
+    >>> list(pluck_multi(d, ('hello', 'hello')))
     [('hello', 7), ('hello', 7)]
+    >>> list(pluck_multi(d, ('hello', 'hello'), unique=True))
+    [('hello', 7)]
     """
-    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, unique=unique, strict=strict, resolver=resolver, bindings=bindings))
 
 
-def _pluck_written(obj, patterns, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
+def ipluck_multi(obj, patterns, default=None, unique=False, strict=False, bindings=None, resolver=None):
+    """
+    Like pluck_multi, but as streaming reads (see iget): an item drawn
+    from a one-shot iterator is numbered by its position, the field a
+    list of the same items would give it, so pack rebuilds from the pairs.
+
+    >>> list(ipluck_multi({'rows': iter([{'y': 1}, {'y': 2}])}, ('rows[*].y',)))
+    [('rows[0].y', 1), ('rows[1].y', 2)]
+    """
+    return ((field, val) for field, _, val in _pluck_written(obj, patterns, default=default, unique=unique, strict=strict, resolver=resolver, bindings=bindings, stream=True))
+
+
+def _pluck_written(obj, patterns, default=None, unique=False, strict=False, bindings=None, resolver=None, stream=False):
     """
     Yield (field, parsed field, value) triples from obj matching any of
     `patterns`: what pluck_multi yields, plus each field already parsed,
     so a caller that needs the field as a path does not parse the string.
+    stream=True as streaming reads (see engine.walk).
     """
-    seen = {}
+    found = _plucks(obj, patterns, default, strict, bindings, resolver, stream)
+    if not unique:
+        return found
+    return utils.unique_by(found, operator.itemgetter(0))
+
+
+def _plucks(obj, patterns, default, strict, bindings, resolver, stream):
+    """
+    The (field, parsed field, value) triple of every match of each of
+    `patterns` in `obj`, a repeat included.
+    """
     for pattern in patterns:
         ops = _prepare(parse(pattern, bindings=bindings, partial=False, resolver=resolver), resolver)
-        for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False, default=default):
+        for path, val in engine.walk(ops, obj, paths=True, strict=strict, resolver=resolver, transforms=False, default=default, stream=stream):
             field, parsed = results.Dotted({'ops': path}).written()
-            if duplicates:
-                yield (field, parsed, val)
-                continue
-            if field in seen:
-                continue
-            seen[field] = None
             yield (field, parsed, val)
 
 
-def ipluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
+def ipluck(obj, pattern, default=None, unique=False, strict=False, bindings=None, resolver=None):
     """
     Like pluck, but as a generator, for a concrete path as for a pattern:
     a concrete path yields its one (field, value) pair, or nothing when it
-    is missing.
+    is missing. A streaming read (see iget).
 
     >>> d = {'a': {'b': 1, 'c': 2}}
     >>> list(ipluck(d, 'a.*'))
@@ -1287,13 +1356,13 @@ def ipluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=
     >>> list(ipluck(d, 'a.b'))
     [('a.b', 1)]
     """
-    return pluck_multi(obj, (pattern,), default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings)
+    return ipluck_multi(obj, (pattern,), default=default, unique=unique, strict=strict, resolver=resolver, bindings=bindings)
 
 
-def pluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=None, resolver=None):
+def pluck(obj, pattern, default=None, unique=False, strict=False, bindings=None, resolver=None):
     """
-    Return the concrete field,value pairs from obj given pattern, each
-    field once unless duplicates=True.
+    Return the concrete field,value pairs from obj given pattern: every
+    match, or each field once with unique=True.
     >>> d = {'hello': 7, 'there': 9, 'a': {'b': 'seven', 'c': 'nine'}}
     >>> pluck(d, 'a.*')
     (('a.b', 'seven'), ('a.c', 'nine'))
@@ -1301,17 +1370,12 @@ def pluck(obj, pattern, default=None, duplicates=False, strict=False, bindings=N
     ('a.b', 'seven')
     """
     parsed = parse(pattern, resolver=resolver)
-    out = tuple(ipluck(obj, parsed, default=default, duplicates=duplicates, strict=strict, resolver=resolver, bindings=bindings))
+    out = tuple(pluck_multi(obj, (parsed,), default=default, unique=unique, strict=strict, resolver=resolver, bindings=bindings))
     if not out:
         return ()
     if is_pattern(parsed):
         return out
     return out[0]
-
-
-# walk is ipluck, and walk_multi pluck_multi, under their older names
-walk = ipluck
-walk_multi = pluck_multi
 
 
 def pack(pathvalues, apply_transforms=True, strict=False, bindings=None, resolver=None):

@@ -1,6 +1,8 @@
 """
 Filter ops: key-value filters, boolean combinators, and negation.
 """
+import itertools
+
 from . import base
 from . import matchers
 from . import predicates
@@ -32,6 +34,14 @@ class FilterOp(base.MatchOp):
 
     def filtered(self, items, settings=base.SETTINGS):
         raise NotImplementedError
+
+    def passing(self, pairs, settings=base.SETTINGS):
+        """
+        The (key, value) pairs whose value passes this filter, each judged
+        as it is drawn: filtered() for a streaming read, which cannot hold
+        the items and needs each one's key kept beside it.
+        """
+        return (pair for pair in pairs if self.is_filtered(pair[1], settings))
 
     def matchable(self, op):
         raise NotImplementedError
@@ -577,15 +587,17 @@ class FilterOr(FilterOp):
         return any(f.is_filtered(node, settings) for f in self.filters)
 
     def filtered(self, items, settings=base.SETTINGS):
-        # For OR, we need to collect all items that match any filter
+        # Each alternative in turn takes the items it passes that no
+        # earlier one took. An item is tracked by its position, not its
+        # identity: the same object may sit at several, and each is kept.
         items = list(items)  # Need to iterate multiple times
-        seen = set()
+        taken = set()
         for f in self.filters:
-            for item in f.filtered(items, settings):
-                item_id = id(item)
-                if item_id not in seen:
-                    seen.add(item_id)
-                    yield item
+            for idx, item in enumerate(items):
+                if idx in taken or not f.is_filtered(item, settings):
+                    continue
+                taken.add(idx)
+                yield item
 
     def is_template(self):
         return _any_template(self.filters)
@@ -634,6 +646,14 @@ class FilterKeyValueFirst(FilterOp):
             for item in self.inner.filtered(items, settings):
                 yield item
                 break
+
+    def passing(self, pairs, settings=base.SETTINGS):
+        """
+        The first pair that passes; no pair is drawn after it.
+        """
+        if not self.inner:
+            return iter(())
+        return itertools.islice(self.inner.passing(pairs, settings), 1)
 
     def matchable(self, op):
         return isinstance(op, FilterKeyValueFirst)

@@ -1,6 +1,7 @@
 """
 Type specification, sentinels, and registry for the dotted element system.
 """
+import collections.abc
 
 # Sentinel used as a "missing" marker and as the ANY constant for remove.
 marker = object()
@@ -34,6 +35,8 @@ TYPE_REGISTRY = {
     'str': str, 'bytes': bytes, 'int': int, 'float': float,
     'dict': dict, 'list': list, 'tuple': tuple,
     'set': set, 'frozenset': frozenset, 'bool': bool,
+    # a one-shot iterator (generator, map, cursor), by interface
+    'iter': collections.abc.Iterator,
 }
 
 

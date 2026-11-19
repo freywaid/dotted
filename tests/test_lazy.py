@@ -1,4 +1,7 @@
 import collections.abc
+
+import pytest
+
 import dotted
 
 
@@ -158,7 +161,7 @@ def test_iget_nested_cut_inside_lazy_group():
     assert list(dotted.iget(d, '((a#,b),n)')) == [{'x': 1, 'y': 2}, 5]
 
 
-# iexpand / expand duplicates
+# iexpand / expand unique
 
 def test_iexpand_is_generator():
     assert isinstance(dotted.iexpand({'a': 1}, '*'), collections.abc.Iterator)
@@ -169,22 +172,28 @@ def test_iexpand_matches_expand():
     assert tuple(dotted.iexpand(d, 'a.*')) == dotted.expand(d, 'a.*')
 
 
-def test_expand_dedups_by_default():
-    assert dotted.expand({'a': 1, 'b': 2}, '(a,*)') == ('a', 'b')
+def test_expand_keeps_repeats_by_default():
+    assert dotted.expand({'a': 1, 'b': 2}, '(a,*)') == ('a', 'a', 'b')
+    assert list(dotted.iexpand({'a': 1, 'b': 2}, '(a,*)')) == ['a', 'a', 'b']
 
 
-def test_expand_duplicates():
-    assert dotted.expand({'a': 1, 'b': 2}, '(a,*)', duplicates=True) == ('a', 'a', 'b')
-    assert list(dotted.iexpand({'a': 1, 'b': 2}, '(a,*)', duplicates=True)) == ['a', 'a', 'b']
+def test_expand_unique():
+    assert dotted.expand({'a': 1, 'b': 2}, '(a,*)', unique=True) == ('a', 'b')
+    assert list(dotted.iexpand({'a': 1, 'b': 2}, '(a,*)', unique=True)) == ['a', 'b']
 
 
-def test_expand_multi_duplicates():
+def test_expand_multi_unique():
     d = {'a': 1, 'b': 2}
-    assert list(dotted.expand_multi(d, ('a', '*'))) == ['a', 'b']
-    assert list(dotted.expand_multi(d, ('a', '*'), duplicates=True)) == ['a', 'a', 'b']
+    assert list(dotted.expand_multi(d, ('a', '*'))) == ['a', 'a', 'b']
+    assert list(dotted.expand_multi(d, ('a', '*'), unique=True)) == ['a', 'b']
 
 
-# ipluck / pluck duplicates
+def test_expand_duplicates_is_gone():
+    with pytest.raises(TypeError):
+        dotted.expand({'a': 1}, '*', duplicates=True)
+
+
+# ipluck / pluck unique
 
 def test_ipluck_concrete_yields_pair():
     assert list(dotted.ipluck({'a': {'b': 1}}, 'a.b')) == [('a.b', 1)]
@@ -198,28 +207,31 @@ def test_ipluck_pattern_yields_pairs():
     assert list(dotted.ipluck({'a': {'b': 1, 'c': 2}}, 'a.*')) == [('a.b', 1), ('a.c', 2)]
 
 
-def test_pluck_dedups_by_default():
-    assert dotted.pluck({'a': 1, 'b': 2}, '(a,*)') == (('a', 1), ('b', 2))
-
-
-def test_pluck_duplicates():
+def test_pluck_keeps_repeats_by_default():
     d = {'a': 1, 'b': 2}
-    assert dotted.pluck(d, '(a,*)', duplicates=True) == (('a', 1), ('a', 1), ('b', 2))
-    assert list(dotted.ipluck(d, '(a,*)', duplicates=True)) == [('a', 1), ('a', 1), ('b', 2)]
+    assert dotted.pluck(d, '(a,*)') == (('a', 1), ('a', 1), ('b', 2))
+    assert list(dotted.ipluck(d, '(a,*)')) == [('a', 1), ('a', 1), ('b', 2)]
 
 
-def test_pluck_multi_duplicates():
+def test_pluck_unique():
+    d = {'a': 1, 'b': 2}
+    assert dotted.pluck(d, '(a,*)', unique=True) == (('a', 1), ('b', 2))
+    assert list(dotted.ipluck(d, '(a,*)', unique=True)) == [('a', 1), ('b', 2)]
+
+
+def test_pluck_multi_unique():
     d = {'a': 1}
-    assert list(dotted.pluck_multi(d, ('a', 'a'))) == [('a', 1)]
-    assert list(dotted.pluck_multi(d, ('a', 'a'), duplicates=True)) == [('a', 1), ('a', 1)]
+    assert list(dotted.pluck_multi(d, ('a', 'a'))) == [('a', 1), ('a', 1)]
+    assert list(dotted.pluck_multi(d, ('a', 'a'), unique=True)) == [('a', 1)]
 
 
-# walk is ipluck
-
-def test_walk_is_ipluck():
-    assert dotted.walk is dotted.ipluck
-    assert dotted.walk_multi is dotted.pluck_multi
+def test_pluck_duplicates_is_gone():
+    with pytest.raises(TypeError):
+        dotted.pluck({'a': 1}, '*', duplicates=True)
 
 
-def test_walk_dedups_by_default():
-    assert list(dotted.walk({'a': 1, 'b': 2}, '(a,*)')) == [('a', 1), ('b', 2)]
+# walk is gone
+
+def test_walk_is_gone():
+    assert not hasattr(dotted, 'walk')
+    assert not hasattr(dotted, 'walk_multi')

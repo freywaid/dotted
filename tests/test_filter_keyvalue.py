@@ -933,3 +933,29 @@ def test_reference_key_slice():
 def test_subst_key():
     d = {'items': [{'a': 1}, {'b': 1}]}
     assert dotted.get(d, 'items[*&$(f)=1]', bindings={'f': 'b'}) == ({'b': 1},)
+
+
+# an object that sits at several positions is kept at each
+
+def test_or_filter_keeps_a_repeated_object():
+    d = {'x': 1}
+    e = {'x': 2}
+    assert dotted.get([d, d, e, d], '[*&x=1,x=2]') == (d, d, e, d)
+    assert dotted.get([d, d, e, d], '[*&(x=1,x=2)]') == (d, d, e, d)
+    assert dotted.expand([d, d, e, d], '[*&x=1,x=2]') == ('[0]', '[1]', '[2]', '[3]')
+
+
+def test_or_filter_in_a_conjunction_keeps_a_repeated_object():
+    d = {'x': 1}
+    assert dotted.get([d, d, {'x': 2}, d], '[*&(x=1,x=2)&x=1]') == (d, d, d)
+
+
+def test_or_slice_filter_keeps_a_repeated_object():
+    d = {'x': 1}
+    e = {'x': 2}
+    assert dotted.get([d, d, e, d], '[x=2,x=1]') == [e, d, d, d]
+
+
+def test_or_filter_removes_a_repeated_object():
+    d = {'x': 1}
+    assert dotted.remove([d, d, {'x': 2}, {'x': 3}], '[*&x=1,x=2]') == [{'x': 3}]

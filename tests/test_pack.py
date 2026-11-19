@@ -249,14 +249,14 @@ def test_reference_argument_sees_the_packing_node():
 
 
 # -----------------------------------------------------------------------------
-# Paths: walk, expand, match
+# Paths: ipluck, expand, match
 # -----------------------------------------------------------------------------
 
-def test_walk_and_expand_write_the_pack():
+def test_ipluck_and_expand_write_the_pack():
     """
     A pack is its own path segment, read back as written.
     """
-    assert list(dotted.walk(D, '(a.*;)')) == [('(a.*;)', (1, 2))]
+    assert list(dotted.ipluck(D, '(a.*;)')) == [('(a.*;)', (1, 2))]
     assert dotted.expand(D, '(a.*;)|sum') == ('(a.*;)|sum',)
     assert dotted.expand({'a': {'x': 1}, 'b': {'x': 2}}, '*.(x;)') == ('a(.x;)', 'b(.x;)')
 
