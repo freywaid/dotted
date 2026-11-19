@@ -13,7 +13,7 @@ Use dotted to fetch, update, and remove data from deeply nested structures.
 Core Operations
 ---------------
 get(obj, path)          Get value at dotted path
-iget(obj, path)         Yield the values at dotted path (lazy)
+iget(obj, path)         Yield the values at dotted path (streaming read)
 update(obj, path, val)  Update value at dotted path
 remove(obj, path)       Remove value at dotted path
 has(obj, path)          Check if path exists
@@ -25,18 +25,27 @@ Pattern Matching
 match(pattern, path)    Match pattern to path
 replace(template, bind) Substitute $N in template path
 expand(obj, pattern)    Expand pattern to concrete paths
-iexpand(obj, pattern)   Yield concrete paths for pattern (lazy)
+iexpand(obj, pattern)   Yield concrete paths for pattern (streaming read)
 
 Building & Plucking
 -------------------
 build(obj, path)        Build default structure for path
 pack(pathvalues)        Build object from path-value pairs
 pluck(obj, pattern)     Extract (path, value) pairs
-ipluck(obj, pattern)    Yield (path, value) pairs (lazy)
+ipluck(obj, pattern)    Yield (path, value) pairs (streaming read)
 unpack(obj)             Extract to dotted normal form
 keys(obj)               Dotted paths of obj
 values(obj)             Leaf values of obj
 items(obj)              (path, value) pairs as dict_items view
+
+Streaming reads
+---------------
+iget, ipluck and iexpand read through one-shot iterators (generators, maps,
+cursors), one match at a time; get, has, pluck, expand and the writes never
+draw from one. iget_multi, ipluck_multi and iexpand_multi take several paths.
+
+    >>> list(dotted.iget({'rows': iter([{'y': 1}, {'y': 2}])}, 'rows[*].y'))
+    [1, 2]
 
 Transforms
 ----------

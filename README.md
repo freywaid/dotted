@@ -226,11 +226,12 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 - **String/bytes glob patterns**—match by prefix, suffix, or substring: `*="user_"...`, `*=b"header"...b"footer"`
 - **Value groups**—disjunction over filter values: `*=(1, 2, 3)`, `[*&status=("active", "pending")]`
 - **Strict mode**—enforce type separation: `[0]` only matches lists, `.key` only matches dicts
+- **Streaming reads**—`iget`, `ipluck` and `iexpand` read through generators and other one-shot iterators, one match at a time: `rows[*&active=True].id` over a cursor
 
 <a id="breaking-changes"></a>
 ## Breaking Changes
 
-### Unreleased
+### v0.57.0
 - **`pluck` and `expand` no longer dedup by default.** `unique=False`
   replaces `duplicates=False` on `pluck`, `expand` and their `i` and `_multi`
   forms: a path a pattern reaches twice is yielded twice.
@@ -513,16 +514,35 @@ empty the second time, so group below it, not across it:
     >>> list(dotted.iget({'rows': rows()}, '(rows[*].a, rows[*].b)'))
     [1, 3]
 
+A recursive pattern enters an iterator as it enters a list, and reads it to
+its end before it yields. The matches are the same; the read is not lazy
+there.
+
+    >>> d = {'a': {'rows': iter([{'y': 1}, {'y': 2}])}}
+    >>> list(dotted.iget(d, '*(*#, [*]).y'))
+    [1, 2]
+
+A set is not read: it has no order, so its items have no positions to be
+their paths.
+
+    >>> list(dotted.iget({'s': {1, 2}}, 's[*]'))
+    []
+
 A dict-like is read through its own `items()`, in one pass, when it has
 one, else through each key it iterates; a sequence or iterator through its
 `__iter__`; anything else by index, as `get` reads it. For a lazy mapping
 of your own, a lazy `items()` is the interface to implement.
 
-`iget_multi` reads several paths as one flat stream of values:
+`iget_multi` reads several paths as one flat stream of values, and
+`ipluck_multi` and `iexpand_multi` are `pluck_multi` and `expand_multi` as
+streaming reads. The paths of one call read the same object, so an iterator
+one path has read is empty for the next, as it is for the next call:
 
     >>> d = {'name': 'orders', 'rows': iter([{'y': 1}, {'y': 2}])}
     >>> list(dotted.iget_multi(d, ['name', 'rows[*].y']))
     ['orders', 1, 2]
+    >>> list(dotted.ipluck_multi(d, ['name', 'rows[*].y']))
+    [('name', 'orders')]
 
 <a id="update"></a>
 ### Update
@@ -985,6 +1005,13 @@ reconstruct the original object.
     >>> dotted.unpack(d)
     {'a.b': [1, 2, 3], 'x.y.z': [4, 5], 'extra': 'stuff'}
     >>> dotted.pack(dotted.unpack(d)) == d
+    True
+
+A one-shot iterator is a leaf: `unpack` does not read it, and it is in the
+normal form as itself. See [Streaming reads](#streaming-reads).
+
+    >>> rows = iter([{'y': 1}])
+    >>> dotted.unpack({'name': 'orders', 'rows': rows}) == {'name': 'orders', 'rows': rows}
     True
 
 Pass `attrs=` to also descend into object attributes. The `Attrs` enum controls
@@ -2064,7 +2091,10 @@ The list and string are dropped.
 
 Supported types: `str`, `bytes`, `int`, `float`, `dict`, `list`, `tuple`,
 `set`, `frozenset`, `bool`, and `iter`, a one-shot iterator (a generator, a
-`map`, a cursor).
+`map`, a cursor):
+
+    >>> dotted.get({'rows': iter([1, 2]), 'tags': ['a']}, '*:!iter')
+    (['a'],)
 
 <a id="positive-restrictions"></a>
 ### Positive restrictions
