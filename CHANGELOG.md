@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.57.1]
 
 ### Added
 - `sparkize` reads a path under a `Column` the caller holds: a
