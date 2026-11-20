@@ -507,7 +507,7 @@ class _Column(Hooks):
     """
 
     def key(self, op, t, rest, row):
-        col = t._column(t._column_name(op))
+        col = t._head_column(op)
         return t._result(**t._walk(col, (), rest))
 
     # any other first op is a column key or raises in `_column_name`
@@ -517,7 +517,7 @@ class _Column(Hooks):
         # `status = "active"`: one op, a guard wrapping the column key
         if rest:
             raise TranslationError('path continues after column-level guard')
-        col = t._column(t._column_name(op.inner))
+        col = t._head_column(op.inner)
         return t._result(select=col, where=t._scalar_predicate(op, col))
 
     def group(self, op, kind, branches, cuts, softs, t, rest, row):
@@ -734,7 +734,7 @@ class _Name(Hooks):
         raise TranslationError(f'unsupported {position} matcher: {type(m).__name__}')
 
     def const(self, m, t, position):
-        return str(m.value)
+        return t._named(m.value, position)
 
     def subst(self, m, t, position):
         raise TranslationError(f'unresolved substitution in {position} position')
@@ -1164,6 +1164,20 @@ class Translator:
         matchers that can't name a column.
         """
         return op.translated(_COLUMN_NAME, self)
+
+    def _head_column(self, op):
+        """
+        The column the first op of a read names, as `_column` gives it.
+        A flavor that can start a read elsewhere overrides this.
+        """
+        return self._column(self._column_name(op))
+
+    def _named(self, value, position):
+        """
+        The name a matcher's `value` gives in `position`. A flavor
+        overrides this to refuse a value that names nothing.
+        """
+        return str(value)
 
     def _name(self, matcher, position):
         """

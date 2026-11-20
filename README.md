@@ -4422,6 +4422,19 @@ A `Column` binding is compared by its type, which `build` reads in the
 active session: `r.build(r.where, schema=df.schema,
 min_age=F.col('floor'))`.
 
+A substitution at a path's head starts the read at what `build` binds
+it to: a `Column`, or a column's name. A higher-order function's lambda
+argument is a Column no session can type, so `r.typed(column, dtype)`
+carries its type:
+
+    r = dotted.sparkize('$(item).id')
+    elem = df.schema['xs'].dataType.elementType
+    df.select(F.transform('xs', lambda e: r.build(
+        r.select, schema=df.schema, item=r.typed(e, elem))))
+
+`r.typed` is `dotted.translators.spark.typed`, and works for any Column
+binding. A write (`as_update`) can't start at a Column.
+
 ### Composing fragments
 
 A `Column` can't hold a placeholder, so `r.where` is a
@@ -4530,7 +4543,7 @@ Not yet supported (`TranslationError`):
   `dotted.translators.flavors()` lists them.
 - `bindings` — resolve substitutions at sparkize time. Path-position
   substitutions must be resolved here, row indexes and slice bounds
-  included.
+  included, but for one at a read's head, which `build` may bind.
 - `root` — `'column'` (default): the first segment is a column.
   `'table'`: a [table search](#sparkize-table-search).
 

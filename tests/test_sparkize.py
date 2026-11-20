@@ -237,6 +237,17 @@ def test_build_rejects_non_fragment():
         r.build('age >= 30')
 
 
+def test_head_substitution_stays_unbound_for_build():
+    """
+    A substitution at a read's head is left for `build`, with the
+    guard's own.
+    """
+    r = sparkize('$(col).age >= $(min_age)')
+    assert r.unbound == {'col': 'col', 'min_age': 'min_age'}
+    with pytest.raises(TranslationError, match='missing binding'):
+        r.build(r.where, min_age=30)
+
+
 def test_build_rejects_unknown_binding():
     """
     A binding the fragment doesn't use is an error, as in sqlize.
@@ -300,7 +311,6 @@ def test_table_search_write_raises():
 
 @pytest.mark.parametrize('path', [
     '*.age = 1',
-    '$(col).age = 1',
     'data.$(key) = 1',
     'data.users[*].$(key) = 1',
     'data.user.age|upper = 1',

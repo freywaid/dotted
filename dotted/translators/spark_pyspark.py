@@ -26,6 +26,7 @@ import re
 import sys
 
 from . import core
+from . import spark
 from .core import Hooks, TranslationError, Translator
 from .spark import ColumnFragment, SparkResolver, flavor, _merged
 
@@ -1452,8 +1453,8 @@ def _compared(node, op, value, env):
     """
     if op == '!=':
         return _not(_compared(node, '=', value, env))
-    if _is_column(value):
-        return _against(node, op, _Node(value, _column_type(value, env)))
+    if _is_held(value):
+        return _against(node, op, _held_node(value, env))
     if value is None:
         if op != '=':
             return False
@@ -1611,6 +1612,24 @@ def _is_column(value):
     True for a Spark Column, classic or Connect.
     """
     return type(value).__name__ == 'Column' and type(value).__module__.startswith('pyspark')
+
+
+def _is_held(value):
+    """
+    True for a binding that is a Column: a Spark Column, or one with its
+    type (`spark.typed`).
+    """
+    return _is_column(value) or isinstance(value, spark.TypedColumn)
+
+
+def _held_node(value, env):
+    """
+    The node a Column binding is: a typed one by the type it carries,
+    a bare one by the type the active session reads.
+    """
+    if isinstance(value, spark.TypedColumn):
+        return _Node(value.column, value.dtype)
+    return _Node(value, _column_type(value, env))
 
 
 def _column_type(col, env):
@@ -2153,6 +2172,16 @@ def _column_node(env, name):
     return None
 
 
+def _head_node(value, env):
+    """
+    The node a read starts at for what its head holds: a Column binding
+    itself, or the column anything else names.
+    """
+    if _is_held(value):
+        return _held_node(value, env)
+    return _column_node(env, str(value))
+
+
 def _node_of(frag):
     """
     The node maker of a fragment that reads one.
@@ -2206,7 +2235,7 @@ class _Written:
         self.column = column
 
     def node(self, env):
-        return _Node(self.column, _column_type(self.column, env))
+        return _held_node(self.column, env)
 
 
 def _wfail(what, node):
@@ -2919,6 +2948,25 @@ class PySparkMixin(Translator):
         """
         return _Typed(lambda env: _column_node(env, name))
 
+    def _head_column(self, op):
+        """
+        The column a read starts at: the one its first op names, or
+        what a substitution there holds, a Column the caller has or a
+        column's name.
+        """
+        held = op.translated(_HEAD, self)
+        if held is not None:
+            return held
+        return super()._head_column(op)
+
+    def _named(self, value, position):
+        """
+        A name, but for a Column: only a read's head starts at one.
+        """
+        if _is_held(value):
+            raise TranslationError(f'a Column in {position} position not supported')
+        return super()._named(value, position)
+
     def _all_columns(self):
         """
         `*`.
@@ -3184,7 +3232,7 @@ class PySparkMixin(Translator):
         write touches, by name, to its new value, for `df.withColumns`.
         `value` is a literal, or a Spark Column read by its type.
         """
-        column = value if _is_column(value) else None
+        column = value if _is_held(value) else None
         self._wwritten = _Written(column)
         self._wunbound = {}
         pairs = self._translate_write(self._ops, self._root, value, column is None)
@@ -3423,6 +3471,42 @@ class _KeyStep(Hooks):
         raise TranslationError('references inside pattern paths not supported yet')
 
 
+class _Head(Hooks):
+    """
+    The first op of a read as the node a substitution there holds, a
+    fragment: one bound to a Column at sparkize, or one left for
+    `build`. None for any other, which names a column.
+    """
+
+    def other(self, op, t):
+        return None
+
+    def key(self, op, t):
+        return op.op.translated(_HEAD_MATCHER, t)
+
+    def slot(self, op, t):
+        return None
+
+
+class _HeadMatcher(Hooks):
+    """
+    A key's matcher at a read's head, as `_Head` gives it.
+    """
+
+    def other(self, m, t):
+        return None
+
+    def const(self, m, t):
+        value = m.value
+        if not _is_held(value):
+            return None
+        return _Typed(lambda env: _held_node(value, env))
+
+    def subst(self, m, t):
+        name = m.value
+        return _Typed(lambda env: _head_node(env[name], env), {name: name})
+
+
 class _Comparison(Hooks):
     """
     A guard's or filter's value as `(test(node, env), unbound)`: Python's
@@ -3531,6 +3615,8 @@ class _FilterKeyStep(Hooks):
 _STEPS = _Steps()
 _KEY_STEP = _KeyStep()
 _COMPARISON = _Comparison()
+_HEAD = _Head()
+_HEAD_MATCHER = _HeadMatcher()
 _FILTER_PRED = _FilterPred()
 _FILTER_KEY_STEP = _FilterKeyStep()
 

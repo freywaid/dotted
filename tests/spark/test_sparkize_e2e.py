@@ -10,6 +10,7 @@ pytest.importorskip('pyspark')
 from pyspark.sql import functions as F
 
 from dotted import sparkize as _sparkize
+from dotted.translators import TranslationError
 
 
 def sparkize(path, *, bindings=None):
@@ -425,3 +426,107 @@ def test_table_search_whole_rows(spark, df):
         r.build(r.select, schema=table.schema))
     assert out.columns == df.columns
     assert sorted(row.id for row in out.collect()) == [1, 5]
+
+
+# ---- a path under a Column the caller holds -------------------------
+
+def _user_type(df):
+    """
+    The Spark type of one element of `data.users`.
+    """
+    return df.schema['data'].dataType['users'].dataType.elementType
+
+
+def test_head_substitution_reads_under_a_lambda_argument(df):
+    """
+    A substitution at a path's head, bound in `build` to a lambda's
+    argument with its type, reads the path under each element.
+    """
+    r = sparkize('$(item).age')
+    elem = _user_type(df)
+    got = F.transform('data.users', lambda e: r.build(
+        r.select, schema=df.schema, item=r.typed(e, elem)))
+    assert r.unbound == {'item': 'item'}
+    assert selected(df, got) == selected(
+        df, F.transform('data.users', lambda e: e['age']))
+
+
+def test_head_substitution_guards_under_a_lambda_argument(df):
+    """
+    A guard on a path under a lambda's argument is the lambda's test.
+    """
+    r = sparkize('$(item).age >= 30')
+    elem = _user_type(df)
+    got = F.exists('data.users', lambda e: r.build(
+        r.where, schema=df.schema, item=r.typed(e, elem)))
+    assert ids(df, got) == where_ids(df, 'data.users[*].age >= 30')
+
+
+@pytest.mark.parametrize('bound', [
+    lambda: F.col('data'),
+    lambda: 'data',
+])
+def test_head_substitution_bound_in_build(df, bound):
+    """
+    A head substitution bound in `build` to a Column reads from it, its
+    type read in the session; bound to a string, from the column it
+    names.
+    """
+    r = sparkize('$(c).user.age')
+    plain = sparkize('data.user.age')
+    assert selected(df, r.build(r.select, schema=df.schema, c=bound())) == selected(
+        df, plain.build(plain.select, schema=df.schema))
+
+
+def test_head_substitution_bound_to_a_column_at_sparkize(df):
+    """
+    A Column bound at a path's head at sparkize time is read from, not
+    taken for a column's name.
+    """
+    r = sparkize('$(c).user.age', bindings={'c': F.col('data')})
+    plain = sparkize('data.user.age')
+    assert selected(df, r.build(r.select, schema=df.schema)) == selected(
+        df, plain.build(plain.select, schema=df.schema))
+
+
+def test_head_substitution_under_a_table_search_row(spark, df):
+    """
+    Under `root='table'` the path after the row step starts at what its
+    head substitution holds, as a column path does.
+    """
+    df.createOrReplaceTempView('items')
+    r = _sparkize('items[*].$(c).user.age', flavor='pyspark', root='table')
+    plain = _sparkize('items[*].data.user.age', flavor='pyspark', root='table')
+    table = spark.table(r.table)
+    got = r.build(r.select, schema=table.schema, c=F.col('data'))
+    assert r.unbound == {'c': 'c'}
+    assert selected(table, got) == selected(
+        table, plain.build(plain.select, schema=table.schema))
+
+
+def test_substitution_as_a_table_name_is_refused():
+    """
+    A table search's name is no place for a substitution left unbound.
+    """
+    with pytest.raises(TranslationError, match='unresolved substitution'):
+        _sparkize('$(t)[*].id', flavor='pyspark', root='table')
+
+
+def test_typed_column_binding_compares_by_its_type(df):
+    """
+    A typed Column bound to a guard's value compares by the type it
+    carries, with no session read.
+    """
+    r = sparkize('age >= $(v)')
+    typed = r.typed(F.col('age'), df.schema['age'].dataType)
+    assert ids(df, r.build(r.where, schema=df.schema, v=typed)) == where_ids(
+        df, 'age >= $(v)', v=F.col('age'))
+
+
+def test_write_under_a_held_column_is_refused(df):
+    """
+    A write names the column it replaces: a Column at its head raises.
+    """
+    r = sparkize('$(c).user.age', bindings={'c': F.col('data')})
+    with pytest.raises(TranslationError, match='a Column in column position'):
+        r.as_update(1)

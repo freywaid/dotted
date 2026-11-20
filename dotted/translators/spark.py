@@ -114,6 +114,38 @@ class ColumnFragment:
         return ColumnFragment(lambda env: ~mine(env), self.unbound)
 
 
+# ---- Typed columns --------------------------------------------------
+
+class TypedColumn:
+    """
+    A Spark `Column` with its Spark type, `dtype`, as a binding. `build`
+    reads a Column binding's type in the active session, against the
+    schema; this carries the type of one no session resolves there, a
+    higher-order function's lambda argument.
+    """
+
+    __slots__ = ('column', 'dtype')
+
+    def __init__(self, column, dtype):
+        self.column = column
+        self.dtype = dtype
+
+    def __repr__(self):
+        return f'TypedColumn({self.column!r}, {self.dtype!r})'
+
+
+def typed(column, dtype):
+    """
+    The Column `column` as a binding of the Spark type `dtype`:
+
+        r = sparkize('$(item).id', flavor='pyspark')
+        elem = df.schema['xs'].dataType.elementType
+        df.select(F.transform('xs', lambda e: r.build(
+            r.select, schema=df.schema, item=typed(e, elem))))
+    """
+    return TypedColumn(column, dtype)
+
+
 # ---- Flavor registry ------------------------------------------------
 
 # flavor name (str) → SparkResolver subclass. Populated by `@flavor`
@@ -242,6 +274,9 @@ class SparkResolver(collections.abc.Mapping):
 
     # ---- rendering ----
 
+    # `r.typed(column, dtype)`: a Column binding with its type
+    typed = staticmethod(typed)
+
     def rows(self, df, **bindings):
         """
         The rows a table search reads, from the table's DataFrame `df`,
@@ -270,7 +305,13 @@ class SparkResolver(collections.abc.Mapping):
         field or a map's key, an int or a string.
 
         A binding is a Python value, compared as Python compares it, or
-        a Spark Column, read by its type in the active session.
+        a Spark Column, read by its type in the active session;
+        `typed(column, dtype)` gives the type of one no session
+        resolves, a lambda's argument.
+
+        A substitution at a path's head, `$(item).id`, is bound here
+        too: to a Column, which the path then reads from, or to a
+        column's name.
 
         Raises `TranslationError` on:
           - a non-fragment argument
@@ -317,9 +358,10 @@ def sparkize(path, *, flavor, bindings=None, root='column'):
                    'pyspark'.
         bindings — optional mapping/list used to resolve substitutions
                    at sparkize time. Path-position substitutions must
-                   be resolved here or `TranslationError` is raised.
-                   Unresolved value-position substitutions appear in
-                   `r.unbound`.
+                   be resolved here or `TranslationError` is raised,
+                   but for one at the path's head, the column a read
+                   starts at. That one and unresolved value-position
+                   substitutions appear in `r.unbound`.
         root     — `'column'` (default): the path's first segment is a
                    column of the row. `'table'`: its leading keys name
                    a DataFrame or table, a row step (`[*]`, `[*&…]`,

@@ -3,6 +3,22 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `sparkize` reads a path under a `Column` the caller holds: a
+  substitution at a read's head, `$(item).id`, is bound in `build` to a
+  Column, which the path then reads from, or to a column's name.
+  `r.typed(column, dtype)` (`dotted.translators.spark.typed`) carries
+  the type of a Column no session resolves, a higher-order function's
+  lambda argument, and works for any Column binding (#83).
+
+### Fixed
+- `sparkize`: a `Column` bound at a path's head with `bindings=` is read
+  from; it was taken for a column's name and read NULL. A Column where
+  a name is needed (a write's column, a table, a filter key) raises
+  (#83).
+
 ## [0.57.0]
 
 ### Added
