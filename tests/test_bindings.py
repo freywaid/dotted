@@ -223,3 +223,64 @@ def test_update_concat_with_bindings():
     data = {'prefix_x': 1}
     result = dotted.update(data, 'prefix_+$(key)', 99, bindings={'key': 'x'})
     assert result == {'prefix_x': 99}
+
+
+# --- unhashable bound values ---
+
+def test_guard_value_bound_to_list():
+    """
+    A list bound to a guard value compares as the list. parse() hashes the
+    resolved ops for template detection, so an unhashable bound value used
+    to raise TypeError before the guard ever ran.
+    """
+    bindings = {'b': [1, 2, 3]}
+    assert dotted.get({'a': [1, 2, 3]}, 'a=$(b)', bindings=bindings) == [1, 2, 3]
+    assert dotted.get({'a': 2}, 'a=$(b)', bindings=bindings) is None
+
+
+def test_transform_arg_bound_to_list():
+    """
+    A list bound to a transform argument reaches the transform: `in`
+    ahead of a guard tests containment in the bound list.
+    """
+    data = {'a': 2, 'c': 9}
+    bindings = {'b': [1, 2, 3]}
+    assert dotted.get(data, 'a|in:$(b)=True', bindings=bindings) == 2
+    assert dotted.get(data, 'c|in:$(b)=True', bindings=bindings) is None
+    assert dotted.get(data, '*|in:$(b)=True', bindings=bindings) == (2,)
+
+
+def test_transform_arg_bound_to_set():
+    """
+    A set bound to a transform argument reaches the transform too.
+    """
+    data = {'a': 2, 'c': 9}
+    assert dotted.get(data, '*|in:$(s)=True', bindings={'s': {1, 2, 3}}) == (2,)
+
+
+def test_transform_arg_bound_to_dict():
+    """
+    A dict bound to a transform argument reaches the transform, where `in`
+    tests its keys. The keys need not sort against each other.
+    """
+    data = {'a': 2, 'c': 9}
+    assert dotted.get(data, '*|in:$(m)=True', bindings={'m': {2: 'two', 'k': 1}}) == (2,)
+
+
+def test_path_with_bound_dict_hashes_whatever_its_order():
+    """
+    Two parses with equal bound dicts hash alike, whatever order their
+    entries were inserted in.
+    """
+    one = dotted.parse('a|in:$(m)', bindings={'m': {2: 'two', 'k': [1]}})
+    two = dotted.parse('a|in:$(m)', bindings={'m': {'k': [1], 2: 'two'}})
+    assert hash(one) == hash(two)
+
+
+def test_path_with_bound_list_is_hashable():
+    """
+    Two parses of one path with equal bound lists hash alike.
+    """
+    one = dotted.parse('a|in:$(b)', bindings={'b': [1, 2, 3]})
+    two = dotted.parse('a|in:$(b)', bindings={'b': [1, 2, 3]})
+    assert hash(one) == hash(two)

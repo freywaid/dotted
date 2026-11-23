@@ -91,18 +91,6 @@ class Dotted:
         return ''.join(parts), Dotted({'ops': self.ops[:-1]})
     def __repr__(self):
         return f'{self.__class__.__name__}({list(self.ops)})'
-    @staticmethod
-    def _hashable(obj):
-        """
-        Recursively convert unhashable types to hashable equivalents.
-        """
-        if utils.is_list_like(obj):
-            return tuple(Dotted._hashable(x) for x in obj)
-        if utils.is_set_like(obj):
-            return frozenset(Dotted._hashable(x) for x in obj)
-        if utils.is_dict_like(obj):
-            return tuple(sorted((k, Dotted._hashable(v)) for k, v in utils.mapping_entries(obj)))
-        return obj
     def __hash__(self):
         if self._hash is None:
             # not hash(self.ops): a Dotted must not collide with its own ops tuple

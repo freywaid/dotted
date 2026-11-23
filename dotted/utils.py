@@ -189,6 +189,33 @@ def mapping_entries(node):
     return ((k, node[k]) for k in node)
 
 
+def hashable(obj):
+    """
+    obj with its unhashable containers, at any depth, swapped for hashable
+    ones: a list-like for a tuple, a set-like for a frozenset, a dict-like
+    for a frozenset of its entries, which no more depends on their order
+    than the dict does and asks nothing of its keys but a hash.
+    """
+    if is_list_like(obj):
+        return tuple(hashable(x) for x in obj)
+    if is_set_like(obj):
+        return frozenset(hashable(x) for x in obj)
+    if is_dict_like(obj):
+        return frozenset((k, hashable(v)) for k, v in mapping_entries(obj))
+    return obj
+
+
+def hash_of(obj):
+    """
+    The hash of obj, or of hashable(obj) when obj holds something
+    unhashable, such as a list bound to a substitution.
+    """
+    try:
+        return hash(obj)
+    except TypeError:
+        return hash(hashable(obj))
+
+
 def entries(node):
     """
     node as a lazy stream of (key, value) entries, by its interface, or

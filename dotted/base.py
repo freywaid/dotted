@@ -4,6 +4,7 @@ Base classes, sentinels, and infrastructure for the dotted element system.
 import collections
 import pyparsing as pp
 
+from . import utils
 from .utypes import marker, ANY, BRANCH_CUT, BRANCH_SOFTCUT, resolve_types  # noqa: F401
 
 
@@ -133,7 +134,7 @@ class Op:
     def __repr__(self):
         return f'{self.__class__.__name__}:{self.args}'
     def __hash__(self):
-        return hash(self.args)
+        return utils.hash_of(self.args)
     def __eq__(self, op):
         return self.__class__ == op.__class__ and self.args == op.args
     def resolve(self, bindings, partial=False):
@@ -690,11 +691,7 @@ class Transform(Op):
         return self.operator()
 
     def __hash__(self):
-        try:
-            return hash(('transform', self.name, self.params))
-        except TypeError:
-            from .results import Dotted
-            return hash(('transform', self.name, Dotted._hashable(self.params)))
+        return utils.hash_of(('transform', self.name, self.params))
 
     def __eq__(self, other):
         return (isinstance(other, Transform)
