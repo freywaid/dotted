@@ -3,6 +3,15 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.57.2]
+
+### Fixed
+- A list, set or dict bound to a substitution no longer raises
+  `TypeError: unhashable type` when the path is parsed: `a=$(b)`
+  compares with the bound list, and `a|in:$(b)=True` tests containment
+  in it, or in a bound dict's keys, which need not sort against each
+  other.
+
 ## [0.57.1]
 
 ### Added
