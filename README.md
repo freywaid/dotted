@@ -191,27 +191,32 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 
 | Feature | dotted | glom | jmespath | pydash |
 |---------|--------|------|----------|--------|
-| Safe traversal (no exceptions) | ✅ | ✅ | ✅ | ✅ |
-| Familiar dot notation | ✅ | ❌ (custom spec) | ❌ (JSON syntax) | ✅ |
-| Pattern matching (wildcards) | ✅ | ✅ | ❌ | ❌ |
-| Regex patterns | ✅ | ❌ | ❌ | ❌ |
+| Safe traversal (no exceptions) | ✅ | ✅ (with `default=`) | ✅ | ✅ |
+| Familiar dot notation | ✅ | ✅ | ✅ | ✅ |
+| Pattern matching (wildcards) | ✅ | ✅ | ✅ | ❌ |
+| Regex patterns | ✅ | partial (`Regex`, values only) | ❌ | ❌ |
 | In-place mutation | ✅ | ✅ | ❌ (read-only) | ✅ |
+| Immutable updates (`mutable=False`) | ✅ | ❌ | ❌ (read-only) | ❌ |
 | Attribute access (`@attr`) | ✅ | ✅ | ❌ | ✅ |
 | Transforms/coercion | ✅ | ✅ | ✅ | ❌ |
-| Slicing | ✅ | ❌ | ✅ | ❌ |
-| Filters | ✅ | ❌ | ✅ | ❌ |
-| Comparison operators (`<`, `>`, `<=`, `>=`) | ✅ | ❌ | ❌ | ❌ |
-| AND/OR/NOT filters | ✅ | ❌ | ✅ | ❌ |
-| Grouping `(a,b)`, `(.a,.b)` | ✅ | ❌ | ❌ | ❌ |
-| Recursive patterns (`**`, `*key`, `*([*])`, `*(@*)`) | ✅ | ✅ | ❌ | ❌ |
+| Slicing | ✅ | partial (`T[2:]`) | ✅ | ❌ |
+| Filters | ✅ | ✅ (`Iter().filter`, `Check`) | ✅ | ❌ |
+| Comparison operators (`<`, `>`, `<=`, `>=`) | ✅ | ✅ (`M > 0`) | ✅ | ❌ |
+| AND/OR/NOT filters | ✅ | ✅ (`And`, `Or`, `Not`) | ✅ | ❌ |
+| Grouping `(a,b)`, `(.a,.b)` | ✅ | partial (dict spec) | partial (multiselect `[a, b]`) | ❌ |
+| Recursive patterns (`**`, `*key`, `*([*])`, `*(@*)`) | ✅ | ✅ (`**`) | ❌ | ❌ |
 | Depth slicing (`**:-1`, `**:2`) | ✅ | ❌ | ❌ | ❌ |
 | NOP (~) match but don't update | ✅ | ❌ | ❌ | ❌ |
 | Cut (#) and soft cut (##) in disjunction | ✅ | ❌ | ❌ | ❌ |
-| Container filter values (`[1, ...]`, `{k: v}`) | ✅ | ❌ | ❌ | ❌ |
-| String/bytes glob patterns (`"pre"..."suf"`) | ✅ | ❌ | ❌ | ❌ |
-| Value groups (`(val1, val2)`) | ✅ | ❌ | ❌ | ❌ |
+| Container filter values (`[1, ...]`, `{k: v}`) | ✅ | ❌ | partial (exact literal `==`) | ❌ |
+| String/bytes glob patterns (`"pre"..."suf"`) | ✅ | ❌ | partial (`starts_with`, `ends_with`, `contains`; strings only) | ❌ |
+| Value groups (`(val1, val2)`) | ✅ | ❌ | partial (`contains`) | ❌ |
 | Bytes literal support (`b"..."`) | ✅ | ❌ | ❌ | ❌ |
-| Zero dependencies | ❌ (pyparsing) | ❌ | ✅ | ❌ |
+| Streaming over generators | ✅ | ✅ (`Iter`) | ❌ | ❌ |
+| SQL and Spark translation (`sqlize`, `sparkize`) | ✅ (in development) | ❌ | ❌ | ❌ |
+| Command-line tool | ✅ (`dq`) | ✅ (`glom`) | ✅ (`jp.py`) | ❌ |
+| Language-independent spec | ❌ | ❌ | ✅ (ports in many languages) | ❌ |
+| Zero dependencies | ❌ (pyparsing) | ❌ (boltons, attrs, face) | ✅ | ❌ (typing-extensions) |
 
 **Choose dotted if you want:**
 - Intuitive `a.b[0].c` syntax that looks like Python
