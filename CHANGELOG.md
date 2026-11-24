@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.57.4]
 
 ### Added
 - `sparkize`'s `r.build(fragment, schema=..., typed=True)` builds the
