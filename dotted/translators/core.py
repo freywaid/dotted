@@ -206,6 +206,23 @@ class TranslationError(Exception):
     pass
 
 
+def unreserved(bindings, reserved):
+    """
+    The `bindings` a call took as keywords, by the substitution each
+    binds: a call's own parameter names, `reserved`, can't be keywords
+    for a binding, so one is spelled with a trailing `_`. `schema_`
+    binds `$(schema)`; `schema__` binds `$(schema_)`, so every name
+    still has its spelling.
+    """
+    out = {}
+    for name, value in bindings.items():
+        stem = name.rstrip('_')
+        if stem != name and stem in reserved:
+            name = name[:-1]
+        out[name] = value
+    return out
+
+
 def _op_is_pattern_like(op):
     """
     True if the op introduces a set-returning or recursive element

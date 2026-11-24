@@ -523,6 +523,110 @@ def test_typed_column_binding_compares_by_its_type(df):
         df, 'age >= $(v)', v=F.col('age'))
 
 
+def _analyzed(df, column):
+    """
+    The type Spark gives `column` over `df`, as a string.
+    """
+    return df.select(column).schema[0].dataType.simpleString()
+
+
+@pytest.mark.parametrize('path', ['data.user', 'data.user.age', 'data.users[*].age'])
+def test_typed_build_carries_the_type_spark_gives(df, path):
+    """
+    `typed=True` builds the Column with its Spark type: the one Spark
+    gives the Column, a pattern's an array of its matches.
+    """
+    r = sparkize(path)
+    column, dtype = r.build(r.select, schema=df.schema, typed=True)
+    assert dtype.simpleString() == _analyzed(df, column)
+
+
+def test_typed_build_of_a_test_is_boolean(df):
+    """
+    A `where`, and a composition of them, is boolean.
+    """
+    r1 = sparkize('age >= 30')
+    r2 = sparkize('status = "active"')
+    for fragment in (r1.where, r1.where & r2.where, r1.where | r2.where, ~r1.where):
+        column, dtype = r1.build(fragment, schema=df.schema, typed=True)
+        assert dtype.simpleString() == _analyzed(df, column) == 'boolean'
+
+
+def test_typed_build_binds_another_build(df):
+    """
+    What a typed build makes is a binding another build reads by the
+    type it carries.
+    """
+    r1 = sparkize('data.user')
+    r2 = sparkize('$(u).age >= 30')
+    user = r1.build(r1.select, schema=df.schema, typed=True)
+    assert ids(df, r2.build(r2.where, schema=df.schema, u=user)) == where_ids(
+        df, 'data.user.age >= 30')
+
+
+def test_typed_build_of_a_write(df):
+    """
+    A write builds to a dict of each column to its new value, a
+    `TypedColumn` where `typed`.
+    """
+    r = sparkize('data.user.role')
+    plain = r.build(r.as_update('admin'), schema=df.schema)
+    typed = r.build(r.as_update('admin'), schema=df.schema, typed=True)
+    assert list(typed) == list(plain) == ['data']
+    assert typed['data'].dtype.simpleString() == _analyzed(df, plain['data'])
+
+
+@pytest.mark.parametrize('path', ['nope', 'data.user.nope', 'nope[*]', 'data.users[*].nope',
+                                  'data.users[*+].nope'])
+def test_typed_build_of_nothing_has_no_type(df, path):
+    """
+    A path the schema has nothing at, concrete or a pattern, has no
+    type to tell: None.
+    """
+    r = sparkize(path)
+    assert r.build(r.select, schema=df.schema, typed=True).dtype is None
+
+
+@pytest.mark.parametrize('path, expected', [('v', 'void'), ('vs[*]', 'array<void>')])
+def test_typed_build_of_a_void_column_tells_its_type(df, path, expected):
+    """
+    A column the schema types `void` has a type to tell, the null
+    type: not None.
+    """
+    void = df.withColumn('v', F.lit(None)).withColumn('vs', F.array(F.lit(None)))
+    r = sparkize(path)
+    column, dtype = r.build(r.select, schema=void.schema, typed=True)
+    assert dtype.simpleString() == _analyzed(void, column) == expected
+
+
+def test_typed_build_of_every_column_has_no_type(df):
+    """
+    A select of `*` is every column of the row: no one type, None.
+    """
+    r = _sparkize('items[*]', flavor='pyspark', root='table')
+    assert r.build(r.select, schema=df.schema, typed=True).dtype is None
+
+
+def test_typed_build_of_nothing_binds_as_nulls(df):
+    """
+    A typed build of None type, bound to another build, reads as nulls:
+    nothing under it.
+    """
+    r1 = sparkize('data.user.nope')
+    r2 = sparkize('$(u).age >= 30')
+    nothing = r1.build(r1.select, schema=df.schema, typed=True)
+    assert ids(df, r2.build(r2.where, schema=df.schema, u=nothing)) == []
+
+
+def test_build_binds_a_reserved_name_by_its_alias(df):
+    """
+    `schema_` binds `$(schema)`, beside the schema itself.
+    """
+    r = sparkize('age >= $(schema)')
+    assert ids(df, r.build(r.where, schema=df.schema, schema_=30)) == where_ids(
+        df, 'age >= 30')
+
+
 def test_write_under_a_held_column_is_refused(df):
     """
     A write names the column it replaces: a Column at its head raises.

@@ -829,6 +829,16 @@ def test_value_sub_unknown_binding_errors():
         Resolver.build(r.where, min_age=30, max_age=65)
 
 
+def test_value_sub_reserved_name_binds_by_its_alias():
+    """
+    `build`'s own parameter names bind with a trailing `_`: `sql_`
+    binds `$(sql)`, `paramstyle__` binds `$(paramstyle_)`.
+    """
+    r = sqlize('(a>=$(sql) & b=$(paramstyle_))')
+    _, params = Resolver.build(r.where, paramstyle='named', sql_=1, paramstyle__=2)
+    assert params == {'sql': 1, 'paramstyle_': 2}
+
+
 def test_value_sub_repeated_dedupes():
     r = sqlize('(age>=$(x) & weight=$(x))')
     # Same name in two positions → single marker shared

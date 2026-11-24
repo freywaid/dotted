@@ -19,6 +19,7 @@ import collections.abc
 import operator
 
 from ..api import parse
+from . import core
 from .core import TranslationError
 
 
@@ -66,7 +67,8 @@ class ColumnFragment:
     A Spark `Column` not made yet. A Column can't carry a placeholder,
     and a path reads a node by its type, which the DataFrame's schema
     gives, so translation builds a fragment instead: `make(env)` makes
-    the Column once the substitution values and the schema are known.
+    the Column, with its Spark type as a `TypedColumn`, once the
+    substitution values and the schema are known.
 
     `unbound` maps each substitution the fragment still needs to its
     original name (`$(min_age)` → `{'min_age': 'min_age'}`), keyed the
@@ -92,16 +94,28 @@ class ColumnFragment:
             return 'ColumnFragment()'
         return f'ColumnFragment(unbound={sorted(self.unbound.values())})'
 
+    def _built(self, env, typed):
+        """
+        What `build` makes of the fragment: its Column, a `TypedColumn`
+        where `typed`.
+        """
+        made = self._make(env)
+        return made if typed else made.column
+
     def _binary(self, other, op):
         """
-        Combine with another fragment under a Column operator.
+        Combine with another fragment under a Column operator: a test of
+        two tests, boolean as each of them is.
         """
         if not isinstance(other, ColumnFragment):
             return NotImplemented
         mine = self._make
         theirs = other._make
-        return ColumnFragment(lambda env: op(mine(env), theirs(env)),
-                              _merged(self.unbound, other.unbound))
+
+        def make(env):
+            a = mine(env)
+            return TypedColumn(op(a.column, theirs(env).column), a.dtype)
+        return ColumnFragment(make, _merged(self.unbound, other.unbound))
 
     def __and__(self, other):
         return self._binary(other, operator.and_)
@@ -111,27 +125,27 @@ class ColumnFragment:
 
     def __invert__(self):
         mine = self._make
-        return ColumnFragment(lambda env: ~mine(env), self.unbound)
+
+        def make(env):
+            a = mine(env)
+            return TypedColumn(~a.column, a.dtype)
+        return ColumnFragment(make, self.unbound)
 
 
 # ---- Typed columns --------------------------------------------------
 
-class TypedColumn:
+class TypedColumn(collections.namedtuple('TypedColumn', ('column', 'dtype'))):
     """
-    A Spark `Column` with its Spark type, `dtype`, as a binding. `build`
-    reads a Column binding's type in the active session, against the
-    schema; this carries the type of one no session resolves there, a
-    higher-order function's lambda argument.
+    A Spark `Column` with its Spark type, `dtype`, None where the type
+    can't be told: what `build(..., typed=True)` makes, unpacking as
+    `column, dtype`. As a binding, it is read by the type it carries, a
+    None one as nulls. `build` reads a bare Column binding's type in
+    the active session, against the schema; this carries the type of
+    one no session resolves there, a higher-order function's lambda
+    argument, or what another `build` made of one.
     """
 
-    __slots__ = ('column', 'dtype')
-
-    def __init__(self, column, dtype):
-        self.column = column
-        self.dtype = dtype
-
-    def __repr__(self):
-        return f'TypedColumn({self.column!r}, {self.dtype!r})'
+    __slots__ = ()
 
 
 def typed(column, dtype):
@@ -284,8 +298,10 @@ class SparkResolver(collections.abc.Mapping):
         itself, but for a group or negation as the row step,
         `books[(*&a=1, *&b=2)]` — each branch's rows in turn, a row as
         often as the group yields it, which no filter of `df` can give.
-        Apply `where`, `offset` / `limit` and `select` to them.
+        Apply `where`, `offset` / `limit` and `select` to them. A
+        binding for `$(df)` is spelled `df_`, as in `build`.
         """
+        bindings = core.unreserved(bindings, ('self', 'df'))
         if self._from is None:
             _check_bindings({}, bindings)
             return df
@@ -293,12 +309,22 @@ class SparkResolver(collections.abc.Mapping):
         return self._from.make(df, _env(bindings, df.schema))
 
     @staticmethod
-    def build(fragment, schema=None, **bindings):
+    def build(fragment, schema=None, typed=False, **bindings):
         """
         Make the Spark `Column` for a `ColumnFragment` (usually
         `r.where`, `r.select`, or a composition of fragments) over a
         DataFrame of `schema`, its `df.schema`, with `bindings`
         supplying its substitutions by original name.
+
+        `typed=True` makes a `TypedColumn` instead, the Column with its
+        Spark type, `column, dtype`: a binding for another build. A
+        pattern's type is the array of its matches'. `dtype` is None
+        where the type can't be told: a path the schema has nothing at,
+        or a select of `*`, every column of the row.
+
+        A binding named for a parameter, `fragment`, `schema` or
+        `typed`, is spelled with a trailing `_`: `schema_=1` binds
+        `$(schema)`, and `schema__=1` binds `$(schema_)`.
 
         A path reads each node by its type, as dotted reads a Python
         value by its own, and the schema says what each is: a struct
@@ -325,8 +351,9 @@ class SparkResolver(collections.abc.Mapping):
             raise TranslationError(
                 f'build requires a ColumnFragment, got {type(fragment).__name__}'
             )
+        bindings = core.unreserved(bindings, ('fragment', 'schema', 'typed'))
         _check_bindings(fragment.unbound, bindings)
-        return fragment._make(_env(bindings, schema))
+        return fragment._built(_env(bindings, schema), typed)
 
 
 def _check_bindings(unbound, bindings):

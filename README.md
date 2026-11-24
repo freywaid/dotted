@@ -4250,7 +4250,9 @@ A `SQLFragment` carries:
 - `sql` — a `SQLFragment` (usually `r.where`, `r.select`, or a
   composition like `r.select + " FROM t WHERE " + r.where`).
 - `**bindings` — values for substitutions, keyed by original
-  substitution name.
+  substitution name. One named for a parameter is spelled with a
+  trailing `_`: `sql_=1` binds `$(sql)`, `paramstyle_` binds
+  `$(paramstyle)`, and `sql__` binds `$(sql_)`.
 
 `r.as_update(value)`
 
@@ -4441,6 +4443,18 @@ carries its type:
 `r.typed` is `dotted.translators.spark.typed`, and works for any Column
 binding. A write (`as_update`) can't start at a Column.
 
+`typed=True` builds the Column with its Spark type, a `TypedColumn`
+that unpacks as `column, dtype`, and binds another build as `r.typed`
+does:
+
+    r = dotted.sparkize('data.user')
+    user, dtype = r.build(r.select, schema=df.schema, typed=True)
+    dtype                            # StructType([...])
+
+A pattern's is an array of its matches', a `where`'s boolean. `dtype`
+is None where the type can't be told: a path the schema has nothing
+at, concrete or a pattern, or a select of `*`, every column.
+
 ### Composing fragments
 
 A `Column` can't hold a placeholder, so `r.where` is a
@@ -4553,16 +4567,21 @@ Not yet supported (`TranslationError`):
 - `root` — `'column'` (default): the first segment is a column.
   `'table'`: a [table search](#sparkize-table-search).
 
-`r.build(fragment, schema=None, **bindings)`
+`r.build(fragment, schema=None, typed=False, **bindings)`
 
 - `fragment` — a `ColumnFragment` (`r.where`, `r.select`, or a
   composition of fragments), or `r.as_update(value)`, which builds to a
   dict of column name to `Column`.
 - `schema` — **required**. The schema of the DataFrame the Column
   reads, `df.schema`: a path reads each node by its type.
+- `typed` — `True` builds a `TypedColumn`, `column, dtype`, in place of
+  the `Column`; `as_update` a dict of them. `dtype` is a Spark type, or
+  None where it can't be told.
 - `**bindings` — values for substitutions, keyed by original
   substitution name. An unknown or missing binding raises
-  `TranslationError`.
+  `TranslationError`. One named for a parameter is spelled with a
+  trailing `_`: `schema_=30` binds `$(schema)`, `schema__` binds
+  `$(schema_)`; `r.rows(df, df_=...)` binds `$(df)`.
 
 `r.as_update(value)`
 

@@ -3,6 +3,23 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Added
+- `sparkize`'s `r.build(fragment, schema=..., typed=True)` builds the
+  Column with its Spark type, a `TypedColumn` that unpacks as
+  `column, dtype`: a read's type, an array of a pattern's matches', a
+  `where`'s boolean, and for `as_update` a dict of them. `dtype` is
+  None where the type can't be told: a path the schema has nothing at,
+  concrete or a pattern, or a select of `*`. It binds another build as
+  `r.typed(column, dtype)` does, with no session read; a None type reads
+  as nulls. `TypedColumn` is now a namedtuple.
+- A binding named for one of `build`'s own parameters is spelled with a
+  trailing `_`: `schema_=30` binds `$(schema)`, and `schema__` binds
+  `$(schema_)`. This covers `fragment`, `schema` and `typed` in
+  `sparkize`'s `build`, `df` in its `rows`, and `sql` and `paramstyle`
+  in `sqlize`'s `build`.
+
 ## [0.57.3]
 
 ### Documentation

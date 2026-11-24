@@ -10,6 +10,7 @@ from dotted.translators import (
     sparkize as _sparkize, SparkResolver, ColumnFragment, TranslationError,
     flavors,
 )
+from dotted.translators import core
 
 
 def sparkize(path, *, flavor='pyspark', bindings=None, root='column'):
@@ -266,6 +267,34 @@ def test_build_rejects_missing_binding():
         r.build(r.where)
 
 
+def test_reserved_names_bind_with_a_trailing_underscore():
+    """
+    A binding named for a parameter is spelled with a trailing `_`, and
+    a name that already ends in `_` with one more.
+    """
+    got = core.unreserved({'schema_': 1, 'schema__': 2, 'x_': 3, 'typed': 4}, ('schema',))
+    assert got == {'schema': 1, 'schema_': 2, 'x_': 3, 'typed': 4}
+
+
+def test_build_binds_a_reserved_name_by_its_alias():
+    """
+    `schema_` binds `$(schema)`: the bindings pass, and only the
+    missing schema raises.
+    """
+    r = sparkize('age >= $(schema)')
+    assert r.unbound == {'schema': 'schema'}
+    with pytest.raises(TranslationError, match="DataFrame's schema"):
+        r.build(r.where, schema_=30)
+
+
+def test_typed_column_unpacks():
+    """
+    A `TypedColumn` is the pair `column, dtype`.
+    """
+    column, dtype = sparkize('age').typed('c', 'int')
+    assert (column, dtype) == ('c', 'int')
+
+
 def test_build_needs_the_schema():
     """
     A path reads each node by its type, which the DataFrame's schema
@@ -436,6 +465,14 @@ def test_rows_checks_bindings():
         r.rows(object())
     with pytest.raises(TranslationError, match='unknown binding'):
         sparkize('hello[*]', root='table').rows(object(), a=1)
+
+
+def test_rows_binds_df_by_its_alias():
+    """
+    `df_` names `$(df)`, which a search with none doesn't know.
+    """
+    with pytest.raises(TranslationError, match=r"\['df'\]"):
+        sparkize('hello[*]', root='table').rows(object(), df_=1)
 
 
 @pytest.mark.parametrize('path', [

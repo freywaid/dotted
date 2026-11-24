@@ -28,6 +28,7 @@ import re
 import string as _string
 
 from ..api import parse
+from . import core
 from .core import TranslationError
 
 
@@ -545,6 +546,10 @@ class Resolver(collections.abc.Mapping):
           - paramstyle='dollar-numeric' / 'numeric' → (text, list)
           - paramstyle='qmark' / 'format' → (text, list)
 
+        A binding named for a parameter, `sql` or `paramstyle`, is
+        spelled with a trailing `_`: `sql_=1` binds `$(sql)`, and
+        `sql__=1` binds `$(sql_)`.
+
         Raises `TranslationError` on:
           - unsupported paramstyle
           - unknown binding (kwarg not corresponding to any unbound
@@ -575,6 +580,7 @@ class Resolver(collections.abc.Mapping):
                 )
             cast_fn = _DIALECT_CAST_FNS.get(paramstyle)
 
+        bindings = core.unreserved(bindings, ('cls', 'sql', 'paramstyle'))
         expected_origs = set(sql.unbound.values())
         extra = set(bindings) - expected_origs
         if extra:

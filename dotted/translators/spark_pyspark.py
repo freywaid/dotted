@@ -243,7 +243,7 @@ class _Node:
         """
         if cond is None or cond is True:
             return self
-        return _Node(self.col, self.dtype, self.path, _and(self.there, cond))
+        return self._again(self.path, _and(self.there, cond))
 
     def like(self, col, dtype):
         """
@@ -255,7 +255,7 @@ class _Node:
         """
         This node without its path.
         """
-        return self if self.path is None else _Node(self.col, self.dtype, None, self.there)
+        return self if self.path is None else self._again(None, self.there)
 
     def rooted(self):
         """
@@ -263,7 +263,40 @@ class _Node:
         """
         if self.path is not None:
             return self
-        return _Node(self.col, self.dtype, _functions().array().cast('array<string>'), self.there)
+        return self._again(_functions().array().cast('array<string>'), self.there)
+
+    def _again(self, path, there):
+        """
+        This node's value at `path`, there where `there` holds.
+        """
+        return _Node(self.col, self.dtype, path, there)
+
+    def typed(self):
+        """
+        The node's value with its Spark type, as `build(..., typed=True)`
+        gives it.
+        """
+        return spark.TypedColumn(self.col, self.dtype)
+
+
+class _Nothing(_Node):
+    """
+    The node of a read that reaches nothing in the schema: nulls, read
+    as the null type, but of no type to tell, so `typed()` gives None. A
+    column the schema types `void` is a `_Node` of the null type.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, col=None, path=None, there=True):
+        super().__init__(_functions().lit(None) if col is None else col, _types().NullType(),
+                         path, there)
+
+    def _again(self, path, there):
+        return _Nothing(self.col, path, there)
+
+    def typed(self):
+        return spark.TypedColumn(self.col, None)
 
 
 class _One:
@@ -330,15 +363,19 @@ class _Found:
     The matches a path reaches, in dotted's order: the array Column
     `arr`, never null, each element a match as `mode` reads it ('value'
     its value, 'node' a (path, value) struct, 'path' its path alone),
-    the values of the Spark type `dtype` (None for 'path').
+    the values of the Spark type `dtype` (None for 'path'). `known` is
+    False where no match reaches anything in the schema, only the nulls
+    dotted gives in its place, so the type is the null type to read by
+    but none to tell.
     """
 
-    __slots__ = ('arr', 'dtype', 'mode')
+    __slots__ = ('arr', 'dtype', 'mode', 'known')
 
-    def __init__(self, arr, dtype, mode):
+    def __init__(self, arr, dtype, mode, known=True):
         self.arr = arr
         self.dtype = dtype
         self.mode = mode
+        self.known = known
 
 
 def _elem_type(dtype, mode):
@@ -384,7 +421,8 @@ def _single(node, mode):
     """
     The node as the one match.
     """
-    return _Found(_functions().array(_leaf(node, mode)), node.dtype, mode)
+    return _Found(_functions().array(_leaf(node, mode)), node.dtype, mode,
+                  not isinstance(node, _Nothing))
 
 
 def _when(cond, found):
@@ -397,7 +435,7 @@ def _when(cond, found):
         return found
     F = _functions()
     return _Found(F.when(cond, found.arr).otherwise(_empty(found.dtype, found.mode)),
-                  found.dtype, found.mode)
+                  found.dtype, found.mode, found.known)
 
 
 def _shape(dtype):
@@ -451,7 +489,8 @@ def _cast(found, dtype):
     if found.mode == 'path' or _shape(found.dtype) == _shape(dtype):
         return found
     T = _types()
-    return _Found(found.arr.cast(T.ArrayType(_elem_type(dtype, found.mode))), dtype, found.mode)
+    return _Found(found.arr.cast(T.ArrayType(_elem_type(dtype, found.mode))), dtype, found.mode,
+                  found.known)
 
 
 def _concat(founds):
@@ -467,7 +506,8 @@ def _concat(founds):
     if mode != 'path':
         dtype = _common([found.dtype for found in founds])
         founds = [_cast(found, dtype) for found in founds]
-    return _Found(_functions().concat(*(found.arr for found in founds)), founds[0].dtype, mode)
+    return _Found(_functions().concat(*(found.arr for found in founds)), founds[0].dtype, mode,
+                  any(found.known for found in founds))
 
 
 def _case(pairs):
@@ -480,6 +520,7 @@ def _case(pairs):
         return None
     mode = real[0].mode
     dtype = None if mode == 'path' else _common([found.dtype for found in real])
+    known = any(found.known for found in real)
     empty = _empty(dtype, mode)
     out = None
     for test, found in pairs:
@@ -487,11 +528,11 @@ def _case(pairs):
             continue
         arr = empty if found is None else _cast(found, dtype).arr
         if test is True:
-            return _Found(arr if out is None else out.otherwise(arr), dtype, mode)
+            return _Found(arr if out is None else out.otherwise(arr), dtype, mode, known)
         out = _functions().when(test, arr) if out is None else out.when(test, arr)
     if out is None:
         return None
-    return _Found(out.otherwise(empty), dtype, mode)
+    return _Found(out.otherwise(empty), dtype, mode, known)
 
 
 def _test_case(pairs, otherwise):
@@ -566,7 +607,7 @@ def _part_collect(part, fn, mode):
         arr = F.when(_lit(_cond(part.cond)), _fail(part.what)).otherwise(F.array())
         if mode == 'path':
             arr = arr.cast(T.ArrayType(T.ArrayType(T.StringType())))
-        return _Found(arr, T.NullType(), mode)
+        return _Found(arr, T.NullType(), mode, False)
     seen = []
 
     def each(x, i):
@@ -577,7 +618,7 @@ def _part_collect(part, fn, mode):
     found = seen[0]
     if found is None:
         return None
-    return _Found(F.flatten(arr), found.dtype, found.mode)
+    return _Found(F.flatten(arr), found.dtype, found.mode, found.known)
 
 
 def _segment_of(value):
@@ -1072,10 +1113,10 @@ def _aligned_collect(node, step, rest, env, mode):
     def filled(ch):
         found = _collect(ch, rest, env, mode)
         if found is None:
-            found = _Found(F.array(F.lit(None)), T.NullType(), mode)
+            found = _Found(F.array(F.lit(None)), T.NullType(), mode, False)
         else:
             found = _Found(F.when(F.size(found.arr) > 0, found.arr).otherwise(
-                F.array(F.lit(None).cast(found.dtype))), found.dtype, mode)
+                F.array(F.lit(None).cast(found.dtype))), found.dtype, mode, found.known)
         return _when(_and(*(c(ch, env) for c in conds)), found)
     return _parts_collect(_reach(node, step, env), filled, mode)
 
@@ -1158,9 +1199,10 @@ def _softcut_collect(node, step, rest, env, mode):
             return None
         if held is not True:
             kept = F.filter(kept, lambda x: held)
+    known = any(found.known for found, _ in founds)
     if mode == 'value':
-        return _Found(F.transform(kept, lambda n: n['value']), dtype, mode)
-    return _Found(kept, dtype, mode)
+        return _Found(F.transform(kept, lambda n: n['value']), dtype, mode, known)
+    return _Found(kept, dtype, mode, known)
 
 
 def _overlap(p, q):
@@ -1625,9 +1667,12 @@ def _is_held(value):
 def _held_node(value, env):
     """
     The node a Column binding is: a typed one by the type it carries,
-    a bare one by the type the active session reads.
+    the null type where that is None, a bare one by the type the active
+    session reads.
     """
     if isinstance(value, spark.TypedColumn):
+        if value.dtype is None:
+            return _Nothing(value.column)
         return _Node(value.column, value.dtype)
     return _Node(value, _column_type(value, env))
 
@@ -2110,9 +2155,8 @@ def _literal_read(node, steps, env):
     null where it reaches nothing.
     """
     F = _functions()
-    T = _types()
     if node is None:
-        return _Node(F.lit(None), T.NullType())
+        return _Nothing()
     cond = True
     for step in steps:
         if step[0] != 'get':
@@ -2131,18 +2175,23 @@ def _literal_read(node, steps, env):
         return _Node(F.when(cond, node.col), node.dtype)
     found = _when(cond, _collect(node, steps, env, 'value'))
     if found is None:
-        return _Node(F.lit(None), T.NullType())
+        return _Nothing()
+    if not found.known:
+        return _Nothing(F.get(found.arr, 0))
     return _Node(F.get(found.arr, 0), found.dtype)
 
 
 def _all_read(node, steps, env):
     """
-    The array Column of the matches a pattern path reaches from `node`.
+    The array Column of the matches a pattern path reaches from `node`,
+    with its type.
     """
     found = _collect(node, steps, env, 'value')
     if found is None:
-        return _functions().array()
-    return found.arr
+        return spark.TypedColumn(_functions().array(), None)
+    if not found.known:
+        return spark.TypedColumn(found.arr, None)
+    return spark.TypedColumn(found.arr, _types().ArrayType(found.dtype))
 
 
 class _Typed(ColumnFragment):
@@ -2156,9 +2205,23 @@ class _Typed(ColumnFragment):
     def __init__(self, node, unbound=None):
         def make(env):
             n = node(env)
-            return _functions().lit(None) if n is None else n.col
+            if n is None:
+                return _Nothing().typed()
+            return n.typed()
         super().__init__(make, unbound)
         self.node = node
+
+
+class _Test(ColumnFragment):
+    """
+    A fragment that tests: `test(env)` gives its boolean Column.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, test, unbound=None):
+        super().__init__(lambda env: spark.TypedColumn(test(env), _types().BooleanType()),
+                         unbound)
 
 
 def _column_node(env, name):
@@ -2847,10 +2910,20 @@ class _Update(ColumnFragment):
                 node = frag.node(env)
                 if node is None:
                     raise TranslationError(f'a write of a column the schema lacks: {name}')
-                out[name] = node.col
+                out[name] = node.typed()
             return out
         super().__init__(make, unbound)
         self.pairs = pairs
+
+    def _built(self, env, typed):
+        """
+        The dict of each column to its new value, a `TypedColumn` where
+        `typed`.
+        """
+        made = self._make(env)
+        if typed:
+            return made
+        return {name: t.column for name, t in made.items()}
 
 
 class _WriteTest(Hooks):
@@ -2971,7 +3044,8 @@ class PySparkMixin(Translator):
         """
         `*`.
         """
-        return ColumnFragment(lambda env: _functions().col('*'))
+        # every column of the row, of no one type
+        return ColumnFragment(lambda env: spark.TypedColumn(_functions().col('*'), None))
 
     def _row(self, table, columns):
         """
@@ -3021,8 +3095,8 @@ class PySparkMixin(Translator):
         pred_fn, guard_unbound = self._guard_pred(guard_op)
         steps = steps + (('cond', pred_fn),)
         make = _node_of(col)
-        return ColumnFragment(lambda env: _lit(_exists(make(env), steps, env)),
-                              _merged(col.unbound, unbound, guard_unbound))
+        return _Test(lambda env: _lit(_exists(make(env), steps, env)),
+                     _merged(col.unbound, unbound, guard_unbound))
 
     def _combine_and(self, preds):
         """
@@ -3047,8 +3121,8 @@ class PySparkMixin(Translator):
         The fragment false or null: `~coalesce(pred, false)`.
         """
         make = pred._make
-        return ColumnFragment(
-            lambda env: ~_functions().coalesce(make(env), _functions().lit(False)),
+        return _Test(
+            lambda env: ~_functions().coalesce(make(env).column, _functions().lit(False)),
             pred.unbound)
 
     # ---- rows of a table search -------------------------------------
@@ -3068,7 +3142,7 @@ class PySparkMixin(Translator):
 
         def make(df, env):
             if pred is not None:
-                df = df.where(pred._make(env))
+                df = df.where(pred._make(env).column)
             if offset is not None:
                 df = df.offset(offset)
             if limit is not None:
@@ -3084,11 +3158,11 @@ class PySparkMixin(Translator):
         def make(df, env):
             out = rows.make(df, env)
             if pred is not None:
-                out = out.where(pred._make(env))
+                out = out.where(pred._make(env).column)
             for hits, hit, exists in gates:
                 found = hits.make(df, env)
                 if hit is not None:
-                    found = found.where(hit._make(env))
+                    found = found.where(hit._make(env).column)
                 out = _gated(out, found, exists)
             return out
         unbound = _merged(
@@ -3128,7 +3202,7 @@ class PySparkMixin(Translator):
         steps = prefix_steps + op_steps
         unbound = _merged(col.unbound, unbound, op_unbound)
         make = _node_of(col)
-        where = ColumnFragment(lambda env: _lit(_exists(make(env), steps, env)), unbound)
+        where = _Test(lambda env: _lit(_exists(make(env), steps, env)), unbound)
         if any(op.is_pattern() for op in ops):
             select = ColumnFragment(lambda env: _all_read(make(env), steps, env), unbound)
         else:
