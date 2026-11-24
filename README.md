@@ -216,6 +216,7 @@ Several Python libraries handle nested data access. Here's how dotted compares:
 | SQL and Spark translation (`sqlize`, `sparkize`) | ✅ (in development) | ❌ | ❌ | ❌ |
 | Command-line tool | ✅ (`dq`) | ✅ (`glom`) | ✅ (`jp.py`) | ❌ |
 | Language-independent spec | ❌ | ❌ | ✅ (ports in many languages) | ❌ |
+| Compiled wheels (Cython) | ✅ (Linux, macOS arm64, Windows) | ❌ (pure Python) | ❌ (pure Python) | ❌ (pure Python) |
 | Zero dependencies | ❌ (pyparsing) | ❌ (boltons, attrs, face) | ✅ | ❌ (typing-extensions) |
 
 **Choose dotted if you want:**
