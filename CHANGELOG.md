@@ -3,6 +3,17 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.57.3]
+
+### Documentation
+- The README's comparison with glom, jmespath and pydash is brought up
+  to date: glom and jmespath both take dot notation, jmespath has
+  wildcards and comparison operators, and glom has filters, comparisons
+  and `And`/`Or`/`Not`. Near misses are marked partial with the API
+  named. New rows cover immutable updates, streaming over generators,
+  SQL and Spark translation, a command-line tool, a language-independent
+  spec, compiled wheels, and each library's runtime dependencies.
+
 ## [0.57.2]
 
 ### Fixed
