@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [Unreleased]
+
+### Fixed
+- The compiled wheels no longer ship debug info. Python's own `CFLAGS`
+  carry `-g`, so each Linux wheel held the DWARF of every engine module;
+  they are now compiled with `-g0`.
+
 ## [0.57.4]
 
 ### Added

@@ -54,14 +54,26 @@ def extensions():
 
 class build_ext(_build_ext):
     """
-    Compile the extensions one per core. setuptools builds them one after
-    another unless -j is given; the modules are independent, so a release
-    wheel compiles in a fraction of the time on a multi-core runner.
+    Compile the extensions one per core, without debug info.
+
+    setuptools builds them one after another unless -j is given; the
+    modules are independent, so a release wheel compiles in a fraction of
+    the time on a multi-core runner.
+
+    Python's own CFLAGS carry -g, which setuptools passes on, so a Linux
+    wheel would ship the DWARF of every module. -g0 comes after them on the
+    command line and wins. MSVC adds no debug info to a release build.
     """
     def finalize_options(self):
         super().finalize_options()
         if self.parallel is None:
             self.parallel = os.cpu_count() or 1
+
+    def build_extensions(self):
+        if self.compiler.compiler_type != 'msvc':
+            for ext in self.extensions:
+                ext.extra_compile_args.append('-g0')
+        super().build_extensions()
 
 
 # Guarded: cythonize compiles in a process pool, and a spawned worker
