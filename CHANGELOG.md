@@ -3,7 +3,7 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
-## [Unreleased]
+## [0.57.5]
 
 ### Fixed
 - The compiled wheels no longer ship debug info. Python's own `CFLAGS`
