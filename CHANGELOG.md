@@ -3,6 +3,13 @@
 All notable changes to `dotted` are recorded here. Versions prior to
 the ones listed are omitted — browse git history for earlier entries.
 
+## [0.57.6]
+
+### Fixed
+- Published in full. 0.57.5's upload stopped at PyPI's project size
+  limit, so it has only the CPython 3.11–3.13 wheels: no 3.14 or 3.15
+  wheels, pure wheel or sdist. The code is unchanged.
+
 ## [0.57.5]
 
 ### Fixed
